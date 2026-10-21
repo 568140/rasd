@@ -380,26 +380,28 @@ export function extractCountForNoun(text: string, nounRegexSource: string): numb
 
   // Check both nominative and accusative dual forms (فتحتان / فتحتين, دوران / دورين, شقتان / شقتين)
   if (nounRegexSource.includes('دور') || nounRegexSource.includes('طابق')) {
-    if (/(دوران|دورين|طابقان|طابقين)/i.test(norm)) return 2;
+    if (/(?:^|\s|[و،])(?:من\s+)?(دوران|دورين|طابقان|طابقين)(?:\s|[،.]|$)/i.test(norm)) return 2;
   }
   if (nounRegexSource.includes('شقق') || nounRegexSource.includes('شقه')) {
-    if (/(شقتان|شقتين)/i.test(norm)) return 2;
+    if (/(?:^|\s|[و،])(?:من\s+)?(شقتان|شقتين)(?:\s|[،.]|$)/i.test(norm)) return 2;
   }
   if (nounRegexSource.includes('فتح') || nounRegexSource.includes('محل') || nounRegexSource.includes('دكان')) {
-    if (/(فتحتان|فتحتين|محلان|محلين|دكانان|دكانين)/i.test(norm)) return 2;
+    if (/(?:^|\s|[و،])(?:من\s+)?(فتحتان|فتحتين|محلان|محلين|دكانان|دكانين)(?:\s|[،.]|$)/i.test(norm)) return 2;
   }
   if (nounRegexSource.includes('مكتب')) {
-    if (/(مكتبان|مكتبين)/i.test(norm)) return 2;
+    if (/(?:^|\s|[و،])(?:من\s+)?(مكتبان|مكتبين)(?:\s|[،.]|$)/i.test(norm)) return 2;
   }
 
-  const digitBefore = new RegExp(`(\\d+)\\s+(?:${nounRegexSource})`, 'i');
+  // Digit with optional preposition 'من', e.g. "من 3 طوابق" or "3 طوابق"
+  const digitBefore = new RegExp(`(?:من\\s+)?(\\d+)\\s+(?:${nounRegexSource})`, 'i');
   const digitMatch = norm.match(digitBefore);
   if (digitMatch) {
     return parseInt(digitMatch[1], 10);
   }
 
+  // Word number with optional preposition 'من', e.g. "من ثلاثة طوابق" or "ثلاثة طوابق"
   const wordRegex = new RegExp(
-    `([\\u0600-\\u06FF]+)(?:\\s+و([\\u0600-\\u06FF]+))?\\s+(?:${nounRegexSource})`,
+    `(?:من\\s+)?([\\u0600-\\u06FF]+)(?:\\s+و([\\u0600-\\u06FF]+))?\\s+(?:${nounRegexSource})`,
     'i'
   );
   const wordMatch = norm.match(wordRegex);
@@ -667,7 +669,8 @@ export function parseArabicVoiceCommandDeterministic(
     intent = 'create_visit';
     confidence = 0.95;
   } else if (
-    /(تحصيل|تحصيلا|قبض|دفعه|سدد|تسديد|استلام\s+مبلغ|سند\s+قبض)/.test(norm)
+    /(تحصيل|تحصيلا|سند\s+قبض|استلام\s+مبلغ|سدد|تسديد)/.test(norm) &&
+    !/(قيمه\s+العقد|قيمة\s+العقد|ايجار\s+العقد|بقيمه\s+عقد|عقد)/.test(norm)
   ) {
     intent = 'record_collection';
     confidence = 0.96;
@@ -694,12 +697,13 @@ export function parseArabicVoiceCommandDeterministic(
 
   let taxpayerName = '';
   const namePatterns = [
-    /(?:قم\s+بإضافة|قم\s+باضافة|بإضافة|باضافة|إضافة|اضافة|أضف|اضف|سجل|تسجيل)\s+(?:المكلف\s+|مكلف\s+)([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,5}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار))/i,
+    /(?:(?:أضف|اضف|قم\s+بإضافة|قم\s+باضافة|إضافة|اضافة|سجل|ادخل|تسجيل)\s+)?(?:مكلف(?:ًا|ا)?|المكلف)\s*(?:جديد(?:ًا|ا)?\s*)?(?:اسمه|باسم|يدعى|هو)?\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,5}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار))/i,
     /(?:افتح\s+ملف|اعرض\s+ملف|اعرض\s+عقارات|افتح\s+عقارات)\s+(?:المكلف\s+)?([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|اليوم|غدا|بكره|الاسبوع|الأسبوع|[؟.!]))/i,
-    /(?:مكلفا?\s+باسم|مكلف\s+اسمه|باسم\s+المكلف|باسم)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|عنده|يملك|في\s+شارع|في\s+منطقه|رقمه|هاتفه|والوكيل|الوكيل))/,
+    /(?:مكلف(?:ًا|ا)?\s+(?:جديد(?:ًا|ا)?\s+)?(?:اسمه|باسم)|مكلف\s+اسمه|باسم\s+المكلف|باسم)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|عنده|يملك|في\s+شارع|في\s+منطقه|رقمه|هاتفه|والوكيل|الوكيل))/,
     /(?:من\s+حساب\s+العقار\s+الخاص\s+ب|العقار\s+الخاص\s+ب|الخاص\s+بالمكلف\s+|الخاص\s+ب)\s*([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|بمبلغ|وقدره|غدا|بكره|الساعه|والوكيل))/,
     /(?:للمكلف|من\s+المكلف|من\s+حساب|على\s+المكلف|متابعه\s+المتبقي\s+على|المتبقي\s+على|بمتابعه\s+المكلف|بمتابعه|متابعه|ابحث\s+عن|بحث\s+عن)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|بمبلغ|وقدره|اليوم|غدا|غدًا|بكره|بعد\s+غد|الاسبوع|الأسبوع|الساعه|والوكيل|[؟.!]))/,
-    /(?:سجل\s+زياره|زياره\s+ميدانيه|زياره|اضف|أضف)\s+(?:للمكلف\s+|لـ\s*|ل)?([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,3}?)(?=\s*(?:،|$|اليوم|غدا|غدًا|بكره|الاسبوع|الأسبوع|عقارا|عقارًا|عقار|جديدا|جديدًا|في|[؟.!]))/,
+    /(?:سجل\s+زياره|زياره\s+ميدانيه|زياره|اضف|أضف)\s+(?:للمكلف\s+|لـ\s*)?([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,3}?)(?=\s*(?:،|$|اليوم|غدا|غدًا|بكره|الاسبوع|الأسبوع|عقارا|عقارًا|عقار|جديدا|جديدًا|في|[؟.!]))/,
+    /(?:اسمه|يدعى)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){1,4}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار|[؟.!]))/i,
     /(?:مكلف\s+جديد|اضف\s+مكلف)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|في|رقمه))/,
   ];
 
@@ -725,7 +729,8 @@ export function parseArabicVoiceCommandDeterministic(
 
       if (
         candidate &&
-        !['هذا', 'هذا المكلف', 'العقار', 'العقار المحدد', 'عقار', 'عقار جديد', 'اليوم', 'غدا'].includes(candidate)
+        candidate.length >= 3 &&
+        !['هذا', 'هذا المكلف', 'العقار', 'العقار المحدد', 'عقار', 'عقار جديد', 'اليوم', 'غدا', 'جديد', 'جديدا', 'له', 'عنده', 'لديه', 'منه', 'معه', 'الخاص', 'المحدد'].includes(candidate)
       ) {
         taxpayerName = candidate;
         break;
@@ -740,7 +745,7 @@ export function parseArabicVoiceCommandDeterministic(
   );
   if (streetMatch?.[1]) {
     address = streetMatch[1]
-      .replace(/^(?:في|وعنوانه|عنوانه)\s+/i, '')
+      .replace(/^(?:في|وعنوانه|عنوانه|موقعه|بموقع)\s+/i, '')
       .replace(/\s+/g, ' ')
       .trim();
     address = address.replace(/^شارع\s+شارع\s+/i, 'شارع ');
@@ -908,22 +913,152 @@ export function mergeFollowUpIntoDraft(
   newTurn: VoiceExtractedPayload,
   rawFollowUpTranscript: string
 ): VoiceExtractedPayload {
-  const mergedIntent =
-    previousDraft.intent !== 'unknown' && newTurn.intent === 'unknown'
-      ? previousDraft.intent
-      : newTurn.intent !== 'unknown'
-        ? newTurn.intent
-        : previousDraft.intent;
-
-  // If the follow-up is a short name answer (e.g. "خالد محمد") when taxpayerName was missing
-  let resolvedTaxpayerName = newTurn.taxpayerName || previousDraft.taxpayerName;
-  if (!resolvedTaxpayerName && rawFollowUpTranscript.trim().split(/\s+/).length <= 4) {
+  // 1. Resolve taxpayer name across turns
+  let resolvedTaxpayerName = previousDraft.taxpayerName;
+  if (
+    newTurn.taxpayerName &&
+    newTurn.taxpayerName.trim().length >= 3 &&
+    !['له', 'ه', 'عنده', 'لديه', 'هذا', 'المكلف', 'عقار', 'جديد'].includes(newTurn.taxpayerName.trim())
+  ) {
+    resolvedTaxpayerName = newTurn.taxpayerName.trim();
+  } else if (!resolvedTaxpayerName && rawFollowUpTranscript.trim().split(/\s+/).length <= 5) {
     const candidateName = normalizeArabicSpeech(rawFollowUpTranscript)
       .replace(/^(?:اسم\s+المكلف|المكلف|باسم|هو|اسمه)\s+/i, '')
       .trim();
-    if (candidateName && !/\d/.test(candidateName)) {
+    if (
+      candidateName &&
+      candidateName.length >= 3 &&
+      !/\d/.test(candidateName) &&
+      !['العقار', 'عقار', 'سكني', 'تجاري', 'له', 'عنده'].includes(candidateName)
+    ) {
       resolvedTaxpayerName = candidateName;
     }
+  }
+
+  // 2. Identify compound components across turns
+  const hasTaxpayerEntity = Boolean(
+    resolvedTaxpayerName ||
+      previousDraft.intent === 'create_taxpayer' ||
+      newTurn.intent === 'create_taxpayer' ||
+      previousDraft.intent === 'create_compound_record' ||
+      newTurn.intent === 'create_compound_record'
+  );
+
+  const resolvedFloors = newTurn.floorsCount || previousDraft.floorsCount || 0;
+  const resolvedApts = newTurn.apartmentsCount || previousDraft.apartmentsCount || 0;
+  const resolvedShops = newTurn.shopsCount || previousDraft.shopsCount || 0;
+  const resolvedOffices = newTurn.officesCount || previousDraft.officesCount || 0;
+
+  const resolvedAddress =
+    newTurn.address && newTurn.address !== 'غير محدد'
+      ? newTurn.address
+      : previousDraft.address;
+  const resolvedRegion =
+    newTurn.region && newTurn.region !== 'غير محدد'
+      ? newTurn.region
+      : previousDraft.region !== 'غير محدد'
+        ? previousDraft.region
+        : resolvedAddress;
+
+  const hasPropertyEntity = Boolean(
+    resolvedFloors > 0 ||
+      resolvedApts > 0 ||
+      resolvedShops > 0 ||
+      resolvedOffices > 0 ||
+      (resolvedAddress && resolvedAddress !== 'غير محدد') ||
+      previousDraft.intent === 'create_property' ||
+      newTurn.intent === 'create_property' ||
+      previousDraft.intent === 'create_compound_record' ||
+      newTurn.intent === 'create_compound_record'
+  );
+
+  // 3. Intelligent Intent Synthesis:
+  // If we have both taxpayer information and property/units specifications, intent is strictly compound creation
+  let mergedIntent: VoiceEngineIntent;
+  if (hasTaxpayerEntity && hasPropertyEntity) {
+    mergedIntent = 'create_compound_record';
+  } else if (previousDraft.intent === 'create_compound_record') {
+    mergedIntent = 'create_compound_record';
+  } else if (previousDraft.intent !== 'unknown' && newTurn.intent === 'unknown') {
+    mergedIntent = previousDraft.intent;
+  } else if (newTurn.intent !== 'unknown') {
+    // Prevent accidental downgrades from compound tasks if contract value or follow-up was mentioned
+    if (
+      /(?:قيمة\s+العقد|إيجار\s+العقد|ايجار|عقد)/.test(rawFollowUpTranscript) &&
+      previousDraft.intent !== 'unknown'
+    ) {
+      mergedIntent = previousDraft.intent;
+    } else {
+      mergedIntent = newTurn.intent;
+    }
+  } else {
+    mergedIntent = previousDraft.intent;
+  }
+
+  // 4. Resolve Property Type:
+  // If property combines residential (apartments or floors) and commercial (shops, offices), type is mixed
+  let resolvedPropertyType: PropertyType = 'residential';
+  if ((resolvedApts > 0 || resolvedFloors > 0) && (resolvedShops > 0 || resolvedOffices > 0)) {
+    resolvedPropertyType = 'mixed';
+  } else if (
+    resolvedShops > 0 ||
+    resolvedOffices > 0 ||
+    newTurn.propertyType === 'commercial' ||
+    previousDraft.propertyType === 'commercial'
+  ) {
+    resolvedPropertyType = 'commercial';
+  } else if (newTurn.propertyType && newTurn.propertyType !== 'residential') {
+    resolvedPropertyType = newTurn.propertyType;
+  } else if (previousDraft.propertyType) {
+    resolvedPropertyType = previousDraft.propertyType;
+  }
+
+  // 5. Intelligent notes & contract value extraction
+  const notesSet = new Set<string>();
+  if (previousDraft.notes?.trim()) {
+    previousDraft.notes
+      .split(/\s*\|\s*/)
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .forEach((n) => notesSet.add(n));
+  }
+  if (newTurn.notes?.trim()) {
+    newTurn.notes
+      .split(/\s*\|\s*/)
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .forEach((n) => notesSet.add(n));
+  }
+
+  const rawContractMatch = rawFollowUpTranscript.match(
+    /(?:وقيمة\s+العقد|قيمة\s+العقد|إيجار\s+العقد|ايجار\s+العقد|الإيجار|الايجار|بقيمة\s+عقد|قيمة\s+الإيجار)\s+([\u0600-\u06FF0-9\s]+?)(?=\s*(?:،|$|و|ريال|دولار))/i
+  );
+  let resolvedAmount = newTurn.amount > 0 ? newTurn.amount : previousDraft.amount;
+  if (rawContractMatch?.[0]) {
+    const parsedContract = extractMonetaryAmount(rawContractMatch[0] + ' ريال');
+    if (parsedContract.amount > 0) {
+      resolvedAmount = parsedContract.amount;
+      notesSet.add(
+        `قيمة العقد: ${parsedContract.amount.toLocaleString('ar-SA')} ${parsedContract.currency}`
+      );
+    }
+  }
+  const resolvedNotes = Array.from(notesSet).join(' | ');
+
+  // 6. Descriptive property title
+  let resolvedPropTitle = newTurn.propertyTitle || previousDraft.propertyTitle;
+  if (
+    (!resolvedPropTitle ||
+      resolvedPropTitle.startsWith('عقار غير محدد') ||
+      resolvedPropTitle === 'عقار') &&
+    resolvedTaxpayerName
+  ) {
+    resolvedPropTitle =
+      resolvedAddress && resolvedAddress !== 'غير محدد'
+        ? `عقار ${resolvedTaxpayerName} — ${resolvedAddress}`
+        : `عقار ${resolvedTaxpayerName}`;
+  } else if (resolvedTaxpayerName && resolvedAddress && resolvedAddress !== 'غير محدد') {
+    resolvedPropTitle = `عقار ${resolvedTaxpayerName} — ${resolvedAddress}`;
   }
 
   return {
@@ -942,19 +1077,18 @@ export function mergeFollowUpIntoDraft(
     clarificationQuestion: newTurn.clarificationQuestion || '',
     taxpayerName: resolvedTaxpayerName,
     taxpayerPhone: newTurn.taxpayerPhone || previousDraft.taxpayerPhone,
-    propertyTitle: newTurn.propertyTitle || previousDraft.propertyTitle,
-    propertyType:
-      newTurn.propertyType !== 'residential' ? newTurn.propertyType : previousDraft.propertyType,
-    region: newTurn.region !== 'غير محدد' ? newTurn.region : previousDraft.region,
-    address: newTurn.address !== 'غير محدد' ? newTurn.address : previousDraft.address,
-    floorsCount: newTurn.floorsCount || previousDraft.floorsCount,
-    apartmentsCount: newTurn.apartmentsCount || previousDraft.apartmentsCount,
-    shopsCount: newTurn.shopsCount || previousDraft.shopsCount,
-    officesCount: newTurn.officesCount || previousDraft.officesCount,
+    propertyTitle: resolvedPropTitle,
+    propertyType: resolvedPropertyType,
+    region: resolvedRegion,
+    address: resolvedAddress,
+    floorsCount: resolvedFloors,
+    apartmentsCount: resolvedApts,
+    shopsCount: resolvedShops,
+    officesCount: resolvedOffices,
     agentName: newTurn.agentName || previousDraft.agentName,
     agentPhone: newTurn.agentPhone || previousDraft.agentPhone,
-    amount: newTurn.amount > 0 ? newTurn.amount : previousDraft.amount,
-    currency: newTurn.currency || previousDraft.currency,
+    amount: resolvedAmount,
+    currency: newTurn.currency || previousDraft.currency || 'ريال يمني',
     paymentMethod: newTurn.paymentMethod || previousDraft.paymentMethod,
     dateIso: newTurn.dateIso || previousDraft.dateIso,
     timeStr: newTurn.timeStr || previousDraft.timeStr,
@@ -962,7 +1096,7 @@ export function mergeFollowUpIntoDraft(
     targetUnitNumber: newTurn.targetUnitNumber || previousDraft.targetUnitNumber,
     targetUnitType: newTurn.targetUnitType || previousDraft.targetUnitType,
     searchQuery: newTurn.searchQuery || previousDraft.searchQuery,
-    notes: newTurn.notes || previousDraft.notes || '',
+    notes: resolvedNotes,
   };
 }
 

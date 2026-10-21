@@ -383,12 +383,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       setFirebaseUser(user);
       if (user) {
-        if (user.emailVerified) {
-          try {
-            await ensureUserAndWorkspace(user);
-          } catch (e) {
-            console.error(e);
-          }
+        try {
+          await ensureUserAndWorkspace(user);
+        } catch (e) {
+          console.error(e);
         }
       } else {
         clearAllUserState();
@@ -399,9 +397,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubAuth();
   }, [ensureUserAndWorkspace, clearAllUserState]);
 
-  // Attach Real-time Listeners once user is authenticated and verified
+  // Attach Real-time Listeners once user is authenticated
   useEffect(() => {
-    if (!authReady || !firebaseUser || !firebaseUser.emailVerified || !userProfile?.activeWorkspaceId) {
+    if (!authReady || !firebaseUser || !userProfile?.activeWorkspaceId) {
       return;
     }
 
@@ -577,11 +575,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     async (email: string, pass: string) => {
       try {
         const res = await signInWithEmailAndPassword(auth, email.trim(), pass);
-        if (res.user && res.user.emailVerified) {
+        if (res.user) {
           await ensureUserAndWorkspace(res.user);
           showToast('تم تسجيل الدخول بنجاح', 'success');
-        } else if (res.user && !res.user.emailVerified) {
-          showToast('يرجى تفعيل بريدك الإلكتروني عبر الرابط المرسل إليك لإتمام الدخول الآمن.', 'warning');
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -597,15 +593,15 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
         if (res.user) {
           await updateProfile(res.user, { displayName: name.trim() });
-          await sendEmailVerification(res.user);
-          showToast('تم إنشاء الحساب وإرسال رابط التفعيل إلى بريدك الإلكتروني.', 'success');
+          await ensureUserAndWorkspace(res.user);
+          showToast('تم إنشاء الحساب وتسجيل الدخول بنجاح', 'success');
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         throw error;
       }
     },
-    [showToast]
+    [ensureUserAndWorkspace, showToast]
   );
 
   const resetPassword = useCallback(

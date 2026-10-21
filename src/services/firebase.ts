@@ -13,19 +13,30 @@ import { FirestoreErrorInfo, OperationType } from '../types/rasd';
 
 const app = initializeApp(firebaseConfig);
 
+const dbId =
+  firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
+    ? firebaseConfig.firestoreDatabaseId
+    : undefined;
+
 let firestoreInstance;
 try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      localCache: persistentLocalCache({
-        tabManager: persistentMultipleTabManager(),
-      }),
-    },
-    firebaseConfig.firestoreDatabaseId
-  );
+  firestoreInstance = dbId
+    ? initializeFirestore(
+        app,
+        {
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+        },
+        dbId
+      )
+    : initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager(),
+        }),
+      });
 } catch {
-  firestoreInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
 }
 
 export const db = firestoreInstance;

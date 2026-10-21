@@ -13,7 +13,7 @@ import {
   Info,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { FIREBASE_PROJECT_ID } from '../services/firebase';
+import { FIREBASE_PROJECT_ID, translateFirebaseError } from '../services/firebase';
 
 export const AuthScreen: React.FC = () => {
   const {
@@ -35,57 +35,6 @@ export const AuthScreen: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [showSetupHint, setShowSetupHint] = useState(false);
-
-  // If user is signed in with Email/Password but email is not verified yet
-  if (firebaseUser && !firebaseUser.emailVerified) {
-    return (
-      <div className="min-h-screen bg-[#F4F7FA] dark:bg-[#060D18] flex flex-col justify-center items-center p-4" dir="rtl">
-        <div className="w-full max-w-md bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800 rounded-3xl p-6 shadow-md">
-          <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 flex items-center justify-center mb-4">
-            <Mail className="w-6 h-6" />
-          </div>
-          <h1 className="text-xl font-extrabold text-slate-900 dark:text-white mb-2">
-            تأكيد البريد الإلكتروني مطلوب
-          </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
-            حرصًا على أمن بيانات مساحة العمل الميدانية في تطبيق <strong>رَصْد</strong>، تشترط قواعد الأمان (Firestore Security Rules) تأكيد البريد الإلكتروني قبل قراءة أو كتابة السجلات.
-          </p>
-          <div className="p-3 rounded-2xl bg-slate-100 dark:bg-slate-800/70 text-xs text-slate-700 dark:text-slate-300 mb-6">
-            البريد المسجل: <span className="font-mono font-bold">{firebaseUser.email}</span>
-          </div>
-
-          <div className="space-y-3">
-            <button
-              type="button"
-              onClick={refreshAuthUser}
-              className="w-full min-h-[48px] rounded-2xl bg-[#0B192C] hover:bg-[#102A46] dark:bg-[#0284C7] text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <RefreshCw className="w-4 h-4" />
-              <span>لقد قمت بتأكيد البريد — تحديث الحالة</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={resendVerificationEmail}
-              className="w-full min-h-[48px] rounded-2xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <Mail className="w-4 h-4" />
-              <span>إعادة إرسال رسالة التفعيل</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={logout}
-              className="w-full min-h-[44px] rounded-2xl text-rose-600 dark:text-rose-400 font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>تسجيل الخروج واستخدام حساب آخر</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,8 +71,8 @@ export const AuthScreen: React.FC = () => {
         await resetPassword(email);
         setMode('login');
       }
-    } catch {
-      // Handled by context toast
+    } catch (err) {
+      setLocalError(translateFirebaseError(err));
     } finally {
       setSubmitting(false);
     }
@@ -139,8 +88,8 @@ export const AuthScreen: React.FC = () => {
     setSubmitting(true);
     try {
       await loginWithGoogle();
-    } catch {
-      // Handled by context toast
+    } catch (err) {
+      setLocalError(translateFirebaseError(err));
     } finally {
       setSubmitting(false);
     }
@@ -357,7 +306,7 @@ export const AuthScreen: React.FC = () => {
                     : mode === 'login'
                     ? 'تسجيل الدخول بالبريد'
                     : mode === 'register'
-                    ? 'إنشاء الحساب وإرسال التفعيل'
+                    ? 'إنشاء حساب جديد'
                     : 'إرسال رابط استعادة كلمة المرور'}
                 </span>
                 <ArrowLeft className="w-4 h-4" />

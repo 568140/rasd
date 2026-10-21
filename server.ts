@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type, Modality } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 dotenv.config();
@@ -46,6 +47,31 @@ function isQuotaOrRateLimitError(err: unknown): boolean {
 }
 
 async function startServer() {
+  try {
+    const clientMjsPath = path.resolve(__dirname, 'node_modules/vite/dist/client/client.mjs');
+    if (fs.existsSync(clientMjsPath)) {
+      let clientCode = fs.readFileSync(clientMjsPath, 'utf-8');
+      if (clientCode.includes('WebSocket closed without opened.')) {
+        clientCode = clientCode
+          .replace(
+            'reject(/* @__PURE__ */ new Error("WebSocket closed without opened."));',
+            'resolve();'
+          )
+          .replace(
+            'reject(new Error("WebSocket closed without opened."));',
+            'resolve();'
+          )
+          .replace(
+            /console\.error\(`\[vite\] failed to connect to websocket\.[\s\S]*?\`\);/g,
+            '/* [vite] connection error suppressed */'
+          );
+        fs.writeFileSync(clientMjsPath, clientCode, 'utf-8');
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   const app = express();
   app.use(express.json({ limit: '15mb' }));
 

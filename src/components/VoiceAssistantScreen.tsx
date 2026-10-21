@@ -190,6 +190,7 @@ export const VoiceAssistantScreen: React.FC = () => {
   const restartTimeoutRef = useRef<number | null>(null);
   const consecutiveErrorCountRef = useRef<number>(0);
   const autoExecutedPlanKeyRef = useRef<string | null>(null);
+  const accumulatedBaseTranscriptRef = useRef<string>('');
 
   useEffect(() => {
     continuousModeRef.current = continuousMode;
@@ -298,6 +299,7 @@ export const VoiceAssistantScreen: React.FC = () => {
     if (listeningState === 'listening' || listeningState === 'starting') {
       stopSpeechListening(false);
     }
+    accumulatedBaseTranscriptRef.current = '';
     setTranscriptInput('');
     setCommittedTextState('');
     committedTranscriptRef.current = '';
@@ -327,11 +329,13 @@ export const VoiceAssistantScreen: React.FC = () => {
       return;
     }
 
+    const currentBase = accumulatedBaseTranscriptRef.current.trim();
     const displayTranscript =
-      previousDraftForMerge && transcriptInput && !transcriptInput.includes(targetText)
-        ? sanitizeSpokenRepetitions(`${transcriptInput} ، ${targetText}`)
+      currentBase && targetText && !currentBase.includes(targetText)
+        ? sanitizeSpokenRepetitions(`${currentBase} ، ${targetText}`)
         : targetText;
 
+    accumulatedBaseTranscriptRef.current = displayTranscript;
     setTranscriptInput(displayTranscript);
     setCommittedTextState(displayTranscript);
     committedTranscriptRef.current = displayTranscript;
@@ -350,7 +354,7 @@ export const VoiceAssistantScreen: React.FC = () => {
       autoExecutedPlanKeyRef.current = null;
     }
 
-    // Immediate deterministic parse + hybrid server Gemini AI enrichment
+    // Immediate deterministic parse + hybrid server Gemini AI enrichment on full accumulated text
     const immediateExtracted = parseArabicVoiceCommandDeterministic(displayTranscript);
     if (!previousDraftForMerge) {
       setExtractedState(immediateExtracted);
@@ -359,7 +363,7 @@ export const VoiceAssistantScreen: React.FC = () => {
     setIsAnalyzing(true);
     try {
       const hybridResult = await analyzeVoiceTranscriptHybrid(
-        targetText,
+        displayTranscript,
         workspaceSnapshot,
         previousDraftForMerge || null
       );
@@ -384,7 +388,17 @@ export const VoiceAssistantScreen: React.FC = () => {
       restartTimeoutRef.current = null;
     }
     setListeningState('stopping');
+
+    // Flush any live interim speech into committed chunks so last word is never lost
+    const livePiece = interimSpeech ? sanitizeSpokenRepetitions(interimSpeech.trim()) : '';
+    if (livePiece) {
+      const prev = committedChunksRef.current;
+      if (!prev.includes(livePiece)) {
+        committedChunksRef.current.push(livePiece);
+      }
+    }
     setInterimSpeech('');
+
     if (recognitionRef.current) {
       try {
         recognitionRef.current.onend = null;
@@ -398,11 +412,19 @@ export const VoiceAssistantScreen: React.FC = () => {
     isRecognitionRunningRef.current = false;
     setListeningState('idle');
 
-    const finalSpoken = sanitizeSpokenRepetitions(latestFullTranscriptRef.current.trim());
+    const turnSpoken = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
+    const base = accumulatedBaseTranscriptRef.current.trim();
+    const finalSpoken = sanitizeSpokenRepetitions(
+      base && turnSpoken && !base.includes(turnSpoken)
+        ? `${base} ، ${turnSpoken}`
+        : turnSpoken || base || latestFullTranscriptRef.current.trim()
+    );
+
     if (triggerAnalysis && finalSpoken) {
+      accumulatedBaseTranscriptRef.current = finalSpoken;
       void handleAnalyzeCommand(
         finalSpoken,
-        currentPlan && currentPlan.missingFields.length > 0 ? extractedState : null
+        !executionReport ? extractedState : null
       );
     }
   };
@@ -447,11 +469,10 @@ export const VoiceAssistantScreen: React.FC = () => {
       if (!isAutoRestart) {
         manualStopRef.current = false;
         consecutiveErrorCountRef.current = 0;
-        // If we already finished a previous command, start fresh unless answering a follow-up question
-        const isAnsweringFollowUp = Boolean(
-          currentPlan && currentPlan.missingFields.length > 0 && !executionReport
-        );
-        if (executionReport || (!isAnsweringFollowUp && extractedState)) {
+
+        if (executionReport) {
+          // A previous command was already executed, start completely fresh
+          accumulatedBaseTranscriptRef.current = '';
           setTranscriptInput('');
           setCommittedTextState('');
           committedTranscriptRef.current = '';
@@ -460,9 +481,11 @@ export const VoiceAssistantScreen: React.FC = () => {
           setExtractedState(null);
           setExecutionReport(null);
           setExecutionError(null);
-        } else if (!isAnsweringFollowUp) {
+        } else {
+          // Continuing multi-turn command: keep previous draft and transcript base intact
+          accumulatedBaseTranscriptRef.current = transcriptInput.trim();
           committedChunksRef.current = [];
-          setCommittedTextState('');
+          setCommittedTextState(transcriptInput.trim());
         }
         setListeningState('starting');
       }
@@ -513,15 +536,22 @@ export const VoiceAssistantScreen: React.FC = () => {
         liveInterim = sanitizeSpokenRepetitions(liveInterim);
         setInterimSpeech(liveInterim);
 
-        // 3. Update unified live display without duplicating words or phrases
-        const committedClean = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
-        setCommittedTextState(committedClean);
-        committedTranscriptRef.current = committedClean;
+        // 3. Update unified live display with base transcript + current turn without duplicating words
+        const turnCommitted = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
+        const turnLive = sanitizeSpokenRepetitions(
+          [turnCommitted, liveInterim].filter(Boolean).join(' ')
+        );
+        const base = accumulatedBaseTranscriptRef.current.trim();
 
         const combinedLive = sanitizeSpokenRepetitions(
-          [committedClean, liveInterim].filter(Boolean).join(' ')
+          base && turnLive
+            ? `${base} ، ${turnLive}`
+            : turnLive || base
         );
+
         latestFullTranscriptRef.current = combinedLive;
+        setCommittedTextState(combinedLive);
+        committedTranscriptRef.current = combinedLive;
         setTranscriptInput(combinedLive);
       };
 
@@ -571,11 +601,18 @@ export const VoiceAssistantScreen: React.FC = () => {
 
         setListeningState('idle');
         setInterimSpeech('');
-        const finalSpoken = sanitizeSpokenRepetitions(latestFullTranscriptRef.current.trim());
+        const turnSpoken = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
+        const base = accumulatedBaseTranscriptRef.current.trim();
+        const finalSpoken = sanitizeSpokenRepetitions(
+          base && turnSpoken && !base.includes(turnSpoken)
+            ? `${base} ، ${turnSpoken}`
+            : turnSpoken || base || latestFullTranscriptRef.current.trim()
+        );
         if (finalSpoken) {
+          accumulatedBaseTranscriptRef.current = finalSpoken;
           void handleAnalyzeCommand(
             finalSpoken,
-            currentPlan && currentPlan.missingFields.length > 0 ? extractedState : null
+            !executionReport ? extractedState : null
           );
         }
       };
