@@ -117,6 +117,12 @@ export function translateFirebaseError(error: unknown): string {
   if (raw.includes('auth/network-request-failed')) {
     return 'تعذر الاتصال بالشبكة. يرجى التحقق من اتصالك بالإنترنت.';
   }
+  if (raw.includes('auth/unauthorized-domain')) {
+    return 'هذا النطاق (رابط Vercel) غير مصرح به في Firebase. يرجى إضافة رابط موقعك إلى النطاقات المصرح بها (Authorized Domains) في لوحة تحكم Firebase Console.';
+  }
+  if (raw.includes('auth/popup-blocked')) {
+    return 'قام المتصفح بحظر النافذة المنبثقة لتسجيل الدخول. يرجى السماح بالنوافذ المنبثقة (Popups) وإعادة المحاولة.';
+  }
   if (raw.includes('Missing or insufficient permissions') || raw.includes('PERMISSION_DENIED')) {
     if (auth.currentUser && !auth.currentUser.emailVerified) {
       return 'يرجى تأكيد بريدك الإلكتروني أولًا لتتمكن من قراءة أو حفظ البيانات.';
