@@ -1,0 +1,708 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives & Identity Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'ahah26h@gmail.com'
+      );
+    }
+
+    function isValidMemberUids(arr) {
+      return arr is list &&
+        arr.size() >= 1 &&
+        arr.size() <= 10 &&
+        arr[0] is string &&
+        arr[0].size() >= 1 &&
+        arr[0].size() <= 128;
+    }
+
+    // Master Gate: Workspace Membership & Ownership Verification
+    function isWorkspaceMember(wsId) {
+      return isValidId(wsId) &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/workspaces/$(wsId)).data.memberUids;
+    }
+
+    function isWorkspaceOwner(wsId) {
+      return isValidId(wsId) &&
+        exists(/databases/$(database)/documents/workspaces/$(wsId)) &&
+        get(/databases/$(database)/documents/workspaces/$(wsId)).data.ownerId == request.auth.uid;
+    }
+
+    // 3. Entity Validation Blueprints (Anti-Update-Gap)
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == request.auth.uid &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.jobTitle is string && data.jobTitle.size() <= 100 &&
+        isValidId(data.activeWorkspaceId) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspace(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'ownerName', 'defaultCurrency', 'taxRatePercent', 'regionName', 'inviteCode', 'memberUids', 'memberCount', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['name', 'ownerId', 'ownerName', 'defaultCurrency', 'taxRatePercent', 'regionName', 'inviteCode', 'memberUids', 'memberCount', 'createdAt', 'updatedAt']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        isValidId(data.ownerId) &&
+        data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 120 &&
+        data.defaultCurrency is string && data.defaultCurrency.size() >= 3 && data.defaultCurrency.size() <= 10 &&
+        data.defaultCurrency in ['SAR', 'AED', 'EGP', 'JOD', 'IQD', 'KWD', 'OMR', 'QAR', 'BHD', 'USD'] &&
+        data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100 &&
+        data.regionName is string && data.regionName.size() <= 120 &&
+        isValidId(data.inviteCode) && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 64 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        data.memberCount is number && data.memberCount >= 1 && data.memberCount <= 10 &&
+        data.memberCount == data.memberUids.size() &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceMember(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'userId', 'displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'userId', 'displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.userId) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.role is string && data.role.size() <= 30 && data.role in ['owner', 'field_assistant', 'finance_assistant', 'viewer'] &&
+        data.status is string && data.status.size() <= 20 && data.status in ['active', 'invited', 'suspended'] &&
+        data.canApproveFinancials is bool &&
+        data.canDeleteRecords is bool &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTaxpayer(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'fullName', 'internalCode', 'nationalOrCommercialId', 'phone', 'email', 'address', 'region', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'fullName', 'internalCode', 'nationalOrCommercialId', 'phone', 'email', 'address', 'region', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 150 &&
+        data.internalCode is string && data.internalCode.size() >= 1 && data.internalCode.size() <= 64 &&
+        data.nationalOrCommercialId is string && data.nationalOrCommercialId.size() <= 64 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.address is string && data.address.size() <= 300 &&
+        data.region is string && data.region.size() <= 120 &&
+        data.status is string && data.status.size() <= 30 && data.status in ['active', 'under_review', 'archived'] &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidProperty(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'taxpayerId', 'taxpayerName', 'title', 'code', 'propertyType', 'status', 'region', 'address', 'latitude', 'longitude', 'hasCoordinates', 'unitsCount', 'areaSqm', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'taxpayerId', 'taxpayerName', 'title', 'code', 'propertyType', 'status', 'region', 'address', 'latitude', 'longitude', 'hasCoordinates', 'unitsCount', 'areaSqm', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.taxpayerId) &&
+        data.taxpayerName is string && data.taxpayerName.size() >= 1 && data.taxpayerName.size() <= 150 &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 150 &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 64 &&
+        data.propertyType is string && data.propertyType.size() <= 30 && data.propertyType in ['residential', 'commercial', 'industrial', 'agricultural', 'mixed'] &&
+        data.status is string && data.status.size() <= 30 && data.status in ['active', 'under_inspection', 'disputed', 'exempt', 'archived'] &&
+        data.region is string && data.region.size() >= 1 && data.region.size() <= 120 &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 300 &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.hasCoordinates is bool &&
+        data.unitsCount is number && data.unitsCount >= 0 && data.unitsCount <= 10000 &&
+        data.areaSqm is number && data.areaSqm >= 0 && data.areaSqm <= 10000000 &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPropertyUnit(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'unitNumber', 'unitType', 'floor', 'areaSqm', 'occupancyStatus', 'tenantName', 'annualRentEstimate', 'notes', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'unitNumber', 'unitType', 'floor', 'areaSqm', 'occupancyStatus', 'tenantName', 'annualRentEstimate', 'notes', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.propertyId) &&
+        data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
+        isValidId(data.taxpayerId) &&
+        data.unitNumber is string && data.unitNumber.size() >= 1 && data.unitNumber.size() <= 50 &&
+        data.unitType is string && data.unitType.size() <= 30 && data.unitType in ['apartment', 'shop', 'office', 'warehouse', 'other'] &&
+        data.floor is string && data.floor.size() <= 40 &&
+        data.areaSqm is number && data.areaSqm >= 0 && data.areaSqm <= 1000000 &&
+        data.occupancyStatus is string && data.occupancyStatus.size() <= 30 && data.occupancyStatus in ['occupied', 'vacant', 'under_maintenance'] &&
+        data.tenantName is string && data.tenantName.size() <= 150 &&
+        data.annualRentEstimate is number && data.annualRentEstimate >= 0 &&
+        data.notes is string && data.notes.size() <= 500 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFieldVisit(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'visitDate', 'visitTime', 'purpose', 'status', 'latitude', 'longitude', 'hasCoordinates', 'photoSummary', 'notes', 'memberUids', 'officerId', 'officerName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'visitDate', 'visitTime', 'purpose', 'status', 'latitude', 'longitude', 'hasCoordinates', 'photoSummary', 'notes', 'memberUids', 'officerId', 'officerName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.propertyId) &&
+        data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
+        isValidId(data.taxpayerId) &&
+        data.taxpayerName is string && data.taxpayerName.size() >= 1 && data.taxpayerName.size() <= 150 &&
+        data.visitDate is string && data.visitDate.size() >= 8 && data.visitDate.size() <= 40 &&
+        data.visitTime is string && data.visitTime.size() >= 3 && data.visitTime.size() <= 20 &&
+        data.purpose is string && data.purpose.size() <= 40 && data.purpose in ['initial_survey', 'periodic_inspection', 'valuation_verify', 'collection_followup', 'dispute_check'] &&
+        data.status is string && data.status.size() <= 40 && data.status in ['completed', 'requires_followup', 'occupant_absent', 'access_denied'] &&
+        data.latitude is number && data.latitude >= -90 && data.latitude <= 90 &&
+        data.longitude is number && data.longitude >= -180 && data.longitude <= 180 &&
+        data.hasCoordinates is bool &&
+        data.photoSummary is string && data.photoSummary.size() <= 500 &&
+        data.notes is string && data.notes.size() <= 1500 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.officerId) &&
+        data.officerName is string && data.officerName.size() >= 1 && data.officerName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'title', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'scheduledDate', 'scheduledTime', 'locationText', 'status', 'postponeCount', 'lastPostponeReason', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'title', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'scheduledDate', 'scheduledTime', 'locationText', 'status', 'postponeCount', 'lastPostponeReason', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 150 &&
+        isValidId(data.propertyId) &&
+        data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
+        isValidId(data.taxpayerId) &&
+        data.taxpayerName is string && data.taxpayerName.size() >= 1 && data.taxpayerName.size() <= 150 &&
+        data.scheduledDate is string && data.scheduledDate.size() >= 8 && data.scheduledDate.size() <= 40 &&
+        data.scheduledTime is string && data.scheduledTime.size() >= 3 && data.scheduledTime.size() <= 20 &&
+        data.locationText is string && data.locationText.size() <= 250 &&
+        data.status is string && data.status.size() <= 30 && data.status in ['upcoming', 'postponed', 'completed', 'cancelled'] &&
+        data.postponeCount is number && data.postponeCount >= 0 && data.postponeCount <= 100 &&
+        data.lastPostponeReason is string && data.lastPostponeReason.size() <= 500 &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAppointmentPostponement(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'appointmentId', 'previousDate', 'previousTime', 'newDate', 'newTime', 'reason', 'memberUids', 'createdBy', 'createdByName', 'createdAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'appointmentId', 'previousDate', 'previousTime', 'newDate', 'newTime', 'reason', 'memberUids', 'createdBy', 'createdByName', 'createdAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.appointmentId) &&
+        data.previousDate is string && data.previousDate.size() >= 8 && data.previousDate.size() <= 40 &&
+        data.previousTime is string && data.previousTime.size() >= 3 && data.previousTime.size() <= 20 &&
+        data.newDate is string && data.newDate.size() >= 8 && data.newDate.size() <= 40 &&
+        data.newTime is string && data.newTime.size() >= 3 && data.newTime.size() <= 20 &&
+        data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 500 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidFinancialAssessment(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'amount', 'currency', 'periodLabel', 'assessmentDate', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'amount', 'currency', 'periodLabel', 'assessmentDate', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.propertyId) &&
+        data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
+        isValidId(data.taxpayerId) &&
+        data.taxpayerName is string && data.taxpayerName.size() >= 1 && data.taxpayerName.size() <= 150 &&
+        data.amount is number && data.amount >= 0 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 10 &&
+        data.periodLabel is string && data.periodLabel.size() >= 2 && data.periodLabel.size() <= 80 &&
+        data.assessmentDate is string && data.assessmentDate.size() >= 8 && data.assessmentDate.size() <= 40 &&
+        data.status is string && data.status.size() <= 30 && data.status in ['draft', 'approved', 'cancelled'] &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFinancialTransaction(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'assessmentId', 'transactionType', 'amount', 'currency', 'transactionDate', 'referenceNumber', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'propertyId', 'propertyTitle', 'taxpayerId', 'taxpayerName', 'assessmentId', 'transactionType', 'amount', 'currency', 'transactionDate', 'referenceNumber', 'status', 'notes', 'memberUids', 'createdBy', 'createdByName', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        isValidId(data.propertyId) &&
+        data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
+        isValidId(data.taxpayerId) &&
+        data.taxpayerName is string && data.taxpayerName.size() >= 1 && data.taxpayerName.size() <= 150 &&
+        isValidId(data.assessmentId) &&
+        data.transactionType is string && data.transactionType.size() <= 30 && data.transactionType in ['payment', 'fee', 'adjustment', 'reversal'] &&
+        data.amount is number && data.amount >= 0 &&
+        data.currency is string && data.currency.size() >= 3 && data.currency.size() <= 10 &&
+        data.transactionDate is string && data.transactionDate.size() >= 8 && data.transactionDate.size() <= 40 &&
+        data.referenceNumber is string && data.referenceNumber.size() >= 1 && data.referenceNumber.size() <= 80 &&
+        data.status is string && data.status.size() <= 30 && data.status in ['pending', 'approved', 'reversed'] &&
+        data.notes is string && data.notes.size() <= 1000 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNotificationItem(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'title', 'message', 'category', 'isRead', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'title', 'message', 'category', 'isRead', 'memberUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 500 &&
+        data.category is string && data.category.size() <= 30 && data.category in ['appointment', 'visit', 'finance', 'team', 'system'] &&
+        data.isRead is bool &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        isValidId(data.createdBy) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['workspaceId', 'ownerId', 'actionType', 'entityType', 'entityId', 'summary', 'actorId', 'actorName', 'memberUids', 'createdAt']) &&
+        data.keys().hasOnly(['workspaceId', 'ownerId', 'actionType', 'entityType', 'entityId', 'summary', 'actorId', 'actorName', 'memberUids', 'createdAt']) &&
+        isValidId(data.workspaceId) &&
+        isValidId(data.ownerId) &&
+        data.actionType is string && data.actionType.size() <= 30 && data.actionType in ['create', 'update', 'delete', 'approve', 'reverse', 'postpone', 'team_change', 'voice_command'] &&
+        data.entityType is string && data.entityType.size() <= 30 && data.entityType in ['taxpayer', 'property', 'unit', 'visit', 'appointment', 'assessment', 'transaction', 'member', 'workspace'] &&
+        isValidId(data.entityId) &&
+        data.summary is string && data.summary.size() >= 2 && data.summary.size() <= 500 &&
+        isValidId(data.actorId) &&
+        data.actorId == request.auth.uid &&
+        data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+        isValidMemberUids(data.memberUids) &&
+        data.ownerId in data.memberUids &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Collection Match Blocks
+
+    // Collection 1: /users/{userId} (PII strictly isolated to owner or admin)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isSignedIn() && (existing().uid == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        userId == request.auth.uid &&
+        isValidUser(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUser(incoming()) && (
+          isAdmin() || (
+            request.auth.uid == userId &&
+            incoming().uid == existing().uid &&
+            (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
+    // Collection 2: /workspaces/{workspaceId}
+    match /workspaces/{workspaceId} {
+      allow get: if isSignedIn() && isValidId(workspaceId) && (
+        workspaceId == 'ws_' + request.auth.uid ||
+        (resource != null && (request.auth.uid in existing().memberUids || existing().ownerId == request.auth.uid)) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || existing().ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        request.auth.uid in incoming().memberUids &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(workspaceId) &&
+        isValidWorkspace(incoming()) && (
+          isAdmin() || (
+            existing().ownerId == request.auth.uid &&
+            incoming().ownerId == existing().ownerId &&
+            (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
+            incoming().updatedAt == request.time &&
+            request.auth.uid in incoming().memberUids &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'ownerName', 'defaultCurrency', 'taxRatePercent', 'regionName', 'inviteCode', 'memberUids', 'memberCount', 'createdAt', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin();
+    }
+
+    // Collection 3: /workspace_members/{memberId}
+    match /workspace_members/{memberId} {
+      allow get: if isSignedIn() && isValidId(memberId) && (
+        memberId == 'ws_' + request.auth.uid + '_' + request.auth.uid ||
+        (resource != null && (request.auth.uid in existing().memberUids || existing().userId == request.auth.uid)) ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || existing().userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(memberId) &&
+        isValidWorkspaceMember(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          (incoming().ownerId == request.auth.uid && incoming().userId == request.auth.uid && incoming().role == 'owner' && request.auth.uid in incoming().memberUids) ||
+          isWorkspaceOwner(incoming().workspaceId)
+        );
+      allow update: if isVerifiedUser() &&
+        isValidId(memberId) &&
+        isValidWorkspaceMember(incoming()) && (
+          isAdmin() || (
+            // Action 1: Owner updates member role, permissions, status, or memberUids
+            existing().ownerId == request.auth.uid &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdAt', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(memberId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 4: /taxpayers/{taxpayerId}
+    match /taxpayers/{taxpayerId} {
+      allow get: if isSignedIn() && isValidId(taxpayerId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(taxpayerId) &&
+        isValidTaxpayer(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId);
+      allow update: if isVerifiedUser() &&
+        isValidId(taxpayerId) &&
+        isValidTaxpayer(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'internalCode', 'nationalOrCommercialId', 'phone', 'email', 'address', 'region', 'status', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(taxpayerId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 5: /properties/{propertyId}
+    match /properties/{propertyId} {
+      allow get: if isSignedIn() && isValidId(propertyId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(propertyId) &&
+        isValidProperty(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/taxpayers/$(incoming().taxpayerId)) &&
+        get(/databases/$(database)/documents/taxpayers/$(incoming().taxpayerId)).data.workspaceId == incoming().workspaceId;
+      allow update: if isVerifiedUser() &&
+        isValidId(propertyId) &&
+        isValidProperty(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['taxpayerId', 'taxpayerName', 'title', 'code', 'propertyType', 'status', 'region', 'address', 'latitude', 'longitude', 'hasCoordinates', 'unitsCount', 'areaSqm', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(propertyId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 6: /property_units/{unitId}
+    match /property_units/{unitId} {
+      allow get: if isSignedIn() && isValidId(unitId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(unitId) &&
+        isValidPropertyUnit(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+        get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.workspaceId == incoming().workspaceId;
+      allow update: if isVerifiedUser() &&
+        isValidId(unitId) &&
+        isValidPropertyUnit(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().propertyId == existing().propertyId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['propertyTitle', 'unitNumber', 'unitType', 'floor', 'areaSqm', 'occupancyStatus', 'tenantName', 'annualRentEstimate', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(unitId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 7: /field_visits/{visitId}
+    match /field_visits/{visitId} {
+      allow get: if isSignedIn() && isValidId(visitId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(visitId) &&
+        isValidFieldVisit(incoming()) &&
+        incoming().officerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+        get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.workspaceId == incoming().workspaceId;
+      allow update: if isVerifiedUser() &&
+        isValidId(visitId) &&
+        isValidFieldVisit(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().propertyId == existing().propertyId &&
+            incoming().officerId == existing().officerId &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['visitDate', 'visitTime', 'purpose', 'status', 'latitude', 'longitude', 'hasCoordinates', 'photoSummary', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(visitId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 8: /appointments/{appointmentId}
+    match /appointments/{appointmentId} {
+      allow get: if isSignedIn() && isValidId(appointmentId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(appointmentId) &&
+        isValidAppointment(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId);
+      allow update: if isVerifiedUser() &&
+        isValidId(appointmentId) &&
+        isValidAppointment(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'scheduledDate', 'scheduledTime', 'locationText', 'status', 'postponeCount', 'lastPostponeReason', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(appointmentId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 9: /appointment_postponements/{postponementId} (Append-Only History)
+    match /appointment_postponements/{postponementId} {
+      allow get: if isSignedIn() && isValidId(postponementId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(postponementId) &&
+        isValidAppointmentPostponement(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/appointments/$(incoming().appointmentId)) &&
+        get(/databases/$(database)/documents/appointments/$(incoming().appointmentId)).data.workspaceId == incoming().workspaceId;
+      allow update, delete: if false;
+    }
+
+    // Collection 10: /financial_assessments/{assessmentId} (Terminal State Locking on Approved/Cancelled)
+    match /financial_assessments/{assessmentId} {
+      allow get: if isSignedIn() && isValidId(assessmentId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(assessmentId) &&
+        isValidFinancialAssessment(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+        get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.workspaceId == incoming().workspaceId;
+      allow update: if isVerifiedUser() &&
+        isValidId(assessmentId) &&
+        isValidFinancialAssessment(incoming()) && (
+          isAdmin() || (
+            // Action 1: Update draft assessment (only while in 'draft' state)
+            existing().status == 'draft' &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().propertyId == existing().propertyId &&
+            incoming().taxpayerId == existing().taxpayerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['amount', 'currency', 'periodLabel', 'assessmentDate', 'status', 'notes', 'memberUids', 'updatedAt'])
+          ) || (
+            // Action 2: Owner can cancel an approved assessment or sync memberUids
+            isWorkspaceOwner(existing().workspaceId) &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(assessmentId) && existing().status == 'draft' && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 11: /financial_transactions/{transactionId} (Terminal State Locking on Reversed/Approved)
+    match /financial_transactions/{transactionId} {
+      allow get: if isSignedIn() && isValidId(transactionId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(transactionId) &&
+        isValidFinancialTransaction(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId) &&
+        exists(/databases/$(database)/documents/properties/$(incoming().propertyId)) &&
+        get(/databases/$(database)/documents/properties/$(incoming().propertyId)).data.workspaceId == incoming().workspaceId;
+      allow update: if isVerifiedUser() &&
+        isValidId(transactionId) &&
+        isValidFinancialTransaction(incoming()) && (
+          isAdmin() || (
+            // Action 1: Owner approves or reverses a transaction (never modifies amount directly)
+            existing().status != 'reversed' &&
+            isWorkspaceOwner(existing().workspaceId) &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().amount == existing().amount &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if false;
+    }
+
+    // Collection 12: /notifications/{notificationId}
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotificationItem(incoming()) &&
+        incoming().createdBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId);
+      allow update: if isVerifiedUser() &&
+        isValidId(notificationId) &&
+        isValidNotificationItem(incoming()) && (
+          isAdmin() || (
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().createdBy == existing().createdBy &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            isWorkspaceMember(existing().workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'memberUids', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(notificationId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+    }
+
+    // Collection 13: /audit_logs/{logId} (Strictly Immutable Append-Only Audit Trail)
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidAuditLog(incoming()) &&
+        incoming().actorId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        request.auth.uid in incoming().memberUids &&
+        isWorkspaceMember(incoming().workspaceId);
+      allow update, delete: if false;
+    }
+  }
+}

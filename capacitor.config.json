@@ -1,0 +1,16 @@
+{
+  "appId": "com.rasd.fieldassistant",
+  "appName": "رَصْد",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 1500,
+      "backgroundColor": "#0f766e",
+      "showSpinner": false
+    }
+  }
+}

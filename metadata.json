@@ -1,0 +1,6 @@
+{
+  "name": "رَصْد — المساعد الميداني الذكي",
+  "description": "تطبيق ميداني احترافي لإدارة المكلفين والعقارات والوحدات العقارية والزيارات والمواعيد والتقييمات والمعاملات المالية والتقارير مع دعم العمل الصوتي ودون اتصال.",
+  "requestFramePermissions": ["microphone", "geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

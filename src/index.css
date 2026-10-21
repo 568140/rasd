@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
+    direction: rtl;
+    --rasd-navy: #0b192c;
+    --rasd-navy-light: #132a46;
+    --rasd-blue: #0284c7;
+    --rasd-turquoise: #0d9488;
+    --rasd-surface: #f4f7fa;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Readex Pro', 'IBM Plex Sans Arabic', sans-serif;
+    letter-spacing: -0.01em;
+  }
+
+  .font-mono, .tabular-nums {
+    font-family: 'IBM Plex Mono', 'IBM Plex Sans Arabic', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Android Material 3 mobile ergonomics & safe areas */
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+html, body {
+  overscroll-behavior-y: none;
+  background-color: #f4f7fa;
+  color: #0b192c;
+  -webkit-font-smoothing: antialiased;
+}
+
+html.dark, html.dark body {
+  background-color: #060d18;
+  color: #f1f5f9;
+}
+
+/* Safe area utilities for mobile devices & Capacitor Android wrapper */
+.pb-safe-nav {
+  padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+.bottom-nav-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Subtle custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+@keyframes voiceWavePulse {
+  0%, 100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-voice-bar {
+  animation: voiceWavePulse 0.85s ease-in-out infinite;
+}

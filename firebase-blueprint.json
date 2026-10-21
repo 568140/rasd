@@ -1,0 +1,1094 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Private user account profile and active workspace binding",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Full Arabic or English display name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "phone": {
+          "type": "string",
+          "description": "Optional phone number",
+          "maxLength": 40
+        },
+        "jobTitle": {
+          "type": "string",
+          "description": "Field officer title or role label",
+          "maxLength": 100
+        },
+        "activeWorkspaceId": {
+          "type": "string",
+          "description": "Currently active workspace ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["uid", "displayName", "email", "activeWorkspaceId", "createdAt", "updatedAt"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Independent field workspace owned by a single owner with up to 9 assistants (max 10 members total)",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Workspace name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the workspace owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "description": "Display name of workspace owner",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "defaultCurrency": {
+          "type": "string",
+          "description": "Default currency code for financial records",
+          "enum": ["SAR", "AED", "EGP", "JOD", "IQD", "KWD", "OMR", "QAR", "BHD", "USD"],
+          "minLength": 3,
+          "maxLength": 10
+        },
+        "taxRatePercent": {
+          "type": "number",
+          "description": "Configurable assessment rate percentage (0 if not used)"
+        },
+        "regionName": {
+          "type": "string",
+          "description": "Default operating geographic region",
+          "maxLength": 120
+        },
+        "inviteCode": {
+          "type": "string",
+          "description": "Workspace invitation token managed by owner",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of up to 10 member UIDs including owner"
+        },
+        "memberCount": {
+          "type": "number",
+          "description": "Total active members count (1 to 10)"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["name", "ownerId", "ownerName", "defaultCurrency", "taxRatePercent", "regionName", "inviteCode", "memberUids", "memberCount", "createdAt", "updatedAt"]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Membership record linking a user or invited assistant to a workspace with explicit role and granular permissions",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Target workspace ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the workspace owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Member UID or invited placeholder ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Member full name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "description": "Member email address",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "description": "Member role in the workspace",
+          "enum": ["owner", "field_assistant", "finance_assistant", "viewer"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Membership status",
+          "enum": ["active", "invited", "suspended"]
+        },
+        "canApproveFinancials": {
+          "type": "boolean",
+          "description": "Whether member can approve financial assessments or transactions"
+        },
+        "canDeleteRecords": {
+          "type": "boolean",
+          "description": "Whether member can delete records"
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of workspace member UIDs for secure list query enforcement"
+        },
+        "createdBy": {
+          "type": "string",
+          "description": "UID of creator",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "userId", "displayName", "email", "role", "status", "canApproveFinancials", "canDeleteRecords", "memberUids", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Taxpayer": {
+      "title": "Taxpayer",
+      "description": "Taxpayer or property stakeholder record",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150
+        },
+        "internalCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "nationalOrCommercialId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "address": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "region": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "under_review", "archived"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "memberUids": {
+          "type": "array",
+          "description": "Bounded list of workspace member UIDs"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "fullName", "internalCode", "nationalOrCommercialId", "phone", "email", "address", "region", "status", "notes", "memberUids", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "Property": {
+      "title": "Property",
+      "description": "Real estate property linked to a taxpayer and workspace",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "propertyType": {
+          "type": "string",
+          "enum": ["residential", "commercial", "industrial", "agricultural", "mixed"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "under_inspection", "disputed", "exempt", "archived"]
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "address": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "hasCoordinates": {
+          "type": "boolean"
+        },
+        "unitsCount": {
+          "type": "number"
+        },
+        "areaSqm": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "taxpayerId", "taxpayerName", "title", "code", "propertyType", "status", "region", "address", "latitude", "longitude", "hasCoordinates", "unitsCount", "areaSqm", "notes", "memberUids", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "PropertyUnit": {
+      "title": "PropertyUnit",
+      "description": "Sub-unit belonging to a property (apartment, shop, office, floor)",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "unitNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "unitType": {
+          "type": "string",
+          "enum": ["apartment", "shop", "office", "warehouse", "other"]
+        },
+        "floor": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "areaSqm": {
+          "type": "number"
+        },
+        "occupancyStatus": {
+          "type": "string",
+          "enum": ["occupied", "vacant", "under_maintenance"]
+        },
+        "tenantName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "annualRentEstimate": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "propertyId", "propertyTitle", "taxpayerId", "unitNumber", "unitType", "floor", "areaSqm", "occupancyStatus", "tenantName", "annualRentEstimate", "notes", "memberUids", "createdBy", "createdAt", "updatedAt"]
+    },
+    "FieldVisit": {
+      "title": "FieldVisit",
+      "description": "Field inspection visit record linked to a property and taxpayer",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "visitDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "visitTime": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 20
+        },
+        "purpose": {
+          "type": "string",
+          "enum": ["initial_survey", "periodic_inspection", "valuation_verify", "collection_followup", "dispute_check"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "requires_followup", "occupant_absent", "access_denied"]
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "hasCoordinates": {
+          "type": "boolean"
+        },
+        "photoSummary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1500
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "officerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "officerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "propertyId", "propertyTitle", "taxpayerId", "taxpayerName", "visitDate", "visitTime", "purpose", "status", "latitude", "longitude", "hasCoordinates", "photoSummary", "notes", "memberUids", "officerId", "officerName", "createdAt", "updatedAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Scheduled field appointment or reminder linked to a property or taxpayer",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150
+        },
+        "propertyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "scheduledDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "scheduledTime": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 20
+        },
+        "locationText": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "status": {
+          "type": "string",
+          "enum": ["upcoming", "postponed", "completed", "cancelled"]
+        },
+        "postponeCount": {
+          "type": "number"
+        },
+        "lastPostponeReason": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "title", "propertyId", "propertyTitle", "taxpayerId", "taxpayerName", "scheduledDate", "scheduledTime", "locationText", "status", "postponeCount", "lastPostponeReason", "notes", "memberUids", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "AppointmentPostponement": {
+      "title": "AppointmentPostponement",
+      "description": "Immutable postponement history record for an appointment",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "appointmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "previousDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "previousTime": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 20
+        },
+        "newDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "newTime": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 20
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "appointmentId", "previousDate", "previousTime", "newDate", "newTime", "reason", "memberUids", "createdBy", "createdByName", "createdAt"]
+    },
+    "FinancialAssessment": {
+      "title": "FinancialAssessment",
+      "description": "Financial valuation or assessment linked to a property and taxpayer",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 10
+        },
+        "periodLabel": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "assessmentDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "approved", "cancelled"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "propertyId", "propertyTitle", "taxpayerId", "taxpayerName", "amount", "currency", "periodLabel", "assessmentDate", "status", "notes", "memberUids", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "FinancialTransaction": {
+      "title": "FinancialTransaction",
+      "description": "Financial payment, adjustment, or reversal linked to a property, taxpayer, and assessment",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "propertyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "taxpayerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "taxpayerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "assessmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "transactionType": {
+          "type": "string",
+          "enum": ["payment", "fee", "adjustment", "reversal"]
+        },
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 10
+        },
+        "transactionDate": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 40
+        },
+        "referenceNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "reversed"]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "propertyId", "propertyTitle", "taxpayerId", "taxpayerName", "assessmentId", "transactionType", "amount", "currency", "transactionDate", "referenceNumber", "status", "notes", "memberUids", "createdBy", "createdByName", "createdAt", "updatedAt"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "In-app notification and reminder record for a workspace",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "category": {
+          "type": "string",
+          "enum": ["appointment", "visit", "finance", "team", "system"]
+        },
+        "isRead": {
+          "type": "boolean"
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "title", "message", "category", "isRead", "memberUids", "createdBy", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable security and operational audit trail record",
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actionType": {
+          "type": "string",
+          "enum": ["create", "update", "delete", "approve", "reverse", "postpone", "team_change", "voice_command"]
+        },
+        "entityType": {
+          "type": "string",
+          "enum": ["taxpayer", "property", "unit", "visit", "appointment", "assessment", "transaction", "member", "workspace"]
+        },
+        "entityId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 500
+        },
+        "actorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "memberUids": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["workspaceId", "ownerId", "actionType", "entityType", "entityId", "summary", "actorId", "actorName", "memberUids", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Private user account profiles strictly isolated to the owner"
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Independent workspaces owned by a user with up to 10 total members"
+    },
+    "/workspace_members/{memberId}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Workspace membership and role assignment records"
+    },
+    "/taxpayers/{taxpayerId}": {
+      "schema": { "$ref": "#/entities/Taxpayer" },
+      "description": "Taxpayers and property stakeholders within a workspace"
+    },
+    "/properties/{propertyId}": {
+      "schema": { "$ref": "#/entities/Property" },
+      "description": "Real estate properties managed within a workspace"
+    },
+    "/property_units/{unitId}": {
+      "schema": { "$ref": "#/entities/PropertyUnit" },
+      "description": "Sub-units belonging to a property"
+    },
+    "/field_visits/{visitId}": {
+      "schema": { "$ref": "#/entities/FieldVisit" },
+      "description": "Field visits recorded by officers"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "#/entities/Appointment" },
+      "description": "Scheduled appointments and field reminders"
+    },
+    "/appointment_postponements/{postponementId}": {
+      "schema": { "$ref": "#/entities/AppointmentPostponement" },
+      "description": "Immutable history of appointment postponements"
+    },
+    "/financial_assessments/{assessmentId}": {
+      "schema": { "$ref": "#/entities/FinancialAssessment" },
+      "description": "Financial valuations and assessments"
+    },
+    "/financial_transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/FinancialTransaction" },
+      "description": "Financial transactions, payments, and reversals"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Workspace notifications and reminders"
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Immutable operational and security audit logs"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        if (typeof window === 'undefined' || !window.WebSocket) return;
+        const NativeWebSocket = window.WebSocket;
+        function ViteNoopWebSocket(url, protocols) {
+          const target = new EventTarget();
+          target.url = String(url || '');
+          target.protocol = Array.isArray(protocols) ? protocols[0] || '' : String(protocols || '');
+          target.readyState = 1;
+          target.bufferedAmount = 0;
+          target.extensions = '';
+          target.binaryType = 'blob';
+          target.send = function () {};
+          target.close = function () {
+            target.readyState = 3;
+          };
+          setTimeout(function () {
+            const evt = new Event('open');
+            if (typeof target.onopen === 'function') target.onopen(evt);
+            target.dispatchEvent(evt);
+          }, 0);
+          return target;
+        }
+        const PatchedWebSocket = function (url, protocols) {
+          const protoStr = Array.isArray(protocols) ? protocols.join(',') : String(protocols || '');
+          if (protoStr.includes('vite-hmr') || protoStr.includes('vite-ping')) {
+            return ViteNoopWebSocket(url, protocols);
+          }
+          return protocols !== undefined
+            ? new NativeWebSocket(url, protocols)
+            : new NativeWebSocket(url);
+        };
+        PatchedWebSocket.prototype = NativeWebSocket.prototype;
+        PatchedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+        PatchedWebSocket.OPEN = NativeWebSocket.OPEN;
+        PatchedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+        PatchedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+        window.WebSocket = PatchedWebSocket;
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+    <title>رَصْد — المساعد الميداني الذكي</title>
+    <meta name="description" content="تطبيق ميداني احترافي لإدارة المكلفين والعقارات والوحدات العقارية والزيارات والمواعيد والتقييمات والمعاملات المالية والتقارير مع دعم العمل الصوتي ودون اتصال." />
+    <meta property="og:title" content="رَصْد — المساعد الميداني الذكي" />
+    <meta property="og:description" content="تطبيق ميداني احترافي لإدارة المكلفين والعقارات والوحدات العقارية والزيارات والمواعيد والتقييمات والمعاملات المالية والتقارير مع دعم العمل الصوتي ودون اتصال." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="رَصْد" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Readex+Pro:wght@500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-teal-600 selection:text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

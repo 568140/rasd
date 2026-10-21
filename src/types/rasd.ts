@@ -1,0 +1,332 @@
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+export type ScreenId =
+  | 'home'
+  | 'properties'
+  | 'voice'
+  | 'appointments'
+  | 'more'
+  | 'taxpayers'
+  | 'visits'
+  | 'map'
+  | 'assessments'
+  | 'transactions'
+  | 'reports'
+  | 'team'
+  | 'audit'
+  | 'notifications'
+  | 'settings';
+
+export type WorkspaceRole = 'owner' | 'field_assistant' | 'finance_assistant' | 'viewer';
+export type MemberStatus = 'active' | 'invited' | 'suspended';
+
+export interface SyncMeta {
+  id: string;
+  isPendingSync?: boolean;
+  fromCache?: boolean;
+}
+
+export interface UserProfile extends SyncMeta {
+  uid: string;
+  displayName: string;
+  email: string;
+  phone: string;
+  jobTitle: string;
+  activeWorkspaceId: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type CurrencyCode = 'SAR' | 'AED' | 'EGP' | 'JOD' | 'IQD' | 'KWD' | 'OMR' | 'QAR' | 'BHD' | 'USD';
+
+export interface Workspace extends SyncMeta {
+  name: string;
+  ownerId: string;
+  ownerName: string;
+  defaultCurrency: CurrencyCode;
+  taxRatePercent: number;
+  regionName: string;
+  inviteCode: string;
+  memberUids: string[];
+  memberCount: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface WorkspaceMember extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: WorkspaceRole;
+  status: MemberStatus;
+  canApproveFinancials: boolean;
+  canDeleteRecords: boolean;
+  memberUids: string[];
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type TaxpayerStatus = 'active' | 'under_review' | 'archived';
+
+export interface Taxpayer extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  fullName: string;
+  internalCode: string;
+  nationalOrCommercialId: string;
+  phone: string;
+  email: string;
+  address: string;
+  region: string;
+  status: TaxpayerStatus;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type PropertyType = 'residential' | 'commercial' | 'industrial' | 'agricultural' | 'mixed';
+export type PropertyStatus = 'active' | 'under_inspection' | 'disputed' | 'exempt' | 'archived';
+
+export interface Property extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  taxpayerId: string;
+  taxpayerName: string;
+  title: string;
+  code: string;
+  propertyType: PropertyType;
+  status: PropertyStatus;
+  region: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  hasCoordinates: boolean;
+  unitsCount: number;
+  areaSqm: number;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type UnitType = 'apartment' | 'shop' | 'office' | 'warehouse' | 'other';
+export type OccupancyStatus = 'occupied' | 'vacant' | 'under_maintenance';
+
+export interface PropertyUnit extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  propertyId: string;
+  propertyTitle: string;
+  taxpayerId: string;
+  unitNumber: string;
+  unitType: UnitType;
+  floor: string;
+  areaSqm: number;
+  occupancyStatus: OccupancyStatus;
+  tenantName: string;
+  annualRentEstimate: number;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type VisitPurpose =
+  | 'initial_survey'
+  | 'periodic_inspection'
+  | 'valuation_verify'
+  | 'collection_followup'
+  | 'dispute_check';
+
+export type VisitStatus = 'completed' | 'requires_followup' | 'occupant_absent' | 'access_denied';
+
+export interface FieldVisit extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  propertyId: string;
+  propertyTitle: string;
+  taxpayerId: string;
+  taxpayerName: string;
+  visitDate: string;
+  visitTime: string;
+  purpose: VisitPurpose;
+  status: VisitStatus;
+  latitude: number;
+  longitude: number;
+  hasCoordinates: boolean;
+  photoSummary: string;
+  notes: string;
+  memberUids: string[];
+  officerId: string;
+  officerName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type AppointmentStatus = 'upcoming' | 'postponed' | 'completed' | 'cancelled';
+
+export interface Appointment extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  title: string;
+  propertyId: string;
+  propertyTitle: string;
+  taxpayerId: string;
+  taxpayerName: string;
+  scheduledDate: string;
+  scheduledTime: string;
+  locationText: string;
+  status: AppointmentStatus;
+  postponeCount: number;
+  lastPostponeReason: string;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export interface AppointmentPostponement extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  appointmentId: string;
+  previousDate: string;
+  previousTime: string;
+  newDate: string;
+  newTime: string;
+  reason: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+}
+
+export type AssessmentStatus = 'draft' | 'approved' | 'cancelled';
+
+export interface FinancialAssessment extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  propertyId: string;
+  propertyTitle: string;
+  taxpayerId: string;
+  taxpayerName: string;
+  amount: number;
+  currency: string;
+  periodLabel: string;
+  assessmentDate: string;
+  status: AssessmentStatus;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type TransactionType = 'payment' | 'fee' | 'adjustment' | 'reversal';
+export type TransactionStatus = 'pending' | 'approved' | 'reversed';
+
+export interface FinancialTransaction extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  propertyId: string;
+  propertyTitle: string;
+  taxpayerId: string;
+  taxpayerName: string;
+  assessmentId: string;
+  transactionType: TransactionType;
+  amount: number;
+  currency: string;
+  transactionDate: string;
+  referenceNumber: string;
+  status: TransactionStatus;
+  notes: string;
+  memberUids: string[];
+  createdBy: string;
+  createdByName: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type NotificationCategory = 'appointment' | 'visit' | 'finance' | 'team' | 'system';
+
+export interface NotificationItem extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  title: string;
+  message: string;
+  category: NotificationCategory;
+  isRead: boolean;
+  memberUids: string[];
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type AuditActionType =
+  | 'create'
+  | 'update'
+  | 'delete'
+  | 'approve'
+  | 'reverse'
+  | 'postpone'
+  | 'team_change'
+  | 'voice_command';
+
+export type AuditEntityType =
+  | 'taxpayer'
+  | 'property'
+  | 'unit'
+  | 'visit'
+  | 'appointment'
+  | 'assessment'
+  | 'transaction'
+  | 'member'
+  | 'workspace';
+
+export interface AuditLog extends SyncMeta {
+  workspaceId: string;
+  ownerId: string;
+  actionType: AuditActionType;
+  entityType: AuditEntityType;
+  entityId: string;
+  summary: string;
+  actorId: string;
+  actorName: string;
+  memberUids: string[];
+  createdAt?: unknown;
+}
