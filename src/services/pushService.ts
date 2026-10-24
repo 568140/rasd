@@ -1,6 +1,9 @@
 /**
  * Web Push & PWA Notification Client Service
+ * Supports full Web Push (VAPID via Vercel Serverless / Express) + 100% Offline Service Worker Fallback
  */
+
+import { alertSound } from './alertSound';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -19,6 +22,8 @@ export interface PushStatus {
   isSubscribed: boolean;
   registration: ServiceWorkerRegistration | null;
 }
+
+const LOCAL_NOTIF_FLAG_KEY = 'rasd_local_notif_enabled_v1';
 
 class PushService {
   private registration: ServiceWorkerRegistration | null = null;
@@ -39,7 +44,9 @@ class PushService {
 
   public async getStatus(): Promise<PushStatus> {
     const isSupported =
-      typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+      typeof window !== 'undefined' &&
+      'serviceWorker' in navigator &&
+      'Notification' in window;
 
     if (!isSupported) {
       return {
@@ -51,21 +58,26 @@ class PushService {
     }
 
     try {
-      const reg = this.registration || (await navigator.serviceWorker.getRegistration('/sw.js')) || null;
+      const reg =
+        this.registration ||
+        (await navigator.serviceWorker.getRegistration('/sw.js')) ||
+        (await navigator.serviceWorker.getRegistration()) ||
+        null;
       this.registration = reg;
-      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      const sub = reg && 'pushManager' in reg ? await reg.pushManager.getSubscription() : null;
+      const localEnabled = localStorage.getItem(LOCAL_NOTIF_FLAG_KEY) === 'true';
 
       return {
         isSupported: true,
         permission: Notification.permission,
-        isSubscribed: Boolean(sub),
+        isSubscribed: Boolean(sub) || (Notification.permission === 'granted' && localEnabled),
         registration: reg,
       };
     } catch {
       return {
         isSupported: true,
         permission: Notification.permission,
-        isSubscribed: false,
+        isSubscribed: Notification.permission === 'granted',
         registration: null,
       };
     }
@@ -80,56 +92,103 @@ class PushService {
 
   public async subscribeToPush(userId?: string, workspaceId?: string): Promise<PushSubscription | null> {
     const reg = await this.registerServiceWorker();
-    if (!reg) throw new Error('تعذر تسجيل Service Worker للإشعارات');
-
     const perm = await this.requestNotificationPermission();
     if (perm !== 'granted') {
       throw new Error('لم يتم منح إذن الإشعارات من المتصفح');
     }
 
-    // Fetch public VAPID key from backend
-    let vapidKey = '';
-    try {
-      const res = await fetch('/api/push/vapid-key');
-      if (res.ok) {
-        const data = await res.json();
-        vapidKey = data.publicKey;
-      }
-    } catch {
-      // server endpoint fallback
-    }
+    localStorage.setItem(LOCAL_NOTIF_FLAG_KEY, 'true');
 
+    // 1. Check build-time Vite environment variable first (VITE_VAPID_PUBLIC_KEY)
+    const envVapidKey = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '').trim();
+    let vapidKey =
+      envVapidKey && envVapidKey !== 'YOUR_VAPID_PUBLIC_KEY' ? envVapidKey : '';
+
+    // 2. Fetch public VAPID key from backend / Vercel Serverless Function (/api/push/vapid-key)
     if (!vapidKey) {
-      throw new Error('تعذر استرداد مفتاح VAPID العام من الخادم.');
+      try {
+        const res = await fetch('/api/push/vapid-key');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data?.publicKey) {
+            vapidKey = String(data.publicKey).trim();
+          }
+        }
+      } catch {
+        // Offline or static host without /api/push route
+      }
     }
 
-    const convertedKey = urlBase64ToUint8Array(vapidKey);
-    const subscription = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: convertedKey as unknown as BufferSource,
-    });
+    // 3. If VAPID key is available and PushManager is supported, subscribe to Web Push
+    if (vapidKey && reg && 'pushManager' in reg) {
+      try {
+        const existingSub = await reg.pushManager.getSubscription();
+        const convertedKey = urlBase64ToUint8Array(vapidKey);
+        const subscription =
+          existingSub ||
+          (await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: convertedKey as unknown as BufferSource,
+          }));
 
-    // Send subscription to backend
-    await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        subscription,
-        userId: userId || 'anonymous',
-        workspaceId: workspaceId || 'default',
-      }),
-    });
+        try {
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subscription,
+              userId: userId || 'anonymous',
+              workspaceId: workspaceId || 'default',
+            }),
+          });
+        } catch {
+          // Ignore network error on subscribe store
+        }
 
-    return subscription;
+        return subscription;
+      } catch (subErr) {
+        console.warn('WebPush subscription fallback to local SW notifications:', subErr);
+      }
+    }
+
+    // 4. Graceful Local Service Worker Notification Fallback (works 100% offline & on static hosts)
+    return null;
   }
 
   public async sendTestNotification(): Promise<boolean> {
+    alertSound.playNotificationSound();
+
     try {
-      const res = await fetch('/api/push/test', { method: 'POST' });
-      return res.ok;
+      const reg =
+        this.registration ||
+        (await this.registerServiceWorker());
+      const sub = reg && 'pushManager' in reg ? await reg.pushManager.getSubscription() : null;
+
+      if (sub) {
+        const res = await fetch('/api/push/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subscription: sub }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data?.delivered > 0) {
+            return true;
+          }
+        }
+      }
     } catch {
-      return false;
+      // Fallback to local Service Worker notification below
     }
+
+    // Trigger direct Service Worker / System Notification if serverless push did not deliver
+    await alertSound.triggerOfflineSystemNotification(
+      'رَصْد — اختبار التنبيهات المباشرة',
+      'تم تفعيل إشعارات النظام والصوت بنجاح على هذا الجهاز.'
+    );
+    return true;
   }
 }
 

@@ -20,6 +20,8 @@ import {
   WifiOff,
   RefreshCw,
   Bell,
+  Palette,
+  KeyRound,
 } from 'lucide-react';
 import { RasdProvider, useRasd } from './context/RasdContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -37,6 +39,9 @@ import { AuditLogScreen } from './components/AuditLogScreen';
 import { MoreScreen } from './components/MoreScreen';
 import { ActiveAlertBanner } from './components/ActiveAlertBanner';
 import { NotificationCenterModal } from './components/NotificationCenterModal';
+import { ThemeSelectorModal } from './components/ThemeSelectorModal';
+import { TempVapidGenerator } from './components/TempVapidGenerator';
+import { themeEngine } from './services/themeEngine';
 import { evaluateAppointmentStatus } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { ScreenId } from './types/rasd';
@@ -86,9 +91,22 @@ const RasdShell: React.FC = () => {
     toggleDarkMode,
     toasts,
     dismissToast,
+    showToast,
   } = useRasd();
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
+  const [isThemeModalOpen, setIsThemeModalOpen] = React.useState(false);
+  const [isVapidToolOpen, setIsVapidToolOpen] = React.useState(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('vapid') === '1' || window.location.hash === '#vapid';
+    }
+    return false;
+  });
+
+  React.useEffect(() => {
+    themeEngine.applyToDOM();
+  }, []);
 
   const dueCount = React.useMemo(() => {
     return (
@@ -147,6 +165,26 @@ const RasdShell: React.FC = () => {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+        <div className="fixed bottom-4 left-4 z-40" dir="rtl">
+          <button
+            type="button"
+            onClick={() => setIsVapidToolOpen(true)}
+            className="min-h-[42px] px-4 rounded-2xl bg-[#0D9488] hover:bg-teal-700 text-white text-xs font-extrabold shadow-lg flex items-center gap-2 cursor-pointer"
+          >
+            <KeyRound className="w-4 h-4" />
+            <span>أداة توليد مفاتيح VAPID (مؤقتة)</span>
+          </button>
+        </div>
+        {isVapidToolOpen && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto" dir="rtl">
+            <div className="w-full max-w-2xl my-auto">
+              <TempVapidGenerator
+                onClose={() => setIsVapidToolOpen(false)}
+                onShowToast={showToast}
+              />
+            </div>
           </div>
         )}
         <AuthScreen />
@@ -318,6 +356,26 @@ const RasdShell: React.FC = () => {
             )}
             <button
               type="button"
+              onClick={() => setIsVapidToolOpen(true)}
+              className="min-h-[42px] px-3 rounded-2xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/70 dark:hover:bg-teal-900/70 border border-teal-200 dark:border-teal-800 flex items-center gap-1.5 transition-colors cursor-pointer text-[#0D9488] dark:text-teal-300"
+              title="أداة توليد مفاتيح VAPID المحلية (مؤقتة)"
+              aria-label="أداة توليد مفاتيح VAPID المحلية"
+            >
+              <KeyRound className="w-4 h-4" />
+              <span className="text-xs font-extrabold">VAPID</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsThemeModalOpen(true)}
+              className="min-h-[42px] px-3 rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer text-slate-700 dark:text-slate-200"
+              title="القوالب اللونية وتصميم الواجهة"
+              aria-label="القوالب اللونية وتصميم الواجهة"
+            >
+              <Palette className="w-4 h-4 text-[#0D9488]" />
+              <span className="hidden sm:inline text-xs font-bold">القوالب</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setIsNotifOpen(true)}
               className="relative min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center transition-colors cursor-pointer text-slate-700 dark:text-slate-200"
               aria-label="مركز التنبيهات"
@@ -353,6 +411,27 @@ const RasdShell: React.FC = () => {
         isOpen={isNotifOpen}
         onClose={() => setIsNotifOpen(false)}
       />
+
+      {/* Theme & Template Studio Modal */}
+      <ThemeSelectorModal
+        isOpen={isThemeModalOpen}
+        onClose={() => setIsThemeModalOpen(false)}
+      />
+
+      {/* Temporary Local VAPID Key Generator Modal */}
+      {isVapidToolOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+          dir="rtl"
+        >
+          <div className="w-full max-w-2xl my-auto">
+            <TempVapidGenerator
+              onClose={() => setIsVapidToolOpen(false)}
+              onShowToast={showToast}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Floating Material 3 Snackbar / Toast Notifications */}
       {toasts.length > 0 && (

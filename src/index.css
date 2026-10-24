@@ -4,11 +4,27 @@
   :root {
     font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
     direction: rtl;
-    --rasd-navy: #0b192c;
-    --rasd-navy-light: #132a46;
-    --rasd-blue: #0284c7;
-    --rasd-turquoise: #0d9488;
-    --rasd-surface: #f4f7fa;
+
+    /* Modern Dynamic Theme Variables (Default: Sovereign Emerald) */
+    --rasd-primary: #064e3b;
+    --rasd-primary-hover: #065f46;
+    --rasd-accent: #059669;
+    --rasd-accent-hover: #047857;
+    --rasd-secondary: #0284c7;
+
+    --rasd-hero-from: #042f2e;
+    --rasd-hero-via: #064e3b;
+    --rasd-hero-to: #0f766e;
+
+    --rasd-bg-light: #f3f7f5;
+    --rasd-card-light: #ffffff;
+    --rasd-card-subtle-light: #edf4f1;
+    --rasd-border-light: #d5e3dc;
+
+    --rasd-bg-dark: #041311;
+    --rasd-card-dark: #091e1a;
+    --rasd-card-subtle-dark: #0d2924;
+    --rasd-border-dark: #163b34;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -30,14 +46,133 @@
 
 html, body {
   overscroll-behavior-y: none;
-  background-color: #f4f7fa;
-  color: #0b192c;
+  background-color: var(--rasd-bg-light);
+  color: #0f172a;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 html.dark, html.dark body {
-  background-color: #060d18;
-  color: #f1f5f9;
+  background-color: var(--rasd-bg-dark);
+  color: #f8fafc;
+}
+
+/* ============================================================================
+   Global Dynamic Palette & Template Bindings across all RASD Screens
+   ============================================================================ */
+
+/* 1. Canvas & Structural Surfaces */
+html:not(.dark) .bg-\[\#F4F7FA\] {
+  background-color: var(--rasd-bg-light) !important;
+}
+
+html.dark .dark\:bg-\[\#060D18\] {
+  background-color: var(--rasd-bg-dark) !important;
+}
+
+html.dark .dark\:bg-\[\#0D1829\],
+html.dark .dark\:bg-\[\#0F1E33\],
+html.dark .dark\:bg-\[\#0B192C\]\/95 {
+  background-color: var(--rasd-card-dark) !important;
+}
+
+/* 2. Primary Brand Buttons & Badges */
+.bg-\[\#0B192C\] {
+  background-color: var(--rasd-primary) !important;
+}
+
+.hover\:bg-\[\#132A46\]:hover {
+  background-color: var(--rasd-primary-hover) !important;
+}
+
+/* 3. Primary Accent (Buttons, Active States, Highlights) */
+.bg-\[\#0D9488\] {
+  background-color: var(--rasd-accent) !important;
+}
+
+.hover\:bg-\[\#0F766E\]:hover,
+.hover\:bg-teal-600:hover {
+  background-color: var(--rasd-accent-hover) !important;
+}
+
+.text-\[\#0D9488\] {
+  color: var(--rasd-accent) !important;
+}
+
+.border-\[\#0D9488\] {
+  border-color: var(--rasd-accent) !important;
+}
+
+/* 4. Secondary Accent */
+.bg-\[\#0284C7\] {
+  background-color: var(--rasd-secondary) !important;
+}
+
+.text-\[\#0284C7\] {
+  color: var(--rasd-secondary) !important;
+}
+
+.border-\[\#0284C7\] {
+  border-color: var(--rasd-secondary) !important;
+}
+
+/* 5. Dynamic Hero & Banner Gradients */
+.from-\[\#0B192C\] {
+  --tw-gradient-from: var(--rasd-hero-from) !important;
+}
+
+.via-\[\#102A46\],
+.via-\[\#0369A1\] {
+  --tw-gradient-via: var(--rasd-hero-via) !important;
+}
+
+.to-\[\#0B4F6C\],
+.to-\[\#0369A1\],
+.to-\[\#132A46\] {
+  --tw-gradient-to: var(--rasd-hero-to) !important;
+}
+
+.from-\[\#0284C7\].to-\[\#0D9488\],
+.from-\[\#0369A1\].to-\[\#0D9488\] {
+  --tw-gradient-from: var(--rasd-primary) !important;
+  --tw-gradient-to: var(--rasd-accent) !important;
+}
+
+/* 6. Professional Card Template Styles (Elevated / Glass / Architectural Bordered) */
+html[data-rasd-card-style="elevated"]:not(.dark) main section.rounded-3xl,
+html[data-rasd-card-style="elevated"]:not(.dark) main div.rounded-3xl.bg-white {
+  box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.06), 0 4px 12px -2px rgba(15, 23, 42, 0.03);
+  border-color: var(--rasd-border-light);
+}
+
+html[data-rasd-card-style="elevated"].dark main section.rounded-3xl,
+html[data-rasd-card-style="elevated"].dark main div.rounded-3xl {
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.45);
+  border-color: var(--rasd-border-dark);
+}
+
+html[data-rasd-card-style="glass"]:not(.dark) main section.rounded-3xl:not(.text-white),
+html[data-rasd-card-style="glass"]:not(.dark) main div.rounded-3xl.bg-white {
+  background: rgba(255, 255, 255, 0.82) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.9) !important;
+  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.07);
+}
+
+html[data-rasd-card-style="glass"].dark main section.rounded-3xl:not(.text-white),
+html[data-rasd-card-style="glass"].dark main div.rounded-3xl {
+  background: color-mix(in srgb, var(--rasd-card-dark) 82%, transparent) !important;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--rasd-border-dark) !important;
+}
+
+html[data-rasd-card-style="bordered"]:not(.dark) main section.rounded-3xl:not(.text-white),
+html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
+  box-shadow: none !important;
+  border-width: 1.5px !important;
+  border-color: var(--rasd-border-light) !important;
 }
 
 /* Safe area utilities for mobile devices & Capacitor Android wrapper */

@@ -475,22 +475,36 @@ async function startServer() {
   // ==========================================
   const vapidKeysFilePath = path.resolve(__dirname, '.vapid-keys.json');
   let vapidKeys: { publicKey: string; privateKey: string };
-  try {
-    if (fs.existsSync(vapidKeysFilePath)) {
-      vapidKeys = JSON.parse(fs.readFileSync(vapidKeysFilePath, 'utf-8'));
-    } else {
+  const envPublicKey = (process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || '').trim();
+  const envPrivateKey = (process.env.VAPID_PRIVATE_KEY || '').trim();
+  const vapidSubject = (process.env.VAPID_SUBJECT || 'mailto:admin@rasd-field.local').trim();
+
+  if (
+    envPublicKey &&
+    envPrivateKey &&
+    envPublicKey !== 'YOUR_VAPID_PUBLIC_KEY' &&
+    envPrivateKey !== 'YOUR_VAPID_PRIVATE_KEY'
+  ) {
+    vapidKeys = { publicKey: envPublicKey, privateKey: envPrivateKey };
+  } else {
+    try {
+      if (fs.existsSync(vapidKeysFilePath)) {
+        vapidKeys = JSON.parse(fs.readFileSync(vapidKeysFilePath, 'utf-8'));
+      } else {
+        vapidKeys = webpush.generateVAPIDKeys();
+        fs.writeFileSync(vapidKeysFilePath, JSON.stringify(vapidKeys, null, 2), 'utf-8');
+      }
+    } catch {
       vapidKeys = webpush.generateVAPIDKeys();
-      fs.writeFileSync(vapidKeysFilePath, JSON.stringify(vapidKeys, null, 2), 'utf-8');
     }
-  } catch {
-    vapidKeys = webpush.generateVAPIDKeys();
   }
 
-  webpush.setVapidDetails(
-    'mailto:admin@rasd-field.local',
-    vapidKeys.publicKey,
-    vapidKeys.privateKey
-  );
+  try {
+    webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
+  } catch {
+    vapidKeys = webpush.generateVAPIDKeys();
+    webpush.setVapidDetails('mailto:admin@rasd-field.local', vapidKeys.publicKey, vapidKeys.privateKey);
+  }
 
   interface StoredSubscription {
     endpoint: string;
@@ -523,7 +537,18 @@ async function startServer() {
     res.json({ success: true, count: subscriptionsStore.size });
   });
 
-  app.post('/api/push/test', async (_req, res) => {
+  app.post('/api/push/test', async (req, res) => {
+    const directSub = req.body?.subscription;
+    if (directSub?.endpoint && directSub?.keys) {
+      subscriptionsStore.set(directSub.endpoint, {
+        endpoint: directSub.endpoint,
+        keys: directSub.keys,
+        userId: 'anonymous',
+        workspaceId: 'default',
+        subscribedAt: new Date().toISOString(),
+      });
+    }
+
     if (subscriptionsStore.size === 0) {
       res.status(200).json({ success: true, delivered: 0, message: 'No registered push subscriptions yet' });
       return;
@@ -560,6 +585,7 @@ async function startServer() {
 
   app.post('/api/push/send-alert', async (req, res) => {
     const {
+      subscription: directSub,
       appointmentId,
       title,
       scheduledTime,
@@ -567,6 +593,16 @@ async function startServer() {
       idempotencyKey,
       workspaceId,
     } = req.body || {};
+
+    if (directSub?.endpoint && directSub?.keys) {
+      subscriptionsStore.set(directSub.endpoint, {
+        endpoint: directSub.endpoint,
+        keys: directSub.keys,
+        userId: 'anonymous',
+        workspaceId: workspaceId || 'default',
+        subscribedAt: new Date().toISOString(),
+      });
+    }
 
     const key = idempotencyKey || `alert_${appointmentId}_${scheduledTime}`;
     if (sentAlertsIdempotency.has(key)) {
