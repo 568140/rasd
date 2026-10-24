@@ -248,154 +248,204 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const bootstrappingPromiseRef = React.useRef<{ uid: string; promise: Promise<void> } | null>(null);
 
-  // Bootstrap User & Workspace on verified login
-  const ensureUserAndWorkspace = useCallback(async (user: FirebaseUser) => {
-    if (!user.emailVerified) {
-      return;
-    }
+  const applyOptimisticSession = useCallback((user: FirebaseUser, customDisplayName?: string) => {
     const uid = user.uid;
-    if (bootstrappingPromiseRef.current?.uid === uid) {
-      return bootstrappingPromiseRef.current.promise;
-    }
+    const defaultWsId = `ws_${uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+    const displayName = sanitizeText(
+      customDisplayName || user.displayName || user.email?.split('@')[0] || 'مستخدم رصد',
+      120,
+      1,
+      'مستخدم رصد'
+    );
+    const email = sanitizeText(user.email || 'user@rasd.app', 200, 3, 'user@rasd.app');
+    const inviteCode = sanitizeText(`RASD-${uid.slice(0, 6).toUpperCase()}`.replace(/[^a-zA-Z0-9_-]/g, ''), 64, 4, 'RASD1000');
 
-    const runBootstrap = async () => {
-      const defaultWsId = `ws_${uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
-      const userDocRef = doc(db, 'users', uid);
-      let currentStepPath = `users/${uid}`;
+    setUserProfile((prev) =>
+      prev && prev.uid === uid
+        ? prev
+        : {
+            id: uid,
+            uid,
+            displayName,
+            email,
+            phone: '',
+            jobTitle: 'مسؤول ميداني أول',
+            activeWorkspaceId: defaultWsId,
+          }
+    );
 
-      try {
-        const userSnap = await getDoc(userDocRef);
-        const activeWsId = userSnap.exists()
-          ? userSnap.data().activeWorkspaceId || defaultWsId
-          : defaultWsId;
+    setWorkspace((prev) =>
+      prev && prev.ownerId === uid
+        ? prev
+        : {
+            id: defaultWsId,
+            name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
+            ownerId: uid,
+            ownerName: displayName,
+            defaultCurrency: 'SAR',
+            taxRatePercent: 0,
+            regionName: 'الرياض',
+            inviteCode,
+            memberUids: [uid],
+            memberCount: 1,
+          }
+    );
+  }, []);
 
-        const wsRef = doc(db, 'workspaces', activeWsId);
-        const memberId = `${activeWsId}_${uid}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
-        const memberRef = doc(db, 'workspace_members', memberId);
+  // Bootstrap User & Workspace on login
+  const ensureUserAndWorkspace = useCallback(
+    async (user: FirebaseUser, customDisplayName?: string) => {
+      const uid = user.uid;
+      applyOptimisticSession(user, customDisplayName);
 
-        // If activeWsId is the user's own default workspace, check wsSnap and memberSnap safely
-        const isOwnDefaultWs = activeWsId === defaultWsId;
-        const [wsSnap, memberSnap] = isOwnDefaultWs
-          ? await Promise.all([getDoc(wsRef), getDoc(memberRef)])
-          : [null, null];
+      if (bootstrappingPromiseRef.current?.uid === uid) {
+        return bootstrappingPromiseRef.current.promise;
+      }
 
-        const needsUserDoc = !userSnap.exists();
-        const needsWsDoc = isOwnDefaultWs && wsSnap !== null && !wsSnap.exists();
-        const needsMemberDoc = isOwnDefaultWs && memberSnap !== null && !memberSnap.exists();
+      const runBootstrap = async () => {
+        const defaultWsId = `ws_${uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+        const userDocRef = doc(db, 'users', uid);
+        let currentStepPath = `users/${uid}`;
 
-        if (needsUserDoc || needsWsDoc || needsMemberDoc) {
+        try {
+          const userSnap = await getDoc(userDocRef);
+          const activeWsId = userSnap.exists()
+            ? userSnap.data().activeWorkspaceId || defaultWsId
+            : defaultWsId;
+
+          const wsRef = doc(db, 'workspaces', activeWsId);
+          const memberId = `${activeWsId}_${uid}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+          const memberRef = doc(db, 'workspace_members', memberId);
+
+          const isOwnDefaultWs = activeWsId === defaultWsId;
+          const [wsSnap, memberSnap] = isOwnDefaultWs
+            ? await Promise.all([getDoc(wsRef), getDoc(memberRef)])
+            : [null, null];
+
+          const needsUserDoc = !userSnap.exists();
+          const needsWsDoc = isOwnDefaultWs && wsSnap !== null && !wsSnap.exists();
+          const needsMemberDoc = isOwnDefaultWs && memberSnap !== null && !memberSnap.exists();
+
           const displayName = sanitizeText(
-            user.displayName || user.email?.split('@')[0] || 'مستخدم رصد',
+            customDisplayName || user.displayName || user.email?.split('@')[0] || 'مستخدم رصد',
             120,
             1,
             'مستخدم رصد'
           );
           const email = sanitizeText(user.email || 'user@rasd.app', 200, 3, 'user@rasd.app');
-          const inviteCode = `RASD-${uid.slice(0, 6).toUpperCase()}`;
+          const inviteCode = sanitizeText(
+            `RASD-${uid.slice(0, 6).toUpperCase()}`.replace(/[^a-zA-Z0-9_-]/g, ''),
+            64,
+            4,
+            'RASD1000'
+          );
 
-          const batch = writeBatch(db);
+          if (needsUserDoc || needsWsDoc || needsMemberDoc) {
+            const batch = writeBatch(db);
 
-          if (needsWsDoc) {
-            currentStepPath = `workspaces/${activeWsId}`;
-            batch.set(wsRef, {
-              name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
-              ownerId: uid,
-              ownerName: displayName,
-              defaultCurrency: 'SAR',
-              taxRatePercent: 0,
-              regionName: 'الرياض',
-              inviteCode: sanitizeText(inviteCode.replace(/[^a-zA-Z0-9_-]/g, ''), 64, 4, 'RASD1000'),
-              memberUids: [uid],
-              memberCount: 1,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
+            if (needsWsDoc) {
+              currentStepPath = `workspaces/${activeWsId}`;
+              batch.set(wsRef, {
+                name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
+                ownerId: uid,
+                ownerName: displayName,
+                defaultCurrency: 'SAR',
+                taxRatePercent: 0,
+                regionName: 'الرياض',
+                inviteCode,
+                memberUids: [uid],
+                memberCount: 1,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            if (needsUserDoc) {
+              currentStepPath = `users/${uid}`;
+              batch.set(userDocRef, {
+                uid,
+                displayName,
+                email,
+                phone: '',
+                jobTitle: 'مسؤول ميداني أول',
+                activeWorkspaceId: activeWsId,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            if (needsMemberDoc) {
+              currentStepPath = `workspace_members/${memberId}`;
+              batch.set(memberRef, {
+                workspaceId: activeWsId,
+                ownerId: uid,
+                userId: uid,
+                displayName,
+                email,
+                role: 'owner',
+                status: 'active',
+                canApproveFinancials: true,
+                canDeleteRecords: true,
+                memberUids: [uid],
+                createdBy: uid,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+
+            await batch.commit();
           }
 
-          if (needsUserDoc) {
-            currentStepPath = `users/${uid}`;
-            batch.set(userDocRef, {
-              uid,
-              displayName,
-              email,
-              phone: '',
-              jobTitle: 'مسؤول ميداني أول',
-              activeWorkspaceId: activeWsId,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
+          currentStepPath = `users/${uid}`;
+          const finalUserSnap = await getDoc(userDocRef);
+          if (finalUserSnap.exists()) {
+            const d = finalUserSnap.data();
+            setUserProfile({
+              id: finalUserSnap.id,
+              uid: d.uid,
+              displayName: d.displayName,
+              email: d.email,
+              phone: d.phone || '',
+              jobTitle: d.jobTitle || '',
+              activeWorkspaceId: d.activeWorkspaceId || activeWsId,
+              isPendingSync: finalUserSnap.metadata.hasPendingWrites,
+              fromCache: finalUserSnap.metadata.fromCache,
             });
           }
-
-          if (needsMemberDoc) {
-            currentStepPath = `workspace_members/${memberId}`;
-            batch.set(memberRef, {
-              workspaceId: activeWsId,
-              ownerId: uid,
-              userId: uid,
-              displayName,
-              email,
-              role: 'owner',
-              status: 'active',
-              canApproveFinancials: true,
-              canDeleteRecords: true,
-              memberUids: [uid],
-              createdBy: uid,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
+        } catch (error) {
+          console.error('Bootstrap Firestore Error at', currentStepPath, error);
+        } finally {
+          if (bootstrappingPromiseRef.current?.uid === uid) {
+            bootstrappingPromiseRef.current = null;
           }
-
-          await batch.commit();
         }
+      };
 
-        currentStepPath = `users/${uid}`;
-        const finalUserSnap = await getDoc(userDocRef);
-        if (finalUserSnap.exists()) {
-          const d = finalUserSnap.data();
-          setUserProfile({
-            id: finalUserSnap.id,
-            uid: d.uid,
-            displayName: d.displayName,
-            email: d.email,
-            phone: d.phone || '',
-            jobTitle: d.jobTitle || '',
-            activeWorkspaceId: d.activeWorkspaceId || activeWsId,
-            isPendingSync: finalUserSnap.metadata.hasPendingWrites,
-            fromCache: finalUserSnap.metadata.fromCache,
-          });
-        }
-      } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, currentStepPath);
-      } finally {
-        if (bootstrappingPromiseRef.current?.uid === uid) {
-          bootstrappingPromiseRef.current = null;
-        }
-      }
-    };
-
-    const p = runBootstrap();
-    bootstrappingPromiseRef.current = { uid, promise: p };
-    return p;
-  }, []);
+      const p = runBootstrap();
+      bootstrappingPromiseRef.current = { uid, promise: p };
+      return p;
+    },
+    [applyOptimisticSession]
+  );
 
   // Auth State Listener
   useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       if (user) {
-        try {
-          await ensureUserAndWorkspace(user);
-        } catch (e) {
+        applyOptimisticSession(user);
+        setAuthReady(true);
+        ensureUserAndWorkspace(user).catch((e) => {
           console.error(e);
-        }
+        });
       } else {
         clearAllUserState();
+        setAuthReady(true);
       }
-      setAuthReady(true);
     });
 
     return () => unsubAuth();
-  }, [ensureUserAndWorkspace, clearAllUserState]);
+  }, [applyOptimisticSession, ensureUserAndWorkspace, clearAllUserState]);
 
   // Attach Real-time Listeners once user is authenticated
   useEffect(() => {
@@ -562,46 +612,68 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const res = await signInWithPopup(auth, googleProvider);
       if (res.user) {
-        await ensureUserAndWorkspace(res.user);
-        showToast('تم تسجيل الدخول بنجاح', 'success');
+        setFirebaseUser(res.user);
+        applyOptimisticSession(res.user);
+        setAuthReady(true);
+        setActiveScreen('home');
+        showToast(
+          `تم تسجيل الدخول بنجاح — مرحبًا بك ${res.user.displayName || res.user.email || ''}`,
+          'success'
+        );
+        ensureUserAndWorkspace(res.user).catch((err) => {
+          console.error('Background workspace sync error:', err);
+        });
       }
     } catch (error) {
       showToast(translateFirebaseError(error), 'error');
       throw error;
     }
-  }, [ensureUserAndWorkspace, showToast]);
+  }, [applyOptimisticSession, ensureUserAndWorkspace, showToast]);
 
   const loginWithEmail = useCallback(
     async (email: string, pass: string) => {
       try {
         const res = await signInWithEmailAndPassword(auth, email.trim(), pass);
         if (res.user) {
-          await ensureUserAndWorkspace(res.user);
+          setFirebaseUser(res.user);
+          applyOptimisticSession(res.user);
+          setAuthReady(true);
+          setActiveScreen('home');
           showToast('تم تسجيل الدخول بنجاح', 'success');
+          ensureUserAndWorkspace(res.user).catch((err) => {
+            console.error('Background workspace sync error:', err);
+          });
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         throw error;
       }
     },
-    [ensureUserAndWorkspace, showToast]
+    [applyOptimisticSession, ensureUserAndWorkspace, showToast]
   );
 
   const registerWithEmail = useCallback(
     async (name: string, email: string, pass: string) => {
       try {
+        const cleanName = name.trim();
         const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
         if (res.user) {
-          await updateProfile(res.user, { displayName: name.trim() });
-          await ensureUserAndWorkspace(res.user);
+          await updateProfile(res.user, { displayName: cleanName });
+          setFirebaseUser(res.user);
+          applyOptimisticSession(res.user, cleanName);
+          setAuthReady(true);
+          setActiveScreen('home');
           showToast('تم إنشاء الحساب وتسجيل الدخول بنجاح', 'success');
+          ensureUserAndWorkspace(res.user, cleanName).catch((err) => {
+            console.error('Background workspace sync error:', err);
+          });
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         throw error;
       }
     },
-    [ensureUserAndWorkspace, showToast]
+    [applyOptimisticSession, ensureUserAndWorkspace, showToast]
   );
 
   const resetPassword = useCallback(
@@ -632,12 +704,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await auth.currentUser.reload();
     const refreshed = auth.currentUser;
     setFirebaseUser({ ...refreshed } as FirebaseUser);
-    if (refreshed.emailVerified) {
-      await ensureUserAndWorkspace(refreshed);
-      showToast('تم التحقق من البريد الإلكتروني وتفعيل مساحة العمل بنجاح!', 'success');
-    } else {
-      showToast('لم يتم تأكيد البريد بعد. يرجى فتح الرسالة في بريدك والضغط على رابط التفعيل.', 'warning');
-    }
+    await ensureUserAndWorkspace(refreshed);
+    showToast('تم تحديث بيانات الجلسة ومساحة العمل بنجاح!', 'success');
   }, [ensureUserAndWorkspace, showToast]);
 
   const logout = useCallback(async () => {

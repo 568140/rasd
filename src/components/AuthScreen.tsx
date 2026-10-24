@@ -9,7 +9,6 @@ import {
   AlertCircle,
   WifiOff,
   CheckCircle2,
-  LogOut,
   Info,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
@@ -17,15 +16,11 @@ import { FIREBASE_PROJECT_ID, translateFirebaseError } from '../services/firebas
 
 export const AuthScreen: React.FC = () => {
   const {
-    firebaseUser,
     isOnline,
     loginWithGoogle,
     loginWithEmail,
     registerWithEmail,
     resetPassword,
-    resendVerificationEmail,
-    refreshAuthUser,
-    logout,
   } = useRasd();
 
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
@@ -33,12 +28,13 @@ export const AuthScreen: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [showSetupHint, setShowSetupHint] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
+    if (submitting || googleSubmitting) return;
     setLocalError(null);
 
     if (!isOnline) {
@@ -79,19 +75,19 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleGoogleLogin = async () => {
-    if (submitting) return;
+    if (submitting || googleSubmitting) return;
     setLocalError(null);
     if (!isOnline) {
       setLocalError('يتطلب تسجيل الدخول عبر Google اتصالًا بالإنترنت.');
       return;
     }
-    setSubmitting(true);
+    setGoogleSubmitting(true);
     try {
       await loginWithGoogle();
     } catch (err) {
       setLocalError(translateFirebaseError(err));
     } finally {
-      setSubmitting(false);
+      setGoogleSubmitting(false);
     }
   };
 
@@ -218,14 +214,23 @@ export const AuthScreen: React.FC = () => {
               <div className="mb-5">
                 <button
                   type="button"
-                  disabled={submitting}
+                  disabled={submitting || googleSubmitting}
                   onClick={handleGoogleLogin}
-                  className="w-full min-h-[48px] rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] disabled:opacity-50 text-white font-bold text-sm flex items-center justify-center gap-2.5 shadow-xs transition-colors cursor-pointer"
+                  className="w-full min-h-[48px] rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2.5 shadow-xs transition-colors cursor-pointer"
                 >
-                  <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                    <path d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 15.64 5 12c0-3.64 3.36-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81Z" />
-                  </svg>
-                  <span>المتابعة السريعة باستخدام حساب Google</span>
+                  {googleSubmitting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>جاري فتح نافذة Google وتأكيد الدخول...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                        <path d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 15.64 5 12c0-3.64 3.36-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81Z" />
+                      </svg>
+                      <span>المتابعة السريعة باستخدام حساب Google</span>
+                    </>
+                  )}
                 </button>
                 <div className="relative my-5 flex items-center justify-center">
                   <div className="border-t border-slate-200 dark:border-slate-800 w-full" />

@@ -363,6 +363,7 @@ service cloud.firestore {
     // Collection 2: /workspaces/{workspaceId}
     match /workspaces/{workspaceId} {
       allow get: if isSignedIn() && isValidId(workspaceId) && (
+        resource == null ||
         workspaceId == 'ws_' + request.auth.uid ||
         (resource != null && (request.auth.uid in existing().memberUids || existing().ownerId == request.auth.uid)) ||
         isAdmin()
@@ -393,6 +394,7 @@ service cloud.firestore {
     // Collection 3: /workspace_members/{memberId}
     match /workspace_members/{memberId} {
       allow get: if isSignedIn() && isValidId(memberId) && (
+        resource == null ||
         memberId == 'ws_' + request.auth.uid + '_' + request.auth.uid ||
         (resource != null && (request.auth.uid in existing().memberUids || existing().userId == request.auth.uid)) ||
         isAdmin()

@@ -1,12 +1,12 @@
 {
   "projectId": "rasd-field-system",
-  "appId": "1:879717132862:web:0f72070ba8d4d44d9c3f6f",
+  "appId": "1:879717132862:web:957ca10284ab90489c3f6f",
   "apiKey": "AIzaSyD_apwhnlc4W7P_s0vBPH--Z600Er99fDw",
   "authDomain": "rasd-field-system.firebaseapp.com",
-  "firestoreDatabaseId": "(default)",
+  "firestoreDatabaseId": "ai-studio-f10a5513-5e76-416b-856b-4e23b1f0fc51",
   "storageBucket": "rasd-field-system.firebasestorage.app",
   "messagingSenderId": "879717132862",
-  "measurementId": "G-B64J3GWV43",
-  "oAuthClientId": "",
+  "measurementId": "",
+  "oAuthClientId": "879717132862-ru93t043crd666iaclaeugs45g6g1vns.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

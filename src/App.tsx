@@ -100,9 +100,41 @@ const RasdShell: React.FC = () => {
     );
   }
 
-  // Protect internal screens if user is not authenticated or not verified
-  if (!firebaseUser || !firebaseUser.emailVerified) {
-    return <AuthScreen />;
+  // Protect internal screens if user is not authenticated
+  if (!firebaseUser) {
+    return (
+      <>
+        {toasts.length > 0 && (
+          <div className="fixed top-6 left-4 right-4 z-50 max-w-md mx-auto space-y-2 pointer-events-none" dir="rtl">
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className={`pointer-events-auto p-3.5 rounded-2xl shadow-lg border text-xs font-semibold flex items-center justify-between gap-2.5 ${
+                  t.type === 'error'
+                    ? 'bg-rose-600 text-white border-rose-700'
+                    : t.type === 'warning'
+                    ? 'bg-amber-600 text-white border-amber-700'
+                    : t.type === 'success'
+                    ? 'bg-[#0D9488] text-white border-teal-700'
+                    : 'bg-[#0B192C] text-white border-slate-800'
+                }`}
+              >
+                <span className="leading-relaxed">{t.text}</span>
+                <button
+                  type="button"
+                  onClick={() => dismissToast(t.id)}
+                  className="p-1.5 rounded-xl hover:bg-black/15 cursor-pointer shrink-0"
+                  aria-label="إغلاق التنبيه"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <AuthScreen />
+      </>
+    );
   }
 
   const isSubScreen = !['home', 'taxpayers', 'voice', 'appointments', 'more'].includes(activeScreen);

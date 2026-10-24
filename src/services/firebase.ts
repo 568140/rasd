@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
-  persistentMultipleTabManager,
+  persistentSingleTabManager,
   getFirestore,
   doc,
   getDocFromServer,
@@ -25,14 +25,14 @@ try {
         app,
         {
           localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager(),
+            tabManager: persistentSingleTabManager({ forceOwnership: true }),
           }),
         },
         dbId
       )
     : initializeFirestore(app, {
         localCache: persistentLocalCache({
-          tabManager: persistentMultipleTabManager(),
+          tabManager: persistentSingleTabManager({ forceOwnership: true }),
         }),
       });
 } catch {
@@ -119,26 +119,27 @@ export function translateFirebaseError(error: unknown): string {
   if (raw.includes('auth/weak-password')) {
     return 'كلمة المرور ضعيفة جدًا. يجب أن تتكون من 6 أحرف على الأقل.';
   }
-  if (raw.includes('auth/operation-not-allowed')) {
+  if (raw.includes('auth/operation-not-allowed') || raw.includes('PASSWORD_LOGIN_DISABLED')) {
     return 'تسجيل الدخول بالبريد وكلمة المرور غير مفعل بعد في Firebase Console. يرجى استخدام الدخول عبر Google أو تفعيل Email/Password من لوحة تحكم Firebase.';
   }
   if (raw.includes('auth/popup-closed-by-user')) {
-    return 'تم إغلاق نافذة تسجيل الدخول قبل إتمام العملية.';
+    return 'تم إغلاق نافذة Google المنبثقة قبل إكمال اختيار الحساب. يرجى الضغط مرة أخرى واختيار حسابك.';
+  }
+  if (raw.includes('auth/cancelled-popup-request')) {
+    return 'توجد نافذة تسجيل دخول مفتوحة بالفعل. يرجى إكمال الدخول من النافذة المفتوحة.';
   }
   if (raw.includes('auth/network-request-failed')) {
     return 'تعذر الاتصال بالشبكة. يرجى التحقق من اتصالك بالإنترنت.';
   }
   if (raw.includes('auth/unauthorized-domain')) {
-    return 'هذا النطاق (رابط Vercel) غير مصرح به في Firebase. يرجى إضافة رابط موقعك إلى النطاقات المصرح بها (Authorized Domains) في لوحة تحكم Firebase Console.';
+    const domain = typeof window !== 'undefined' ? window.location.hostname : '';
+    return `النطاق الحالي (${domain}) غير مضاف في قائمة النطاقات المصرح بها (Authorized Domains) داخل Firebase Console.`;
   }
   if (raw.includes('auth/popup-blocked')) {
     return 'قام المتصفح بحظر النافذة المنبثقة لتسجيل الدخول. يرجى السماح بالنوافذ المنبثقة (Popups) وإعادة المحاولة.';
   }
   if (raw.includes('Missing or insufficient permissions') || raw.includes('PERMISSION_DENIED')) {
-    if (auth.currentUser && !auth.currentUser.emailVerified) {
-      return 'يرجى تأكيد بريدك الإلكتروني أولًا لتتمكن من قراءة أو حفظ البيانات.';
-    }
     return 'ليس لديك صلاحية كافية لتنفيذ هذه العملية في مساحة العمل الحالية.';
   }
-  return 'حدث خطأ أثناء تنفيذ العملية. يرجى المحاولة مرة أخرى.';
+  return `حدث خطأ أثناء تنفيذ العملية: ${raw.slice(0, 140)}`;
 }
