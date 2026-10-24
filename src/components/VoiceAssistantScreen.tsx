@@ -8,6 +8,7 @@ import {
   Volume2,
   VolumeX,
   Play,
+  Pause,
   RotateCcw,
   ShieldCheck,
   Building2,
@@ -19,8 +20,12 @@ import {
   X,
   Send,
   Settings2,
+  Loader2,
+  RefreshCw,
+  FileAudio,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
+import { AudioRecorder, type AudioRecordingResult, type RecorderState } from '../services/audioRecorder';
 import {
   analyzeVoiceTranscriptHybrid,
   buildVoiceExecutionPlan,
@@ -28,6 +33,7 @@ import {
   markPlanAsExecuted,
   parseArabicVoiceCommandDeterministic,
   sanitizeSpokenRepetitions,
+  transcribeAudioOnServer,
   type VoiceEnginePlan,
   type VoiceExecutionReport,
   type VoiceExtractedPayload,
@@ -65,7 +71,14 @@ interface SpeechRecognitionLike {
   abort?: () => void;
 }
 
-export type VoiceListeningState = 'idle' | 'starting' | 'listening' | 'stopping';
+export type VoiceSessionPhase =
+  | 'ready'
+  | 'recording'
+  | 'transcribing'
+  | 'analyzing'
+  | 'review'
+  | 'executing'
+  | 'executed';
 
 const SAMPLE_VOICE_COMMANDS: {
   category: string;
@@ -83,9 +96,19 @@ const SAMPLE_VOICE_COMMANDS: {
     command: 'سجّل عقار باسم كامل، لا، أقصد باسم خالد عبدربه في شارع الثلاثين، أربعة أدوار وخمس شقق',
   },
   {
+    category: 'قيمة العقد مع العقار',
+    label: 'إنشاء عقار مع تحديد قيمة العقد كشرط عقدي',
+    command: 'سجل عقار باسم كامل في شارع الثلاثين أربعة أدوار وخمس شقق وقيمة العقد خمسة آلاف ريال',
+  },
+  {
     category: 'استعلام مالي',
     label: 'معرفة الرصيد المتبقي على المكلف',
     command: 'كم المتبقي على كامل؟',
+  },
+  {
+    category: 'تحصيل مالي',
+    label: 'تحصيل 4,000 ريال من حساب المكلف',
+    command: 'سجّل تحصيل أربعة آلاف ريال من حساب العقار الخاص بكامل عبد الرحمن',
   },
   {
     category: 'زيارة ميدانية',
@@ -96,11 +119,6 @@ const SAMPLE_VOICE_COMMANDS: {
     category: 'موعد وتذكير',
     label: 'تذكير بمتابعة المكلف الأسبوع القادم',
     command: 'ذكّرني بمتابعة كامل الأسبوع القادم',
-  },
-  {
-    category: 'تحصيل مالي',
-    label: 'تحصيل 4,000 ريال من حساب المكلف',
-    command: 'سجّل تحصيل أربعة آلاف ريال من حساب العقار الخاص بكامل عبد الرحمن',
   },
 ];
 
@@ -153,48 +171,97 @@ export const VoiceAssistantScreen: React.FC = () => {
     showToast,
   } = useRasd();
 
+  // Engine & UI states
   const [dialect, setDialect] = useState<'ar-YE' | 'ar-SA'>('ar-YE');
-  const [listeningState, setListeningState] = useState<VoiceListeningState>('idle');
-  const [continuousMode, setContinuousMode] = useState<boolean>(true);
-  const [interimSpeech, setInterimSpeech] = useState<string>('');
-  const [followUpInput, setFollowUpInput] = useState<string>('');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [autoSpeakReport, setAutoSpeakReport] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [phase, setPhase] = useState<VoiceSessionPhase>('ready');
+  const [recordingDuration, setRecordingDuration] = useState<number>(0);
+  const [recordingVolume, setRecordingVolume] = useState<number>(0);
+  const [audioResult, setAudioResult] = useState<AudioRecordingResult | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState<boolean>(false);
 
-  const [transcriptInput, setTranscriptInput] = useState('');
-  const [committedTextState, setCommittedTextState] = useState('');
+  const [liveInterimSpeech, setLiveInterimSpeech] = useState<string>('');
+  const [transcriptInput, setTranscriptInput] = useState<string>('');
+  const [transcriptionSource, setTranscriptionSource] = useState<'server_gemini' | 'browser_speech' | 'manual'>('manual');
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+
   const [extractedState, setExtractedState] = useState<VoiceExtractedPayload | null>(null);
   const [selectedTaxpayerIdOverride, setSelectedTaxpayerIdOverride] = useState<string | undefined>();
   const [selectedPropertyIdOverride, setSelectedPropertyIdOverride] = useState<string | undefined>();
   const [selectedUnitIdOverride, setSelectedUnitIdOverride] = useState<string | undefined>();
+  const [followUpInput, setFollowUpInput] = useState<string>('');
+
   const [executionReport, setExecutionReport] = useState<VoiceExecutionReport | null>(null);
   const [executionError, setExecutionError] = useState<string | null>(null);
+  const [isExecuting, setIsExecuting] = useState(false);
 
-  // Clean Mobile UX states
+  // Secondary toggles
+  const [isEditingTranscript, setIsEditingTranscript] = useState(false);
   const [isEditingFields, setIsEditingFields] = useState(false);
   const [showManualInput, setShowManualInput] = useState(false);
   const [showFullResultDetails, setShowFullResultDetails] = useState(false);
   const [showAdvancedDiagnostics, setShowAdvancedDiagnostics] = useState(false);
+  const [autoSpeakReport, setAutoSpeakReport] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
+  // Service & Lifecycle references
+  const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const isRecognitionRunningRef = useRef<boolean>(false);
-  const manualStopRef = useRef<boolean>(false);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const unmountedRef = useRef<boolean>(false);
-  const continuousModeRef = useRef<boolean>(true);
-  const committedTranscriptRef = useRef<string>('');
-  const committedChunksRef = useRef<string[]>([]);
-  const processedFinalIndexRef = useRef<number>(-1);
-  const latestFullTranscriptRef = useRef<string>('');
-  const restartTimeoutRef = useRef<number | null>(null);
-  const consecutiveErrorCountRef = useRef<number>(0);
-  const autoExecutedPlanKeyRef = useRef<string | null>(null);
   const accumulatedBaseTranscriptRef = useRef<string>('');
+  const livePreviewChunksRef = useRef<string[]>([]);
 
+  // Initialize AudioRecorder instance
   useEffect(() => {
-    continuousModeRef.current = continuousMode;
-  }, [continuousMode]);
+    unmountedRef.current = false;
+    const recorder = new AudioRecorder({
+      onStateChange: (recState: RecorderState) => {
+        if (unmountedRef.current) return;
+        if (recState === 'recording') {
+          setPhase('recording');
+        } else if (recState === 'stopping') {
+          // Keep phase moving to transcribing
+        } else if (recState === 'idle' && phase === 'recording') {
+          setPhase('ready');
+        }
+      },
+      onVolumeChange: (vol: number) => {
+        if (!unmountedRef.current) setRecordingVolume(vol);
+      },
+      onDurationChange: (sec: number) => {
+        if (!unmountedRef.current) setRecordingDuration(sec);
+      },
+      onError: (msg: string) => {
+        if (!unmountedRef.current) {
+          setPhase('ready');
+          showToast(msg, 'error');
+        }
+      },
+    });
+
+    audioRecorderRef.current = recorder;
+
+    return () => {
+      unmountedRef.current = true;
+      if (audioRecorderRef.current) {
+        audioRecorderRef.current.cancel();
+      }
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+        recognitionRef.current = null;
+      }
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   const workspaceSnapshot: VoiceWorkspaceSnapshot = useMemo(
     () => ({
@@ -225,7 +292,7 @@ export const VoiceAssistantScreen: React.FC = () => {
     ]
   );
 
-  // Dynamically build the 8-stage execution plan whenever extractedState or overrides change
+  // Dynamically build the 8-stage execution plan
   const currentPlan: VoiceEnginePlan | null = useMemo(() => {
     if (!extractedState || !transcriptInput.trim()) return null;
     return buildVoiceExecutionPlan(transcriptInput, extractedState, workspaceSnapshot, {
@@ -241,33 +308,6 @@ export const VoiceAssistantScreen: React.FC = () => {
     selectedPropertyIdOverride,
     selectedUnitIdOverride,
   ]);
-
-  useEffect(() => {
-    unmountedRef.current = false;
-    return () => {
-      unmountedRef.current = true;
-      manualStopRef.current = true;
-      if (restartTimeoutRef.current !== null) {
-        window.clearTimeout(restartTimeoutRef.current);
-        restartTimeoutRef.current = null;
-      }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onend = null;
-          recognitionRef.current.onerror = null;
-          recognitionRef.current.onresult = null;
-          recognitionRef.current.stop();
-        } catch {
-          // ignore cleanup errors
-        }
-        recognitionRef.current = null;
-      }
-      isRecognitionRunningRef.current = false;
-      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-    };
-  }, []);
 
   const speakArabicText = useCallback(
     (text: string) => {
@@ -295,343 +335,292 @@ export const VoiceAssistantScreen: React.FC = () => {
     }
   };
 
-  const resetCurrentCommand = () => {
-    if (listeningState === 'listening' || listeningState === 'starting') {
-      stopSpeechListening(false);
+  const handleAudioPlaybackToggle = () => {
+    if (!audioResult?.audioUrl) return;
+
+    if (!audioPlayerRef.current) {
+      audioPlayerRef.current = new Audio(audioResult.audioUrl);
+      audioPlayerRef.current.onended = () => setIsPlayingAudio(false);
+      audioPlayerRef.current.onerror = () => setIsPlayingAudio(false);
     }
+
+    if (isPlayingAudio) {
+      audioPlayerRef.current.pause();
+      setIsPlayingAudio(false);
+    } else {
+      audioPlayerRef.current.currentTime = 0;
+      audioPlayerRef.current
+        .play()
+        .then(() => setIsPlayingAudio(true))
+        .catch(() => setIsPlayingAudio(false));
+    }
+  };
+
+  const resetCurrentCommand = () => {
+    if (phase === 'recording') {
+      audioRecorderRef.current?.cancel();
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+      recognitionRef.current = null;
+    }
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.pause();
+      audioPlayerRef.current = null;
+    }
+
     accumulatedBaseTranscriptRef.current = '';
+    livePreviewChunksRef.current = [];
+    setPhase('ready');
+    setRecordingDuration(0);
+    setRecordingVolume(0);
+    setAudioResult(null);
+    setIsPlayingAudio(false);
+    setLiveInterimSpeech('');
     setTranscriptInput('');
-    setCommittedTextState('');
-    committedTranscriptRef.current = '';
-    committedChunksRef.current = [];
-    processedFinalIndexRef.current = -1;
-    latestFullTranscriptRef.current = '';
-    setInterimSpeech('');
+    setTranscriptionSource('manual');
+    setTranscriptionError(null);
     setExtractedState(null);
     setExecutionReport(null);
     setExecutionError(null);
+    setIsEditingTranscript(false);
     setIsEditingFields(false);
     setShowFullResultDetails(false);
     setFollowUpInput('');
     setSelectedTaxpayerIdOverride(undefined);
     setSelectedPropertyIdOverride(undefined);
     setSelectedUnitIdOverride(undefined);
-    autoExecutedPlanKeyRef.current = null;
   };
 
-  const handleAnalyzeCommand = async (
-    rawText?: string,
-    previousDraftForMerge?: VoiceExtractedPayload | null
-  ) => {
-    const targetText = sanitizeSpokenRepetitions((rawText ?? transcriptInput).trim());
-    if (!targetText) {
-      showToast('يرجى التحدث أو كتابة الطلب أولًا', 'warning');
+  // Start live browser speech preview concurrently if supported
+  const startLiveBrowserPreview = () => {
+    const win = window as unknown as {
+      SpeechRecognition?: new () => SpeechRecognitionLike;
+      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+    };
+    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+    if (!SpeechRec) return;
+
+    try {
+      const rec = new SpeechRec();
+      rec.lang = dialect;
+      rec.continuous = true;
+      rec.interimResults = true;
+
+      rec.onresult = (event: SpeechRecognitionEventLike) => {
+        if (unmountedRef.current) return;
+        let interim = '';
+        const len = event.results.length;
+        for (let i = 0; i < len; i++) {
+          const res = event.results[i];
+          const transcriptPiece = (res[0]?.transcript || '').trim();
+          if (res.isFinal) {
+            if (transcriptPiece && !livePreviewChunksRef.current.includes(transcriptPiece)) {
+              livePreviewChunksRef.current.push(transcriptPiece);
+            }
+          } else if (transcriptPiece) {
+            interim = transcriptPiece;
+          }
+        }
+        setLiveInterimSpeech(interim);
+      };
+
+      rec.onerror = () => {
+        // Silent error for optional live preview
+      };
+
+      rec.onend = () => {
+        // Do not auto-restart; authoritative audio is in MediaRecorder
+      };
+
+      recognitionRef.current = rec;
+      rec.start();
+    } catch {
+      // Live preview is optional
+    }
+  };
+
+  const stopLiveBrowserPreview = (): string => {
+    let combined = livePreviewChunksRef.current.join(' ').trim();
+    if (liveInterimSpeech.trim()) {
+      combined = [combined, liveInterimSpeech.trim()].filter(Boolean).join(' ');
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch {
+        // ignore
+      }
+      recognitionRef.current = null;
+    }
+    setLiveInterimSpeech('');
+    return combined;
+  };
+
+  // Step 1 -> Step 2: Start Audio Recording
+  const handleStartRecording = async () => {
+    if (phase === 'recording' || phase === 'transcribing' || phase === 'analyzing') {
       return;
     }
 
-    const currentBase = accumulatedBaseTranscriptRef.current.trim();
-    const displayTranscript =
-      currentBase && targetText && !currentBase.includes(targetText)
-        ? sanitizeSpokenRepetitions(`${currentBase} ، ${targetText}`)
-        : targetText;
+    if (!AudioRecorder.isSupported()) {
+      setShowManualInput(true);
+      showToast('المتصفح لا يدعم تسجيل الصوت المباشر (MediaRecorder). يمكنك كتابة طلبك نصيًا.', 'warning');
+      return;
+    }
 
-    accumulatedBaseTranscriptRef.current = displayTranscript;
-    setTranscriptInput(displayTranscript);
-    setCommittedTextState(displayTranscript);
-    committedTranscriptRef.current = displayTranscript;
-    committedChunksRef.current = [displayTranscript];
-    processedFinalIndexRef.current = -1;
-    latestFullTranscriptRef.current = displayTranscript;
     setExecutionReport(null);
     setExecutionError(null);
-    setShowFullResultDetails(false);
+    setTranscriptionError(null);
+    livePreviewChunksRef.current = [];
+    setLiveInterimSpeech('');
 
-    if (!previousDraftForMerge) {
-      setIsEditingFields(false);
-      setSelectedTaxpayerIdOverride(undefined);
-      setSelectedPropertyIdOverride(undefined);
-      setSelectedUnitIdOverride(undefined);
-      autoExecutedPlanKeyRef.current = null;
+    if (!executionReport && transcriptInput.trim()) {
+      accumulatedBaseTranscriptRef.current = transcriptInput.trim();
+    } else {
+      accumulatedBaseTranscriptRef.current = '';
+      setTranscriptInput('');
+      setExtractedState(null);
     }
 
-    // Immediate deterministic parse + hybrid server Gemini AI enrichment on full accumulated text
-    const immediateExtracted = parseArabicVoiceCommandDeterministic(displayTranscript);
-    if (!previousDraftForMerge) {
-      setExtractedState(immediateExtracted);
+    const started = await audioRecorderRef.current?.start();
+    if (started) {
+      startLiveBrowserPreview();
+    }
+  };
+
+  // Step 2 -> Step 3 & 4: Stop Recording & Transcribe
+  const handleStopRecording = async () => {
+    if (phase !== 'recording') return;
+
+    setPhase('transcribing');
+    const livePreviewText = stopLiveBrowserPreview();
+    const result = await audioRecorderRef.current?.stop();
+    setAudioResult(result || null);
+
+    if (!result) {
+      // If recorder produced empty audio, fall back to live preview or manual
+      if (livePreviewText) {
+        setTranscriptionSource('browser_speech');
+        await proceedWithTranscript(livePreviewText, 'browser_speech');
+      } else {
+        setPhase('ready');
+      }
+      return;
     }
 
-    setIsAnalyzing(true);
+    // Call server Gemini STT layer
     try {
-      const hybridResult = await analyzeVoiceTranscriptHybrid(
-        displayTranscript,
-        workspaceSnapshot,
-        previousDraftForMerge || null
+      const serverStt = await transcribeAudioOnServer(
+        result.base64Audio,
+        result.mimeType,
+        dialect
       );
-      setExtractedState(hybridResult);
+
+      if (serverStt.success && serverStt.transcript.trim()) {
+        setTranscriptionSource('server_gemini');
+        setTranscriptionError(null);
+        await proceedWithTranscript(serverStt.transcript.trim(), 'server_gemini');
+      } else if (livePreviewText.trim()) {
+        // Server failed or was offline, fallback seamlessly to browser live capture
+        setTranscriptionSource('browser_speech');
+        setTranscriptionError(serverStt.error || 'تم استخدام التعرف المحلي لعدم توفر خادم النسخ');
+        await proceedWithTranscript(livePreviewText.trim(), 'browser_speech');
+      } else {
+        setTranscriptionSource('manual');
+        setTranscriptionError(serverStt.error || 'لم يتم تمييز كلمات واضحة في التسجيل');
+        setPhase('review');
+        setIsEditingTranscript(true);
+        showToast('لم نتمكن من تفريغ الصوت آلياً. يرجى كتابة طلبك أو إعادة التسجيل بصوت أوضح.', 'warning');
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (livePreviewText.trim()) {
+        setTranscriptionSource('browser_speech');
+        await proceedWithTranscript(livePreviewText.trim(), 'browser_speech');
+      } else {
+        setTranscriptionError(errMsg);
+        setPhase('review');
+        setIsEditingTranscript(true);
+      }
+    }
+  };
+
+  // Step 4 -> Step 5: Process Transcript & Run Understanding Layer
+  const proceedWithTranscript = async (
+    newText: string,
+    source: 'server_gemini' | 'browser_speech' | 'manual'
+  ) => {
+    const base = accumulatedBaseTranscriptRef.current.trim();
+    const cleanTurn = newText.trim();
+    const fullTranscript =
+      base && cleanTurn && !base.includes(cleanTurn)
+        ? `${base} ، ${cleanTurn}`
+        : cleanTurn || base;
+
+    setTranscriptInput(fullTranscript);
+    setTranscriptionSource(source);
+    setIsEditingTranscript(false);
+
+    await handleAnalyzeCommand(fullTranscript);
+  };
+
+  // Understanding Layer: Extract Intent, Entities & Plan
+  const handleAnalyzeCommand = async (
+    targetTranscript?: string,
+    previousDraftForMerge?: VoiceExtractedPayload | null
+  ) => {
+    const textToAnalyze = (targetTranscript ?? transcriptInput).trim();
+    if (!textToAnalyze) {
+      showToast('يرجى التحدث أو إدخال النص أولًا', 'warning');
+      setPhase('ready');
+      return;
+    }
+
+    setPhase('analyzing');
+    setExecutionReport(null);
+    setExecutionError(null);
+
+    // 1. Immediate deterministic extraction
+    const deterministic = parseArabicVoiceCommandDeterministic(textToAnalyze);
+    if (!previousDraftForMerge) {
+      setExtractedState(deterministic);
+    }
+
+    // 2. Hybrid Gemini NLU enrichment
+    try {
+      const enriched = await analyzeVoiceTranscriptHybrid(
+        textToAnalyze,
+        workspaceSnapshot,
+        previousDraftForMerge ?? extractedState
+      );
+      setExtractedState(enriched);
+    } catch {
+      // Keep deterministic result
     } finally {
-      setIsAnalyzing(false);
+      setPhase('review');
     }
   };
 
   const handleFollowUpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!followUpInput.trim() || !extractedState) return;
-    const answerText = followUpInput.trim();
+    const answer = followUpInput.trim();
     setFollowUpInput('');
-    await handleAnalyzeCommand(answerText, extractedState);
-  };
 
-  const stopSpeechListening = (triggerAnalysis = true) => {
-    manualStopRef.current = true;
-    if (restartTimeoutRef.current !== null) {
-      window.clearTimeout(restartTimeoutRef.current);
-      restartTimeoutRef.current = null;
-    }
-    setListeningState('stopping');
+    const currentFull = transcriptInput.trim();
+    const combined = `${currentFull} ، ${answer}`;
+    setTranscriptInput(combined);
+    accumulatedBaseTranscriptRef.current = combined;
 
-    // Flush any live interim speech into committed chunks so last word is never lost
-    const livePiece = interimSpeech ? sanitizeSpokenRepetitions(interimSpeech.trim()) : '';
-    if (livePiece) {
-      const prev = committedChunksRef.current;
-      if (!prev.includes(livePiece)) {
-        committedChunksRef.current.push(livePiece);
-      }
-    }
-    setInterimSpeech('');
-
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.stop();
-      } catch {
-        // ignore stop error
-      }
-      recognitionRef.current = null;
-    }
-    isRecognitionRunningRef.current = false;
-    setListeningState('idle');
-
-    const turnSpoken = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
-    const base = accumulatedBaseTranscriptRef.current.trim();
-    const finalSpoken = sanitizeSpokenRepetitions(
-      base && turnSpoken && !base.includes(turnSpoken)
-        ? `${base} ، ${turnSpoken}`
-        : turnSpoken || base || latestFullTranscriptRef.current.trim()
-    );
-
-    if (triggerAnalysis && finalSpoken) {
-      accumulatedBaseTranscriptRef.current = finalSpoken;
-      void handleAnalyzeCommand(
-        finalSpoken,
-        !executionReport ? extractedState : null
-      );
-    }
-  };
-
-  const startSpeechListeningSession = (isAutoRestart = false) => {
-    if (unmountedRef.current) {
-      return;
-    }
-
-    // If an existing recognition instance is still active, safely terminate it first to prevent overlapping sessions
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.onresult = null;
-        recognitionRef.current.stop();
-      } catch {
-        // ignore cleanup error
-      }
-      recognitionRef.current = null;
-    }
-    isRecognitionRunningRef.current = false;
-
-    const win = window as unknown as {
-      SpeechRecognition?: new () => SpeechRecognitionLike;
-      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-    };
-    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
-    if (!SpeechRec) {
-      setListeningState('idle');
-      setShowManualInput(true);
-      showToast(
-        'المتصفح الحالي لا يدعم الالتقاط الصوتي المباشر. يمكنك كتابة طلبك في الحقل المخصص.',
-        'warning'
-      );
-      return;
-    }
-
-    try {
-      processedFinalIndexRef.current = -1;
-
-      if (!isAutoRestart) {
-        manualStopRef.current = false;
-        consecutiveErrorCountRef.current = 0;
-
-        if (executionReport) {
-          // A previous command was already executed, start completely fresh
-          accumulatedBaseTranscriptRef.current = '';
-          setTranscriptInput('');
-          setCommittedTextState('');
-          committedTranscriptRef.current = '';
-          committedChunksRef.current = [];
-          latestFullTranscriptRef.current = '';
-          setExtractedState(null);
-          setExecutionReport(null);
-          setExecutionError(null);
-        } else {
-          // Continuing multi-turn command: keep previous draft and transcript base intact
-          accumulatedBaseTranscriptRef.current = transcriptInput.trim();
-          committedChunksRef.current = [];
-          setCommittedTextState(transcriptInput.trim());
-        }
-        setListeningState('starting');
-      }
-
-      const rec = new SpeechRec();
-      rec.lang = dialect;
-      rec.continuous = true;
-      rec.interimResults = true;
-
-      rec.onstart = () => {
-        if (unmountedRef.current) return;
-        isRecognitionRunningRef.current = true;
-        setListeningState('listening');
-      };
-
-      rec.onresult = (event: SpeechRecognitionEventLike) => {
-        if (unmountedRef.current) return;
-        consecutiveErrorCountRef.current = 0;
-
-        // 1. Commit newly finalized speech chunks monotonically
-        const resultsLen = event.results.length;
-        for (let i = 0; i < resultsLen; i++) {
-          const res = event.results[i];
-          if (res.isFinal && i > processedFinalIndexRef.current) {
-            const cleanFinal = sanitizeSpokenRepetitions((res[0]?.transcript || '').trim());
-            if (cleanFinal) {
-              const prevChunks = committedChunksRef.current;
-              const lastChunk = prevChunks[prevChunks.length - 1];
-              if (lastChunk !== cleanFinal && !prevChunks.includes(cleanFinal)) {
-                committedChunksRef.current.push(cleanFinal);
-              }
-            }
-            processedFinalIndexRef.current = i;
-          }
-        }
-
-        // 2. Derive live interim speech strictly from non-final results (never appended permanently)
-        let liveInterim = '';
-        for (let i = 0; i < resultsLen; i++) {
-          const res = event.results[i];
-          if (!res.isFinal) {
-            const piece = (res[0]?.transcript || '').trim();
-            if (piece) {
-              liveInterim += (liveInterim ? ' ' : '') + piece;
-            }
-          }
-        }
-        liveInterim = sanitizeSpokenRepetitions(liveInterim);
-        setInterimSpeech(liveInterim);
-
-        // 3. Update unified live display with base transcript + current turn without duplicating words
-        const turnCommitted = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
-        const turnLive = sanitizeSpokenRepetitions(
-          [turnCommitted, liveInterim].filter(Boolean).join(' ')
-        );
-        const base = accumulatedBaseTranscriptRef.current.trim();
-
-        const combinedLive = sanitizeSpokenRepetitions(
-          base && turnLive
-            ? `${base} ، ${turnLive}`
-            : turnLive || base
-        );
-
-        latestFullTranscriptRef.current = combinedLive;
-        setCommittedTextState(combinedLive);
-        committedTranscriptRef.current = combinedLive;
-        setTranscriptInput(combinedLive);
-      };
-
-      rec.onerror = (event: { error?: string }) => {
-        if (unmountedRef.current) return;
-        const errCode = event.error || '';
-        isRecognitionRunningRef.current = false;
-
-        if (
-          errCode === 'not-allowed' ||
-          errCode === 'service-not-allowed' ||
-          errCode === 'audio-capture'
-        ) {
-          manualStopRef.current = true;
-          setListeningState('idle');
-          setInterimSpeech('');
-          setShowManualInput(true);
-          showToast(
-            'تعذر الوصول إلى الميكروفون. يرجى تفعيل صلاحية الميكروفون أو كتابة طلبك نصيًا.',
-            'error'
-          );
-          return;
-        }
-
-        if (errCode !== 'no-speech' && errCode !== 'aborted') {
-          consecutiveErrorCountRef.current += 1;
-        }
-      };
-
-      rec.onend = () => {
-        isRecognitionRunningRef.current = false;
-        if (unmountedRef.current) return;
-
-        // If continuous mode is active and user did NOT click stop manually, safely auto-restart
-        if (
-          !manualStopRef.current &&
-          continuousModeRef.current &&
-          consecutiveErrorCountRef.current < 5
-        ) {
-          restartTimeoutRef.current = window.setTimeout(() => {
-            if (!manualStopRef.current && !unmountedRef.current) {
-              startSpeechListeningSession(true);
-            }
-          }, 220);
-          return;
-        }
-
-        setListeningState('idle');
-        setInterimSpeech('');
-        const turnSpoken = sanitizeSpokenRepetitions(committedChunksRef.current.join(' '));
-        const base = accumulatedBaseTranscriptRef.current.trim();
-        const finalSpoken = sanitizeSpokenRepetitions(
-          base && turnSpoken && !base.includes(turnSpoken)
-            ? `${base} ، ${turnSpoken}`
-            : turnSpoken || base || latestFullTranscriptRef.current.trim()
-        );
-        if (finalSpoken) {
-          accumulatedBaseTranscriptRef.current = finalSpoken;
-          void handleAnalyzeCommand(
-            finalSpoken,
-            !executionReport ? extractedState : null
-          );
-        }
-      };
-
-      recognitionRef.current = rec;
-      rec.start();
-    } catch {
-      isRecognitionRunningRef.current = false;
-      setListeningState('idle');
-      showToast('تعذر بدء التسجيل الصوتي في المتصفح', 'error');
-    }
-  };
-
-  const toggleSpeechListening = () => {
-    if (listeningState === 'listening' || listeningState === 'starting') {
-      stopSpeechListening(true);
-    } else {
-      startSpeechListeningSession(false);
-    }
+    await handleAnalyzeCommand(combined, extractedState);
   };
 
   const updateExtractedField = <K extends keyof VoiceExtractedPayload>(
@@ -641,14 +630,16 @@ export const VoiceAssistantScreen: React.FC = () => {
     setExtractedState((prev) => (prev ? { ...prev, [key]: value } : prev));
   };
 
-  // Stage 8: Execute Confirmed Plan via Whitelisted Context Services & Read Verified Results
+  // Step 6: Explicit User Confirmation Gate before executing into Firestore
   const handleExecuteConfirmedPlan = useCallback(
     async (planToExecute?: VoiceEnginePlan) => {
       const activePlan = planToExecute || currentPlan;
       if (!activePlan || !activePlan.canExecute || isExecuting) return;
 
       setIsExecuting(true);
+      setPhase('executing');
       setExecutionError(null);
+
       try {
         const { extracted, selectedTaxpayer, selectedProperty, selectedUnit, idempotencyKey } =
           activePlan;
@@ -894,8 +885,7 @@ export const VoiceAssistantScreen: React.FC = () => {
             ? ` — المتبقي المالي: ${finSummary.remainingBeforeOperation.toLocaleString('ar-SA')} ${finSummary.currency}`
             : '';
 
-          const apptTitle =
-            extracted.reminderTopic || `متابعة المكلف ${tpName}`;
+          const apptTitle = extracted.reminderTopic || `متابعة المكلف ${tpName}`;
 
           const apptId = await addAppointment({
             title: apptTitle,
@@ -1250,6 +1240,7 @@ export const VoiceAssistantScreen: React.FC = () => {
 
         if (report) {
           setExecutionReport(report);
+          setPhase('executed');
           if (autoSpeakReport) {
             speakArabicText(report.spokenSummary);
           }
@@ -1260,6 +1251,7 @@ export const VoiceAssistantScreen: React.FC = () => {
             ? err.message
             : 'تعذر إتمام العملية حاليًا. يرجى مراجعة البيانات والمحاولة مرة أخرى.';
         setExecutionError(message);
+        setPhase('review');
         showToast(message, 'error');
       } finally {
         setIsExecuting(false);
@@ -1294,28 +1286,7 @@ export const VoiceAssistantScreen: React.FC = () => {
     ]
   );
 
-  // Auto-execute read-only queries immediately when ready without requiring unnecessary confirmation
-  useEffect(() => {
-    if (!currentPlan || isAnalyzing || isExecuting || executionReport || executionError) return;
-    const isReadOnlyQuery = !currentPlan.requiresSensitiveConfirmation;
-    if (
-      isReadOnlyQuery &&
-      currentPlan.canExecute &&
-      autoExecutedPlanKeyRef.current !== currentPlan.idempotencyKey
-    ) {
-      autoExecutedPlanKeyRef.current = currentPlan.idempotencyKey;
-      void handleExecuteConfirmedPlan(currentPlan);
-    }
-  }, [
-    currentPlan,
-    isAnalyzing,
-    isExecuting,
-    executionReport,
-    executionError,
-    handleExecuteConfirmedPlan,
-  ]);
-
-  // Build clean summary rows for the "فهمت طلبك" card based on the actual extracted command
+  // Build clean summary rows for the "فهمت طلبك" card
   const summaryRows = useMemo(() => {
     if (!currentPlan) return [];
     const { extracted, selectedTaxpayer, selectedProperty, selectedUnit } = currentPlan;
@@ -1347,7 +1318,7 @@ export const VoiceAssistantScreen: React.FC = () => {
         rows.push({ label: 'عدد الشقق', value: String(extracted.apartmentsCount) });
       }
       if (extracted.shopsCount > 0) {
-        rows.push({ label: 'المحلات التجارية', value: String(extracted.shopsCount) });
+        rows.push({ label: 'المحلات التجارية (الفتحات)', value: String(extracted.shopsCount) });
       }
       if (extracted.officesCount > 0) {
         rows.push({ label: 'المكاتب', value: String(extracted.officesCount) });
@@ -1433,16 +1404,6 @@ export const VoiceAssistantScreen: React.FC = () => {
     return rows;
   }, [currentPlan]);
 
-  const isListeningActive = listeningState === 'listening' || listeningState === 'starting';
-
-  // Status text according to requirements: «جاهز للاستماع» | «أستمع إليك الآن» | «جارٍ فهم طلبك»
-  const statusHeadline = isAnalyzing
-    ? 'جارٍ فهم طلبك'
-    : isListeningActive
-      ? 'أستمع إليك الآن'
-      : 'جاهز للاستماع';
-
-  // Single question at a time if missing info or ambiguity
   const singleQuestionText = useMemo(() => {
     if (!currentPlan) return null;
     if (currentPlan.disambiguationRequired) {
@@ -1457,31 +1418,41 @@ export const VoiceAssistantScreen: React.FC = () => {
     return null;
   }, [currentPlan]);
 
+  const formattedTimer = useMemo(() => {
+    const mins = Math.floor(recordingDuration / 60);
+    const secs = recordingDuration % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }, [recordingDuration]);
+
   return (
-    <div className="max-w-lg mx-auto space-y-4 pb-10">
+    <div className="max-w-lg mx-auto space-y-4 pb-12" dir="rtl">
       {/* 1. Primary Mobile Voice Assistant Card */}
-      <div className="rounded-3xl bg-gradient-to-b from-[#0B192C] via-[#102542] to-[#0D3B66] text-white p-6 shadow-lg border border-sky-400/20">
-        {/* Top Row: Short Title + Subtle Sound Toggle */}
+      <div className="rounded-3xl bg-gradient-to-b from-[#0B192C] via-[#102542] to-[#0D3B66] text-white p-6 shadow-xl border border-sky-400/20">
+        {/* Top Bar: Title + Sound Toggle + Manual Write */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-teal-400/20 border border-teal-300/30 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-teal-300" />
             </div>
-            <h2 className="text-lg font-extrabold tracking-tight">المساعد الصوتي</h2>
+            <div>
+              <h2 className="text-lg font-extrabold tracking-tight">المساعد الصوتي الميداني</h2>
+              <span className="text-[11px] text-sky-200/80 block leading-none">
+                تسجيل متصل عبر MediaRecorder + تفريغ عربي فوري
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-1.5">
             <button
               type="button"
               onClick={() => setShowManualInput((v) => !v)}
-              title="كتابة الطلب نصيًا"
               className={`px-2.5 py-1.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
                 showManualInput
                   ? 'bg-white/20 border-white/30 text-white'
                   : 'bg-white/5 border-white/10 text-sky-200 hover:bg-white/10'
               }`}
             >
-              كتابة نصية
+              كتابة
             </button>
             <button
               type="button"
@@ -1489,7 +1460,7 @@ export const VoiceAssistantScreen: React.FC = () => {
                 if (isSpeaking) stopSpeaking();
                 setAutoSpeakReport((v) => !v);
               }}
-              title={autoSpeakReport ? 'إيقاف القراءة الصوتية' : 'تفعيل القراءة الصوتية'}
+              title={autoSpeakReport ? 'إيقاف النطق' : 'تفعيل النطق'}
               className={`p-2 rounded-xl border transition cursor-pointer ${
                 autoSpeakReport
                   ? 'bg-teal-500/20 border-teal-400/40 text-teal-200'
@@ -1501,144 +1472,251 @@ export const VoiceAssistantScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Center Section: Status + Large Touch-Friendly Microphone Button */}
-        <div className="py-6 flex flex-col items-center text-center">
-          <div className="inline-flex items-center gap-2 mb-5">
+        {/* Center: Stage Status + Large Microphone Control */}
+        <div className="py-5 flex flex-col items-center text-center">
+          {/* Status Label */}
+          <div className="inline-flex items-center gap-2 mb-4 px-3 py-1 rounded-full bg-white/10 border border-white/15">
             <span
               className={`w-2.5 h-2.5 rounded-full ${
-                isAnalyzing
-                  ? 'bg-amber-400 animate-ping'
-                  : isListeningActive
-                    ? 'bg-rose-400 animate-ping'
+                phase === 'recording'
+                  ? 'bg-rose-400 animate-ping'
+                  : phase === 'transcribing' || phase === 'analyzing'
+                    ? 'bg-amber-400 animate-pulse'
                     : 'bg-teal-400'
               }`}
             />
-            <span className="text-base font-extrabold text-sky-100">{statusHeadline}</span>
+            <span className="text-xs font-extrabold text-sky-100">
+              {phase === 'recording'
+                ? `جارٍ تسجيل كلامك (${formattedTimer})`
+                : phase === 'transcribing'
+                  ? 'جارٍ تحويل التسجيل إلى نص...'
+                  : phase === 'analyzing'
+                    ? 'جارٍ فهم وتحليل الأمر...'
+                    : phase === 'review'
+                      ? 'تم التقاط الأمر — جاهز للمراجعة'
+                      : 'جاهز للتسجيل'}
+            </span>
           </div>
 
-          {/* Large Microphone Button */}
+          {/* Active Audio Visualizer Waves (while recording) */}
+          {phase === 'recording' && (
+            <div className="flex items-center justify-center gap-1.5 h-8 mb-4">
+              {[0.4, 0.7, 1.0, 0.6, 0.85, 0.5, 0.9, 0.3].map((factor, i) => {
+                const height = Math.max(6, Math.min(32, Math.round((recordingVolume * factor * 32) / 100)));
+                return (
+                  <span
+                    key={i}
+                    style={{ height: `${height}px` }}
+                    className="w-1.5 rounded-full bg-gradient-to-t from-teal-400 to-rose-400 transition-all duration-75"
+                  />
+                );
+              })}
+            </div>
+          )}
+
+          {/* Main Microphone Button */}
           <button
             type="button"
-            onClick={toggleSpeechListening}
-            aria-label={isListeningActive ? 'إيقاف الاستماع' : 'بدء الاستماع'}
-            className={`w-24 h-24 rounded-full flex flex-col items-center justify-center transition-all shadow-xl cursor-pointer select-none ${
-              isListeningActive
-                ? 'bg-rose-500 hover:bg-rose-400 text-white ring-8 ring-rose-500/25 scale-105'
-                : 'bg-gradient-to-br from-teal-400 to-[#0284C7] hover:opacity-95 text-slate-950 ring-8 ring-teal-400/15'
+            onClick={phase === 'recording' ? handleStopRecording : handleStartRecording}
+            disabled={phase === 'transcribing' || phase === 'analyzing' || phase === 'executing'}
+            aria-label={phase === 'recording' ? 'إيقاف التسجيل' : 'بدء التسجيل'}
+            className={`w-24 h-24 rounded-full flex flex-col items-center justify-center transition-all shadow-xl cursor-pointer select-none disabled:opacity-50 ${
+              phase === 'recording'
+                ? 'bg-rose-500 hover:bg-rose-400 text-white ring-8 ring-rose-500/25 scale-105 animate-pulse'
+                : phase === 'transcribing' || phase === 'analyzing'
+                  ? 'bg-amber-500 text-white ring-8 ring-amber-500/20'
+                  : 'bg-gradient-to-br from-teal-400 to-[#0284C7] hover:opacity-95 text-slate-950 ring-8 ring-teal-400/15'
             }`}
           >
-            {isListeningActive ? (
+            {phase === 'recording' ? (
               <MicOff className="w-9 h-9 stroke-[2.2]" />
+            ) : phase === 'transcribing' || phase === 'analyzing' ? (
+              <Loader2 className="w-9 h-9 animate-spin" />
             ) : (
               <Mic className="w-9 h-9 stroke-[2.2]" />
             )}
           </button>
 
           <p className="text-xs text-sky-200/80 mt-3 font-medium">
-            {isListeningActive
-              ? 'تحدث بطبيعتك... واضغط على الزر عند الانتهاء'
-              : 'اضغط على الميكروفون وتحدث مباشرة'}
+            {phase === 'recording'
+              ? 'تحدث بأمرك كاملًا بدون استعجال... ثم اضغط لإيقاف التسجيل'
+              : phase === 'transcribing'
+                ? 'جارٍ معالجة الملف الصوتي بالكامل عبر الذكاء الاصطناعي...'
+                : 'اضغط على الميكروفون وتحدث بأمرك الميداني'}
           </p>
 
-          {/* Small Stop or Cancel Button Depending on State */}
-          {(isListeningActive || transcriptInput) && (
-            <div className="flex items-center justify-center gap-2.5 mt-4">
-              {isListeningActive && (
-                <button
-                  type="button"
-                  onClick={() => stopSpeechListening(true)}
-                  className="px-4 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-bold flex items-center gap-1.5 border border-white/20 transition cursor-pointer"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-300" />
-                  إنهاء الاستماع وفهم الطلب
-                </button>
-              )}
+          {/* Actions during/after recording */}
+          <div className="flex items-center justify-center gap-2 mt-4">
+            {phase === 'recording' && (
+              <button
+                type="button"
+                onClick={handleStopRecording}
+                className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                إيقاف التسجيل وتحويل النص
+              </button>
+            )}
+
+            {(phase === 'recording' || transcriptInput || audioResult) && (
               <button
                 type="button"
                 onClick={resetCurrentCommand}
-                className="px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/30 text-sky-100 hover:text-white text-xs font-bold flex items-center gap-1 border border-white/10 transition cursor-pointer"
+                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-rose-500/30 text-sky-100 hover:text-white text-xs font-bold flex items-center gap-1 border border-white/10 transition cursor-pointer"
               >
                 <X className="w-3.5 h-3.5" />
-                {isListeningActive ? 'إلغاء الاستماع' : 'مسح'}
+                {phase === 'recording' ? 'إلغاء' : 'بدء من جديد'}
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        {/* Readable Speech Display Box (Distinguishes Final Text vs Interim Speech) */}
-        {(committedTextState || interimSpeech || transcriptInput) && !showManualInput && (
-          <div className="rounded-2xl bg-slate-950/50 border border-white/15 p-4 text-right space-y-1.5">
-            <div className="text-[11px] font-bold text-teal-300">ما قلته:</div>
-            <p className="text-sm font-bold leading-relaxed text-white">
-              <span>{committedTextState || transcriptInput}</span>
-              {interimSpeech && (
-                <span className="text-teal-300/90 font-normal mr-1.5 underline decoration-teal-400/50 decoration-dotted">
-                  {interimSpeech}
-                </span>
-              )}
-            </p>
+        {/* Live speech recognition preview while speaking */}
+        {phase === 'recording' && liveInterimSpeech && (
+          <div className="rounded-2xl bg-slate-950/40 border border-white/10 p-3 text-right">
+            <span className="text-[11px] font-bold text-teal-300 ml-1.5">أستمع الآن:</span>
+            <span className="text-xs text-slate-200 font-medium">{liveInterimSpeech}</span>
           </div>
         )}
 
-        {/* Optional Manual Text Input for Quiet Environments */}
+        {/* Manual Text Input Accordion */}
         {showManualInput && (
-          <div className="rounded-2xl bg-slate-950/55 border border-white/15 p-3.5 space-y-2.5">
+          <div className="rounded-2xl bg-slate-950/60 border border-white/15 p-3.5 space-y-2.5 mt-3">
             <textarea
               rows={2}
               value={transcriptInput}
-              onChange={(e) => {
-                setTranscriptInput(e.target.value);
-                setCommittedTextState(e.target.value);
-                committedTranscriptRef.current = e.target.value;
-                latestFullTranscriptRef.current = e.target.value;
-              }}
-              placeholder="اكتب طلبك هنا... مثال: سجل زيارة للمكلف خالد اليوم"
-              className="w-full rounded-xl bg-slate-900/90 border border-white/15 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-teal-400"
+              onChange={(e) => setTranscriptInput(e.target.value)}
+              placeholder="اكتب طلبك الميداني هنا... مثال: سجل عقار باسم كامل في شارع الثلاثين أربعة أدوار وخمس شقق"
+              className="w-full rounded-xl bg-slate-900 border border-white/15 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:outline-none focus:border-teal-400"
             />
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => void handleAnalyzeCommand()}
-                disabled={!transcriptInput.trim() || isAnalyzing}
+                disabled={!transcriptInput.trim() || phase === 'analyzing'}
                 className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                فهم الطلب
+                فهم وتحليل الطلب
               </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* 2. After Speaking: Single Clean Card «فهمت طلبك» (Hidden once executionReport is shown) */}
+      {/* 2. Step 4: Full Transcribed Text & Audio Review Card */}
+      {transcriptInput && !executionReport && (
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+            <div className="flex items-center gap-2">
+              <FileAudio className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+              <span className="text-xs font-extrabold text-slate-800 dark:text-slate-100">
+                النص المفرغ من التسجيل
+              </span>
+              <span
+                className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  transcriptionSource === 'server_gemini'
+                    ? 'bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-300'
+                    : transcriptionSource === 'browser_speech'
+                      ? 'bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300'
+                      : 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300'
+                }`}
+              >
+                {transcriptionSource === 'server_gemini'
+                  ? 'نسخ ذكي عالي الدقة'
+                  : transcriptionSource === 'browser_speech'
+                    ? 'نسخ محلي'
+                    : 'نص يدوي'}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {audioResult?.audioUrl && (
+                <button
+                  type="button"
+                  onClick={handleAudioPlaybackToggle}
+                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                  title={isPlayingAudio ? 'إيقاف الصوت' : 'استماع للتسجيل'}
+                >
+                  {isPlayingAudio ? <Pause className="w-3.5 h-3.5 text-rose-500" /> : <Play className="w-3.5 h-3.5 text-teal-600" />}
+                  <span className="hidden sm:inline">{isPlayingAudio ? 'إيقاف' : 'استماع'}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsEditingTranscript((v) => !v)}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1 cursor-pointer"
+              >
+                <Edit3 className="w-3 h-3" />
+                {isEditingTranscript ? 'إلغاء' : 'تعديل النص'}
+              </button>
+            </div>
+          </div>
+
+          {transcriptionError && (
+            <div className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 p-2 rounded-xl border border-amber-200 dark:border-amber-800">
+              ملاحظة: {transcriptionError}
+            </div>
+          )}
+
+          {isEditingTranscript ? (
+            <div className="space-y-2">
+              <textarea
+                rows={3}
+                value={transcriptInput}
+                onChange={(e) => setTranscriptInput(e.target.value)}
+                className="w-full rounded-2xl bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 p-3 text-sm text-slate-900 dark:text-white font-bold leading-relaxed focus:outline-none focus:border-teal-500"
+              />
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditingTranscript(false);
+                    void handleAnalyzeCommand(transcriptInput);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-extrabold flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  حفظ وإعادة التحليل
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm font-bold leading-relaxed text-slate-900 dark:text-slate-100 bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl border border-slate-100 dark:border-slate-800/80">
+              «{transcriptInput}»
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* 3. Step 5 & 6: Extracted Plan, Structured Summary & Explicit Confirmation Gate */}
       {currentPlan && !executionReport && (
         <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-          {/* Card Header */}
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
             <div>
               <span className="text-xs font-extrabold text-teal-600 dark:text-teal-400">
-                فهمت طلبك
+                فهمت طلبك الميداني
               </span>
               <h3 className="text-base font-extrabold text-slate-900 dark:text-white mt-0.5">
                 العملية: {SIMPLE_INTENT_NAMES[currentPlan.extracted.intent] || currentPlan.intentLabel}
               </h3>
             </div>
 
-            {isAnalyzing && (
-              <span className="text-xs font-bold text-sky-600 dark:text-sky-400 animate-pulse">
-                جارٍ التحقق...
+            {phase === 'analyzing' && (
+              <span className="text-xs font-bold text-sky-600 dark:text-sky-400 flex items-center gap-1 animate-pulse">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                جارٍ التحليل...
               </span>
             )}
           </div>
 
-          {/* Subtle Self-Correction Note if User Corrected Themselves During Speech */}
           {currentPlan.extracted.selfCorrectionDetected && (
             <div className="p-3 rounded-2xl bg-teal-50/80 dark:bg-teal-950/30 border border-teal-200 dark:border-teal-800/70 text-xs text-teal-900 dark:text-teal-200 font-bold">
-              تم اعتماد التصحيح الأخير في كلامك تلقائيًا.
+              {currentPlan.extracted.selfCorrectionNote || 'تم رصد وتطبيق استدراكك وتصحيحك أثناء الكلام تلقائيًا.'}
             </div>
           )}
 
-          {/* Read-View of Extracted Summary Fields */}
+          {/* Structured Field Values Table */}
           {!isEditingFields && summaryRows.length > 0 && (
             <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-200/70 dark:divide-slate-800">
               {summaryRows.map((row, idx) => (
@@ -1650,14 +1728,12 @@ export const VoiceAssistantScreen: React.FC = () => {
             </div>
           )}
 
-          {/* Edit Mode Form (Toggled when user presses «تعديل») */}
+          {/* Edit Extracted Fields Form */}
           {isEditingFields && (
             <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-4 space-y-3">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                  تعديل البيانات قبل التنفيذ
-                </span>
-              </div>
+              <span className="text-xs font-extrabold text-slate-700 dark:text-slate-200 block mb-1">
+                تعديل الحقول المستخرجة
+              </span>
 
               <div>
                 <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
@@ -1752,7 +1828,7 @@ export const VoiceAssistantScreen: React.FC = () => {
                     </div>
                     <div>
                       <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                        المحلات التجارية
+                        المحلات التجارية (الفتحات)
                       </label>
                       <input
                         type="number"
@@ -1775,24 +1851,6 @@ export const VoiceAssistantScreen: React.FC = () => {
                         className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                        تصنيف العقار
-                      </label>
-                      <select
-                        value={currentPlan.extracted.propertyType}
-                        onChange={(e) =>
-                          updateExtractedField('propertyType', e.target.value as PropertyType)
-                        }
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                      >
-                        <option value="mixed">مختلط (سكني وتجاري)</option>
-                        <option value="residential">سكني</option>
-                        <option value="commercial">تجاري</option>
-                        <option value="industrial">صناعي</option>
-                        <option value="agricultural">زراعي</option>
-                      </select>
-                    </div>
                   </>
                 )}
 
@@ -1813,87 +1871,11 @@ export const VoiceAssistantScreen: React.FC = () => {
                     />
                   </div>
                 )}
-
-                {(currentPlan.intent === 'create_appointment' ||
-                  currentPlan.intent === 'create_visit') && (
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                      التاريخ
-                    </label>
-                    <input
-                      type="date"
-                      value={currentPlan.extracted.dateIso}
-                      onChange={(e) => updateExtractedField('dateIso', e.target.value)}
-                      className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                    />
-                  </div>
-                )}
-
-                {currentPlan.intent === 'create_appointment' && (
-                  <>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                        الوقت
-                      </label>
-                      <input
-                        type="time"
-                        value={currentPlan.extracted.timeStr}
-                        onChange={(e) => updateExtractedField('timeStr', e.target.value)}
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                      />
-                    </div>
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                        موضوع الموعد
-                      </label>
-                      <input
-                        type="text"
-                        value={currentPlan.extracted.reminderTopic}
-                        onChange={(e) => updateExtractedField('reminderTopic', e.target.value)}
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                      />
-                    </div>
-                  </>
-                )}
-
-                {currentPlan.intent === 'update_agent_phone' && (
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                      رقم هاتف الوكيل الجديد
-                    </label>
-                    <input
-                      type="text"
-                      value={currentPlan.extracted.agentPhone}
-                      onChange={(e) => updateExtractedField('agentPhone', e.target.value)}
-                      className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                    />
-                  </div>
-                )}
-
-                {currentPlan.intent === 'update_unit_type' && (
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 dark:text-slate-400 mb-1">
-                      النوع الجديد للوحدة
-                    </label>
-                    <select
-                      value={currentPlan.extracted.targetUnitType}
-                      onChange={(e) =>
-                        updateExtractedField('targetUnitType', e.target.value as UnitType)
-                      }
-                      className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
-                    >
-                      <option value="shop">محل تجاري</option>
-                      <option value="apartment">شقة سكنية</option>
-                      <option value="office">مكتب</option>
-                      <option value="warehouse">مستودع</option>
-                    </select>
-                  </div>
-                )}
               </div>
             </div>
           )}
 
-          {/* Single Question at a Time: Disambiguation OR Missing Field Clarification */}
+          {/* Clarification or Disambiguation */}
           {singleQuestionText && (
             <div className="p-4 rounded-2xl bg-amber-50/90 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 space-y-3">
               <div className="flex items-start gap-2 text-amber-900 dark:text-amber-200 font-extrabold text-xs leading-relaxed">
@@ -1932,12 +1914,12 @@ export const VoiceAssistantScreen: React.FC = () => {
                     type="text"
                     value={followUpInput}
                     onChange={(e) => setFollowUpInput(e.target.value)}
-                    placeholder="اكتب الإجابة هنا أو اضغط الميكروفون للتحدث..."
+                    placeholder="اكتب الإجابة التكميلية هنا..."
                     className="flex-1 rounded-xl border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-900 px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
                   />
                   <button
                     type="submit"
-                    disabled={!followUpInput.trim() || isAnalyzing}
+                    disabled={!followUpInput.trim() || phase === 'analyzing'}
                     className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1 cursor-pointer"
                   >
                     <Send className="w-3.5 h-3.5" />
@@ -1948,62 +1930,59 @@ export const VoiceAssistantScreen: React.FC = () => {
             </div>
           )}
 
-          {/* Permission or Security Block Message */}
-          {(currentPlan.permissionError || currentPlan.deleteBlockedReason) && (
-            <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-xs font-bold text-rose-800 dark:text-rose-200 leading-relaxed">
-              {currentPlan.permissionError || currentPlan.deleteBlockedReason}
-            </div>
-          )}
-
-          {/* Execution Error Message if Save Failed */}
           {executionError && (
             <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-xs font-bold text-rose-800 dark:text-rose-200 leading-relaxed">
-              <div>تعذر تنفيذ العملية: {executionError}</div>
-              <div className="text-[11px] font-normal mt-1 opacity-90">
-                يمكنك مراجعة البيانات من زر «تعديل» ثم المحاولة مرة أخرى.
-              </div>
+              تعذر التنفيذ: {executionError}
             </div>
           )}
 
-          {/* Action Buttons: [تعديل] [إلغاء] [تأكيد التنفيذ] */}
+          {/* Phase 6 Explicit Confirmation Gate: User Must Click to Write into Firestore */}
           <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setIsEditingFields((v) => !v)}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer"
               >
                 <Edit3 className="w-3.5 h-3.5" />
-                {isEditingFields ? 'تم التعديل' : 'تعديل'}
+                {isEditingFields ? 'إنهاء التعديل' : 'تعديل الحقول'}
               </button>
 
               <button
                 type="button"
                 onClick={resetCurrentCommand}
-                className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-slate-600 dark:text-slate-300 hover:text-rose-600 text-xs font-extrabold transition cursor-pointer"
+                className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-slate-600 dark:text-slate-300 hover:text-rose-600 text-xs font-extrabold transition cursor-pointer"
               >
                 إلغاء
               </button>
             </div>
 
-            {currentPlan.requiresSensitiveConfirmation && (
-              <button
-                type="button"
-                disabled={!currentPlan.canExecute || isExecuting}
-                onClick={() => void handleExecuteConfirmedPlan()}
-                className="flex-1 sm:flex-initial justify-center px-5 py-2.5 rounded-xl bg-gradient-to-l from-[#0284C7] to-[#0D9488] hover:opacity-95 disabled:opacity-40 text-white font-extrabold text-xs flex items-center gap-2 shadow-md transition cursor-pointer"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                {isExecuting ? 'جارٍ الحفظ...' : 'تأكيد التنفيذ'}
-              </button>
-            )}
+            {/* Crucial Explicit Confirmation Button */}
+            <button
+              type="button"
+              disabled={!currentPlan.canExecute || isExecuting}
+              onClick={() => void handleExecuteConfirmedPlan()}
+              className="flex-1 sm:flex-initial justify-center px-6 py-2.5 rounded-2xl bg-gradient-to-l from-[#0284C7] to-[#0D9488] hover:opacity-95 disabled:opacity-40 text-white font-extrabold text-sm flex items-center gap-2 shadow-lg transition cursor-pointer"
+            >
+              {isExecuting ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>جارٍ الحفظ في السجلات...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>تأكيد وتنفيذ العملية في السجلات</span>
+                </>
+              )}
+            </button>
           </div>
         </div>
       )}
 
-      {/* 3. Post-Execution Concise Result Card */}
+      {/* 4. Execution Complete Report Card */}
       {executionReport && (
-        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border-2 border-emerald-500/60 shadow-md space-y-4">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border-2 border-emerald-500/60 shadow-lg space-y-4">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
@@ -2022,14 +2001,13 @@ export const VoiceAssistantScreen: React.FC = () => {
             <button
               type="button"
               onClick={() => speakArabicText(executionReport.spokenSummary)}
-              title="قراءة النتيجة صوتيًا"
+              title="قراءة النتيجة"
               className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0 cursor-pointer"
             >
               <Play className="w-4 h-4" />
             </button>
           </div>
 
-          {/* Essential Result Details */}
           <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-800 divide-y divide-slate-200/70 dark:divide-slate-800">
             {executionReport.verifiedDetails
               .slice(0, showFullResultDetails ? executionReport.verifiedDetails.length : 3)
@@ -2041,59 +2019,6 @@ export const VoiceAssistantScreen: React.FC = () => {
               ))}
           </div>
 
-          {/* Expanded Details (Units or Extra Verified Rows) */}
-          {showFullResultDetails &&
-            executionReport.createdUnitNumbers &&
-            executionReport.createdUnitNumbers.length > 0 && (
-              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800">
-                <div className="text-xs font-bold text-slate-600 dark:text-slate-300 mb-2">
-                  الوحدات المسجلة ({executionReport.createdUnitsCount}):
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {executionReport.createdUnitNumbers.map((uNum, idx) => (
-                    <span
-                      key={idx}
-                      className="text-xs text-slate-700 dark:text-slate-200 font-bold"
-                    >
-                      {uNum}
-                      {idx < executionReport.createdUnitNumbers!.length - 1 ? ' · ' : ''}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-          {/* Search Results List if Search Query */}
-          {executionReport.searchResults && (
-            <div className="space-y-2">
-              {executionReport.searchResults.taxpayers.map((tp) => (
-                <div
-                  key={tp.id}
-                  className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800"
-                >
-                  <div>
-                    <div className="text-xs font-extrabold text-slate-900 dark:text-white">
-                      {tp.fullName}
-                    </div>
-                    <div className="text-[11px] text-slate-500">{tp.address}</div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedTaxpayerId(tp.id);
-                      setActiveScreen('taxpayers');
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-sky-600 text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    عرض التفاصيل
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Result Actions: [عرض التفاصيل] [طلب صوتي جديد] */}
           <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
               {executionReport.createdTaxpayerId && (
@@ -2106,33 +2031,7 @@ export const VoiceAssistantScreen: React.FC = () => {
                   className="px-4 py-2 rounded-xl bg-[#0B192C] dark:bg-sky-600 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
-                  عرض التفاصيل في ملف المكلف
-                </button>
-              )}
-
-              {!executionReport.createdTaxpayerId && executionReport.createdPropertyId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedPropertyId(executionReport.createdPropertyId!);
-                    setActiveScreen('properties');
-                  }}
-                  className="px-4 py-2 rounded-xl bg-[#0B192C] dark:bg-sky-600 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Building2 className="w-3.5 h-3.5" />
-                  عرض تفاصيل العقار
-                </button>
-              )}
-
-              {(executionReport.verifiedDetails.length > 3 ||
-                (executionReport.createdUnitNumbers &&
-                  executionReport.createdUnitNumbers.length > 0)) && (
-                <button
-                  type="button"
-                  onClick={() => setShowFullResultDetails((v) => !v)}
-                  className="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
-                >
-                  {showFullResultDetails ? 'إخفاء التفاصيل الإضافية' : 'عرض التفاصيل'}
+                  عرض في ملف المكلف
                 </button>
               )}
             </div>
@@ -2140,16 +2039,16 @@ export const VoiceAssistantScreen: React.FC = () => {
             <button
               type="button"
               onClick={resetCurrentCommand}
-              className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-sm"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              طلب جديد
+              طلب صوتي جديد
             </button>
           </div>
         </div>
       )}
 
-      {/* 4. Hidden-by-Default Advanced Settings & Diagnostics Drawer (Preserves all admin/diagnostic features off the main view) */}
+      {/* 5. Diagnostic Settings & Quick Samples Drawer */}
       <div className="pt-2">
         <button
           type="button"
@@ -2158,27 +2057,22 @@ export const VoiceAssistantScreen: React.FC = () => {
         >
           <span className="flex items-center gap-2">
             <Settings2 className="w-4 h-4" />
-            خيارات متقدمة وتشخيص المحرك الصوتي
+            خيارات الميكروفون وتشخيص المحرك
           </span>
-          {showAdvancedDiagnostics ? (
-            <ChevronUp className="w-4 h-4" />
-          ) : (
-            <ChevronDown className="w-4 h-4" />
-          )}
+          {showAdvancedDiagnostics ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
 
         {showAdvancedDiagnostics && (
           <div className="mt-3 space-y-4 bg-white dark:bg-slate-900 rounded-3xl p-4 border border-slate-200 dark:border-slate-800 shadow-xs">
-            {/* Voice Engine Settings */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
               <span className="text-xs font-extrabold text-slate-700 dark:text-slate-200">
-                إعدادات الالتقاط واللهجة:
+                لهجة التفريغ الصوتي:
               </span>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setDialect('ar-YE')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                  className={`px-3 py-1 rounded-lg text-xs font-bold border cursor-pointer ${
                     dialect === 'ar-YE'
                       ? 'bg-teal-500/15 border-teal-500 text-teal-800 dark:text-teal-300'
                       : 'border-slate-200 dark:border-slate-700 text-slate-500'
@@ -2189,32 +2083,20 @@ export const VoiceAssistantScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setDialect('ar-SA')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                  className={`px-3 py-1 rounded-lg text-xs font-bold border cursor-pointer ${
                     dialect === 'ar-SA'
                       ? 'bg-teal-500/15 border-teal-500 text-teal-800 dark:text-teal-300'
                       : 'border-slate-200 dark:border-slate-700 text-slate-500'
                   }`}
                 >
-                  العربية (ar-SA)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setContinuousMode((v) => !v)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
-                    continuousMode
-                      ? 'bg-sky-500/15 border-sky-500 text-sky-800 dark:text-sky-300'
-                      : 'border-slate-200 dark:border-slate-700 text-slate-500'
-                  }`}
-                >
-                  {continuousMode ? 'الاستماع المستمر: مفعّل' : 'الاستماع المستمر: متوقف'}
+                  العربية العامة (ar-SA)
                 </button>
               </div>
             </div>
 
-            {/* Quick Sample Commands for Testing */}
             <div className="space-y-2">
               <div className="text-xs font-extrabold text-slate-700 dark:text-slate-300">
-                أمثلة سريعة للتجربة:
+                أوامر تجريبية سريعة:
               </div>
               <div className="grid grid-cols-1 gap-1.5">
                 {SAMPLE_VOICE_COMMANDS.map((sample, idx) => (
@@ -2223,6 +2105,7 @@ export const VoiceAssistantScreen: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setShowAdvancedDiagnostics(false);
+                      setTranscriptInput(sample.command);
                       void handleAnalyzeCommand(sample.command);
                     }}
                     className="text-right p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:border-sky-500 bg-slate-50/70 dark:bg-slate-800/40 text-xs font-bold text-slate-700 dark:text-slate-200 transition cursor-pointer"
@@ -2233,12 +2116,11 @@ export const VoiceAssistantScreen: React.FC = () => {
               </div>
             </div>
 
-            {/* 8-Stage Pipeline & Technical Diagnostics (Only when a plan is active) */}
             {currentPlan && (
               <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
                 <div className="flex items-center gap-1.5 text-xs font-extrabold text-slate-700 dark:text-slate-200">
                   <ShieldCheck className="w-4 h-4 text-teal-600" />
-                  <span>تشخيص المراحل الثماني للمحرك الصوتي</span>
+                  <span>مراحل معالجة الخطة والأمان</span>
                 </div>
                 <div className="space-y-1.5">
                   {currentPlan.stages.map((st) => (

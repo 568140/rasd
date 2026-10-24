@@ -263,25 +263,26 @@ export function normalizeArabicSpeech(input: string): string {
 }
 
 /**
- * Strips accidental speech repetitions (words or multi-word ngrams) from speech recognizer
+ * Strips accidental speech recognizer stutter restarts while preserving legitimate names, numbers and user words.
+ * Does NOT strip duplicate single words so names like «كامل كامل» or counts like «خمسة خمسة» are never corrupted.
  */
 export function sanitizeSpokenRepetitions(input: string): string {
   if (!input) return '';
   let text = input.replace(/\s+/g, ' ').trim();
 
-  // 1. Remove duplicate adjacent single words (e.g. "شارع شارع" -> "شارع", "كامل كامل" -> "كامل")
-  text = text.replace(/([\u0600-\u06FF0-9]+)(?:\s+\1)+(?=\s|$)/gu, '$1');
-
-  // 2. Remove duplicate 2-word phrases (e.g. "أضف إلى أضف إلى" -> "أضف إلى")
-  text = text.replace(/([\u0600-\u06FF0-9]+\s+[\u0600-\u06FF0-9]+)(?:\s+\1)+(?=\s|$)/gu, '$1');
-
-  // 3. Remove duplicate 3-word phrases (e.g. "قم بإضافة المكلف قم بإضافة المكلف" -> "قم بإضافة المكلف")
+  // 1. Remove duplicate 3-word phrases (e.g. "في شارع الثلاثين في شارع الثلاثين" -> "في شارع الثلاثين")
   text = text.replace(
     /([\u0600-\u06FF0-9]+\s+[\u0600-\u06FF0-9]+\s+[\u0600-\u06FF0-9]+)(?:\s+\1)+(?=\s|$)/gu,
     '$1'
   );
 
-  // 4. Specifically fix common street / location double prefixes
+  // 2. Remove duplicate 2-word phrases only if they are common connecting stutter phrases (e.g. "أضف إلى أضف إلى" -> "أضف إلى")
+  text = text.replace(
+    /(أضف\s+إلى|أضف\s+الي|قم\s+بإضافة|سجل\s+عقار|افتح\s+ملف|سجل\s+زيارة)\s+\1(?=\s|$)/gu,
+    '$1'
+  );
+
+  // 3. Fix location double prefixes accidentally repeated during browser recognition restarts
   text = text.replace(/(?:شارع\s+)+شارع\s+/g, 'شارع ');
   text = text.replace(/(?:حي\s+)+حي\s+/g, 'حي ');
   text = text.replace(/(?:منطقة\s+)+منطقة\s+/g, 'منطقة ');
@@ -1098,6 +1099,75 @@ export function mergeFollowUpIntoDraft(
     searchQuery: newTurn.searchQuery || previousDraft.searchQuery,
     notes: resolvedNotes,
   };
+}
+
+export interface ServerTranscriptionResult {
+  success: boolean;
+  transcript: string;
+  modelUsed?: string;
+  error?: string;
+  fallback?: boolean;
+}
+
+export async function transcribeAudioOnServer(
+  audioBase64: string,
+  mimeType: string,
+  dialectHint = 'ar-YE'
+): Promise<ServerTranscriptionResult> {
+  if (!audioBase64) {
+    return { success: false, transcript: '', error: 'الملف الصوتي فارغ' };
+  }
+
+  if (typeof window !== 'undefined' && !navigator.onLine) {
+    return {
+      success: false,
+      transcript: '',
+      fallback: true,
+      error: 'الجهاز غير متصل بالإنترنت حاليًا',
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout for audio transcription
+    const res = await fetch('/api/voice/transcribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audioBase64, mimeType, dialectHint }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && typeof data.transcript === 'string' && data.transcript.trim()) {
+        return {
+          success: true,
+          transcript: data.transcript.trim(),
+          modelUsed: data.modelUsed,
+        };
+      }
+      return {
+        success: false,
+        transcript: typeof data.transcript === 'string' ? data.transcript.trim() : '',
+        fallback: true,
+        error: data.reason || data.error || 'تعذر الحصول على تفريغ صوتي دقيق من الخادم',
+      };
+    }
+    return {
+      success: false,
+      transcript: '',
+      fallback: true,
+      error: `فشل الاتصال بخادم التفريغ (رمز الحالة: ${res.status})`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      transcript: '',
+      fallback: true,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export async function analyzeVoiceTranscriptHybrid(

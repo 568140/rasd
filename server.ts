@@ -93,6 +93,12 @@ async function startServer() {
   });
 
   // Stage 1 Server-side Audio Transcription (supports Yemeni & standard Arabic)
+  const STT_MODEL_CANDIDATES = [
+    'gemini-3.5-transcribe',
+    'gemini-3.8-flash',
+    'gemini-flash-latest',
+  ] as const;
+
   app.post('/api/voice/transcribe', async (req, res) => {
     try {
       const { audioBase64, mimeType = 'audio/webm', dialectHint = 'ar-YE' } = req.body || {};
@@ -103,41 +109,71 @@ async function startServer() {
 
       const ai = getGenAIClient();
       if (!ai) {
-        res.status(200).json({ transcript: '', fallback: true });
+        res.status(200).json({ transcript: '', fallback: true, reason: 'AI_CLIENT_UNAVAILABLE' });
         return;
       }
+
+      const transcriptionPrompt = `أنت نظام نسخ وتفريغ صوتي عالي الدقة متخصص في العربية واللهجات المحلية (بما فيها اللهجة اليمنية ${dialectHint} ومصطلحات العمل الميداني: مكلف، عقار، عمارة، أدوار، دور، شقق، شقة، فتحة تجارية، فتحات تجارية، دكان، محل، وكيل، تحصيل، ريال، ألف، غدًا، بكره).
+مهمتك الوحيدة: تفريغ الكلام المنطوق في هذا الملف الصوتي حرفياً (Verbatim) وبدقة كاملة.
+القواعد الإلزامية:
+1. انسخ الكلمات كما نطقها المتحدث تماماً دون حذف أي كلمة أو اختصار أو تعديل.
+2. حافظ على الأسماء الكاملة (مثل: شهاب عبد الله حمود)، والأعداد، والعناوين كما هي.
+3. لا تضف أي نص أو مقدمة أو خاتمة أو تعليق، فقط النص المفرغ نفسه.`;
 
       const now = Date.now();
-      if ((modelQuotaCooldownUntil.get('gemini-3.5-transcribe') || 0) > now) {
-        res.status(200).json({ transcript: '', fallback: true, quotaExceeded: true });
-        return;
+      for (const candidateModel of STT_MODEL_CANDIDATES) {
+        if ((modelQuotaCooldownUntil.get(candidateModel) || 0) > now) {
+          continue;
+        }
+
+        try {
+          const response = await ai.models.generateContent({
+            model: candidateModel,
+            contents: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: audioBase64,
+                },
+              },
+              {
+                text: transcriptionPrompt,
+              },
+            ],
+          });
+
+          const rawText = (response.text || '').trim();
+          if (rawText) {
+            res.json({
+              success: true,
+              transcript: rawText,
+              modelUsed: candidateModel,
+            });
+            return;
+          }
+        } catch (modelErr) {
+          if (isQuotaOrRateLimitError(modelErr)) {
+            modelQuotaCooldownUntil.set(candidateModel, Date.now() + 15 * 60 * 1000);
+            continue;
+          }
+          console.error(`STT error with ${candidateModel}:`, modelErr);
+          continue;
+        }
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.5-transcribe',
-        contents: [
-          {
-            inlineData: {
-              mimeType,
-              data: audioBase64,
-            },
-          },
-          {
-            text: `انسخ الكلام العربي في هذا التسجيل الصوتي بدقة عالية كما قيل تماماً (يدعم اللهجة اليمنية ${dialectHint} والعربية الفصحى، ومصطلحات العمل الميداني العقاري والمالي مثل: مكلف، عقار، عمارة، دور، أدوار، شقة، شقق، فتحة تجارية، فتحات تجارية، محل، محلات، دكان، وكيل، تحصيل، ريال، ألف، غدًا). أخرج النص المنسوخ فقط بدون أي شرح إضافي.`,
-          },
-        ],
-      });
-
-      res.json({
-        transcript: (response.text || '').trim(),
-      });
-    } catch (err) {
-      if (isQuotaOrRateLimitError(err)) {
-        modelQuotaCooldownUntil.set('gemini-3.5-transcribe', Date.now() + 15 * 60 * 1000);
-      }
+      // If all models failed or were in cooldown
       res.status(200).json({
+        success: false,
         transcript: '',
         fallback: true,
+        reason: 'MODELS_EXHAUSTED_OR_UNAVAILABLE',
+      });
+    } catch (err) {
+      res.status(200).json({
+        success: false,
+        transcript: '',
+        fallback: true,
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   });
