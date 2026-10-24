@@ -433,6 +433,57 @@ async function runTestSuite() {
     );
   }
 
+  // ----------------------------------------------------
+  // Test 13: استخراج أمر مركب معقد (المكلف + الأدوار + حساب الشقق لكل طابق + المحلات + قيمة العقد + العنوان + الهاتف)
+  // ----------------------------------------------------
+  console.log('\n📋 الاختبار 13: الأمر الصوتي المركب الشامل (صالح حمادي - بيت بوس - 15 شقة + فتحتان)');
+  {
+    const userVoiceCommand =
+      'قم مع إنشاء معطف لصالح حمادي يمتلك عقار سكني مكون من خمسه ابتداء في كل طابق ثلاث شقق رئيسية فتحتان تجاريه قيمه عليه 9,000 ريال صنعاء جوار بيت بوس رقم هاتفه 77 44 321';
+    const parsed = parseArabicVoiceCommandDeterministic(userVoiceCommand);
+
+    assert(
+      parsed.intent === 'create_compound_record',
+      `تحديد نية إنشاء سجل مركب كامل (النية: ${parsed.intent})`
+    );
+    assert(
+      parsed.taxpayerName === 'صالح حمادي',
+      `استخراج اسم المكلف بدقة من سياق «لصالح حمادي» (المستخرج: ${parsed.taxpayerName})`
+    );
+    assert(
+      parsed.floorsCount === 5,
+      `استخراج عدد الأدوار (5 أدوار): ${parsed.floorsCount}`
+    );
+    assert(
+      parsed.apartmentsCount === 15,
+      `حساب إجمالي الشقق (5 أدوار × 3 شقق = 15 شقة): ${parsed.apartmentsCount}`
+    );
+    assert(
+      parsed.shopsCount === 2,
+      `استخراج الفتحات التجارية (فتحتان = 2): ${parsed.shopsCount}`
+    );
+    assert(
+      parsed.amount === 9000,
+      `استخراج قيمة العقد (9,000 ريال): ${parsed.amount}`
+    );
+    assert(
+      parsed.address === 'صنعاء جوار بيت بوس',
+      `استخراج العنوان الدقيق (صنعاء جوار بيت بوس): ${parsed.address}`
+    );
+    assert(
+      parsed.region === 'صنعاء',
+      `استخراج المنطقة (صنعاء): ${parsed.region}`
+    );
+    assert(
+      parsed.taxpayerPhone === '7744321',
+      `استخراج رقم الهاتف وتجميعه من الأرقام المنطوقة: ${parsed.taxpayerPhone}`
+    );
+    assert(
+      parsed.propertyType === 'mixed',
+      `تحديد نوع العقار كمختلط سكني وتجاري لوجود شقق ومحلات: ${parsed.propertyType}`
+    );
+  }
+
   console.log('\n======================================================');
   console.log(`📊 نتيجة الفحص: ${passedCount} نجح | ${failedCount} فشل`);
   console.log('======================================================\n');

@@ -47,6 +47,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          navigateFallbackDenylist: [/^\/api/],
         },
         devOptions: {
           enabled: false,
@@ -64,6 +65,12 @@ export default defineConfig(() => {
       hmr: false as const,
       ws: false as const,
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+        },
+      },
     },
   };
 });

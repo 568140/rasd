@@ -73,10 +73,23 @@ async function startServer() {
   }
 
   const app = express();
-  app.use(express.json({ limit: '15mb' }));
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+  // CORS and Preflight handler to prevent 404 on preflight or reverse proxies
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
 
   // Health & capability check endpoint
-  app.get('/api/voice/status', (_req, res) => {
+  app.get(['/api/voice/status', '/api/voice/status/'], (_req, res) => {
     const ai = getGenAIClient();
     const now = Date.now();
     const activeNluModel =
@@ -86,7 +99,7 @@ async function startServer() {
       aiAvailable: Boolean(ai),
       models: {
         nlu: activeNluModel,
-        stt: 'gemini-3.5-transcribe',
+        stt: 'gemini-3.8-flash',
         tts: 'gemini-3.8-flash-lite-tts',
       },
     });
@@ -94,12 +107,12 @@ async function startServer() {
 
   // Stage 1 Server-side Audio Transcription (supports Yemeni & standard Arabic)
   const STT_MODEL_CANDIDATES = [
-    'gemini-3.5-transcribe',
     'gemini-3.8-flash',
+    'gemini-3.5-transcribe',
     'gemini-flash-latest',
   ] as const;
 
-  app.post('/api/voice/transcribe', async (req, res) => {
+  app.post(['/api/voice/transcribe', '/api/voice/transcribe/'], async (req, res) => {
     try {
       const { audioBase64, mimeType = 'audio/webm', dialectHint = 'ar-YE' } = req.body || {};
       if (!audioBase64 || typeof audioBase64 !== 'string') {
@@ -117,7 +130,7 @@ async function startServer() {
 مهمتك الوحيدة: تفريغ الكلام المنطوق في هذا الملف الصوتي حرفياً (Verbatim) وبدقة كاملة.
 القواعد الإلزامية:
 1. انسخ الكلمات كما نطقها المتحدث تماماً دون حذف أي كلمة أو اختصار أو تعديل.
-2. حافظ على الأسماء الكاملة (مثل: شهاب عبد الله حمود)، والأعداد، والعناوين كما هي.
+2. حافظ على الأسماء الكاملة (مثل: شهاب عبد الله حمود، صالح حمادي)، والأعداد، والعناوين كما هي.
 3. لا تضف أي نص أو مقدمة أو خاتمة أو تعليق، فقط النص المفرغ نفسه.`;
 
       const now = Date.now();
@@ -129,17 +142,19 @@ async function startServer() {
         try {
           const response = await ai.models.generateContent({
             model: candidateModel,
-            contents: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: audioBase64,
+            contents: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType,
+                    data: audioBase64,
+                  },
                 },
-              },
-              {
-                text: transcriptionPrompt,
-              },
-            ],
+                {
+                  text: transcriptionPrompt,
+                },
+              ],
+            },
           });
 
           const rawText = (response.text || '').trim();
@@ -179,7 +194,7 @@ async function startServer() {
   });
 
   // Stage 2 Server-side NLU Intent & Structured Entity Extraction
-  app.post('/api/voice/analyze', async (req, res) => {
+  app.post(['/api/voice/analyze', '/api/voice/analyze/'], async (req, res) => {
     try {
       const { transcript, contextSummary, previousDraft } = req.body || {};
       if (!transcript || typeof transcript !== 'string') {

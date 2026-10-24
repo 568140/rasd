@@ -140,6 +140,8 @@ interface RasdContextValue {
     agentName?: string;
     agentPhone?: string;
     notes?: string;
+    amount?: number;
+    currency?: string;
   }) => Promise<{
     taxpayerId: string;
     taxpayerCode: string;
@@ -1106,6 +1108,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       agentName?: string;
       agentPhone?: string;
       notes?: string;
+      amount?: number;
+      currency?: string;
     }) => {
       if (!firebaseUser || !workspace || !userProfile) {
         throw new Error('غير مصرح بتنفيذ العملية بدون جلسة نشطة');
@@ -1120,6 +1124,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (input.agentName?.trim()) agentMetaParts.push(`الوكيل: ${input.agentName.trim()}`);
       if (input.agentPhone?.trim()) agentMetaParts.push(`هاتف الوكيل: ${input.agentPhone.trim()}`);
       if (input.floorsCount > 0) agentMetaParts.push(`عدد الأدوار: ${input.floorsCount}`);
+      if (input.amount && input.amount > 0) {
+        agentMetaParts.push(`قيمة العقد: ${input.amount.toLocaleString('ar-SA')} ${input.currency || 'ريال يمني'}`);
+      }
       if (input.notes?.trim()) agentMetaParts.push(input.notes.trim());
       const combinedNotes = agentMetaParts.join(' | ');
 
@@ -1194,14 +1201,25 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Step 3: Atomic writeBatch for all PropertyUnits (apartments + commercial shops + offices) + Audit Log
         const batch = writeBatch(db);
         const createdUnitNumbers: string[] = [];
-        // Do NOT randomly distribute units across floors when not specified by user
-        const floorNote =
-          input.floorsCount > 0 ? `غير محدد (إجمالي أدوار المبنى: ${input.floorsCount})` : 'غير محدد';
+        const aptsCount = Number(input.apartmentsCount) || 0;
+        const floors = Number(input.floorsCount) || 0;
+        const aptsPerFloor = floors > 0 && aptsCount > 0 ? Math.ceil(aptsCount / floors) : 0;
+        const perUnitEstimate =
+          input.amount && input.amount > 0 && totalUnits > 0
+            ? Math.round(input.amount / totalUnits)
+            : 0;
 
-        for (let i = 1; i <= (Number(input.apartmentsCount) || 0); i++) {
+        for (let i = 1; i <= aptsCount; i++) {
           const unitId = generateSafeId(`unit_apt${i}`);
           const unitNumber = `شقة ${i}`;
           createdUnitNumbers.push(unitNumber);
+          const currentFloor =
+            aptsPerFloor > 0
+              ? `الدور ${Math.min(floors, Math.floor((i - 1) / aptsPerFloor) + 1)}`
+              : floors > 0
+                ? `غير محدد (إجمالي أدوار المبنى: ${floors})`
+                : 'غير محدد';
+
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
             ownerId: workspace.ownerId,
@@ -1210,11 +1228,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             taxpayerId,
             unitNumber: sanitizeText(unitNumber, 50, 1, `A-${i}`),
             unitType: 'apartment',
-            floor: sanitizeText(floorNote, 40),
+            floor: sanitizeText(currentFloor, 40),
             areaSqm: 0,
             occupancyStatus: 'occupied',
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: perUnitEstimate,
             notes: sanitizeText(combinedNotes, 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -1235,11 +1253,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             taxpayerId,
             unitNumber: sanitizeText(unitNumber, 50, 1, `S-${i}`),
             unitType: 'shop',
-            floor: sanitizeText('الدور الأرضي / غير محدد', 40),
+            floor: sanitizeText('الدور الأرضي (تجاري)', 40),
             areaSqm: 0,
             occupancyStatus: 'occupied',
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: perUnitEstimate,
             notes: sanitizeText(combinedNotes, 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -1260,7 +1278,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             taxpayerId,
             unitNumber: sanitizeText(unitNumber, 50, 1, `O-${i}`),
             unitType: 'office',
-            floor: sanitizeText(floorNote, 40),
+            floor: sanitizeText(floors > 0 ? `غير محدد (إجمالي أدوار المبنى: ${floors})` : 'غير محدد', 40),
             areaSqm: 0,
             occupancyStatus: 'occupied',
             tenantName: '',

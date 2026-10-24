@@ -86,6 +86,11 @@ const SAMPLE_VOICE_COMMANDS: {
   command: string;
 }[] = [
   {
+    category: 'سجل مركب متكامل',
+    label: 'إنشاء ملف مكلف وعقار ووحدات وقيمة العقد',
+    command: 'قم مع إنشاء ملف لصالح حمادي يمتلك عقار سكني مكون من خمسة أدوار في كل طابق ثلاث شقق رئيسية وفتحتين تجارية وقيمة العقد 9000 ريال صنعاء جوار بيت بوس رقم هاتفه 774432100',
+  },
+  {
     category: 'فتح ملف المكلف',
     label: 'فتح الملف المتكامل للمكلف وعقاراته',
     command: 'افتح ملف كامل عبد الرحمن',
@@ -717,6 +722,8 @@ export const VoiceAssistantScreen: React.FC = () => {
             agentName: extracted.agentName,
             agentPhone: extracted.agentPhone,
             notes: extracted.notes,
+            amount: extracted.amount,
+            currency: extracted.currency,
           });
 
           markPlanAsExecuted(idempotencyKey);

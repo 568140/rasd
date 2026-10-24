@@ -251,8 +251,8 @@ export function normalizeArabicSpeech(input: string): string {
     })
     .join('');
 
-  // Remove tashkeel (diacritics) and tatweel
-  text = text.replace(/[\u064B-\u065F\u0670\u0640]/g, '');
+  // Remove comma between digits (e.g. 9,000 or 9،000 -> 9000) before comma splitting
+  text = text.replace(/(\d)[,،](\d)/g, '$1$2');
 
   text = text
     .replace(/[،؛,]/g, ' ، ')
@@ -376,6 +376,14 @@ const ARABIC_WORD_NUMBERS: Record<string, number> = {
   مليون: 1000000,
 };
 
+export function parseArabicNumberWord(text: string): number {
+  if (!text) return 0;
+  const num = parseInt(text.trim(), 10);
+  if (!isNaN(num)) return num;
+  const clean = normalizeForSearchMatch(text);
+  return ARABIC_WORD_NUMBERS[clean] || 0;
+}
+
 export function extractCountForNoun(text: string, nounRegexSource: string): number {
   const norm = normalizeForSearchMatch(text);
 
@@ -431,7 +439,9 @@ export function extractMonetaryAmount(text: string): { amount: number; currency:
   else if (/ريال/.test(norm)) currency = 'ريال يمني';
 
   const allDigitMatches = Array.from(
-    norm.matchAll(/(?:تحصيل|دفعه|مبلغ|سند|استلام|دفع|بقيمه|بمبلغ|قدرها)?\s*(\d+(?:\.\d+)?)\s*(الف|الاف|مليون)?\s*(ريال|دولار)?/g)
+    norm.matchAll(
+      /(?:تحصيل|دفعه|مبلغ|سند|استلام|دفع|بقيمه|بقيمة|بمبلغ|قدرها|قيمه|قيمة|قيمه\s+عليه|قيمة\s+عليه|ايجار|عقد|العقد)?\s*(\d+(?:\.\d+)?)\s*(الف|الاف|مليون)?\s*(ريال|دولار|سعودي)?/g
+    )
   );
   for (const m of allDigitMatches) {
     const rawNum = m[1];
@@ -585,11 +595,34 @@ export function parseArabicVoiceCommandDeterministic(
   const clean = normalizeArabicSpeech(effectiveTranscript);
   const norm = normalizeForSearchMatch(effectiveTranscript);
 
-  const floorsCount = extractCountForNoun(clean, 'ادوار|دور|طوابق|طابق');
-  const apartmentsCount = extractCountForNoun(clean, 'شقق|شقه|شقة');
+  let floorsCount = extractCountForNoun(clean, 'ادوار|دور|طوابق|طابق|ابتداء|طابقا');
+  if (floorsCount === 0) {
+    const floorContextMatch = clean.match(
+      /(?:مكون\s+من|يتكون\s+من|عمارة\s+من|مبنى\s+من|فيه|عنده)?\s*([\u0600-\u06FF0-9]+)\s+(?:ابتداء|أدوار|ادوار|طوابق|طابق|دور)/i
+    );
+    if (floorContextMatch?.[1]) {
+      floorsCount = parseArabicNumberWord(floorContextMatch[1]) || 0;
+    }
+  }
+
+  let apartmentsCount = extractCountForNoun(clean, 'شقق|شقه|شقة');
+  const perFloorMatch = clean.match(
+    /(?:في\s+كل\s+طابق|في\s+كل\s+دور|بكل\s+طابق|بكل\s+دور|بالطابق|بالدور)\s+([\u0600-\u06FF0-9]+)\s+(?:شقق|شقة|شقه|رئيسية|رئيسيه)?/i
+  );
+  if (perFloorMatch?.[1]) {
+    const perFloor = parseArabicNumberWord(perFloorMatch[1]);
+    if (perFloor > 0) {
+      if (floorsCount > 0) {
+        apartmentsCount = floorsCount * perFloor;
+      } else {
+        apartmentsCount = perFloor;
+      }
+    }
+  }
+
   const shopsCount = extractCountForNoun(
     clean,
-    'فتحات\\s+تجاريه|فتحه\\s+تجاريه|فتحات|فتحه|محلات\\s+تجاريه|محلات|محل|دكاكين|دكان'
+    'فتحات\\s+تجاريه|فتحات\\s+تجارية|فتحه\\s+تجاريه|فتحه\\s+تجارية|فتحة\\s+تجاريه|فتحة\\s+تجارية|فتحتان\\s+تجاريه|فتحتان\\s+تجارية|فتحتين\\s+تجاريه|فتحتين\\s+تجارية|فتحات|فتحه|فتحة|فتحتان|فتحتين|محلات\\s+تجاريه|محلات\\s+تجارية|محلين|محلات|محل|دكاكين|دكان'
   );
   const officesCount = extractCountForNoun(clean, 'مكاتب|مكتب');
 
@@ -603,26 +636,44 @@ export function parseArabicVoiceCommandDeterministic(
       .trim();
   }
 
-  const phoneMatches = clean.match(/\b(?:00967|\+967)?(7[01378]\d{7}|\d{7,10})\b/g) || [];
   let taxpayerPhone = '';
   let agentPhone = '';
-  if (phoneMatches.length > 0) {
-    if (/الوكيل|وكيل/.test(clean) && (/هاتف\s+الوكيل|رقم\s+الوكيل|وكيل.*رقم/.test(norm) || !/مكلف/.test(norm))) {
-      agentPhone = phoneMatches[0] || '';
-    } else {
-      taxpayerPhone = phoneMatches[0] || '';
-      if (phoneMatches[1]) agentPhone = phoneMatches[1];
+  const explicitPhoneMatch = clean.match(
+    /(?:رقم\s+هاتفه|رقم\s+تلفونه|هاتفه|تلفونه|جواله|رقمه)\s+([0-9\s-]{6,16})/i
+  );
+  if (explicitPhoneMatch?.[1]) {
+    const digitsOnly = explicitPhoneMatch[1].replace(/[\s-]/g, '');
+    if (digitsOnly.length >= 6) {
+      taxpayerPhone = digitsOnly;
+    }
+  }
+
+  if (!taxpayerPhone) {
+    const phoneMatches = clean.match(/\b(?:00967|\+967)?(7[01378]\d{7}|\d{7,10})\b/g) || [];
+    if (phoneMatches.length > 0) {
+      if (/الوكيل|وكيل/.test(clean) && (/هاتف\s+الوكيل|رقم\s+الوكيل|وكيل.*رقم/.test(norm) || !/مكلف/.test(norm))) {
+        agentPhone = phoneMatches[0] || '';
+      } else {
+        taxpayerPhone = phoneMatches[0] || '';
+        if (phoneMatches[1]) agentPhone = phoneMatches[1];
+      }
     }
   }
 
   let intent: VoiceEngineIntent = 'unknown';
   let confidence = 0.85;
 
-  const hasCreateVerb = /(انشئ|اضف|سجل\s+مكلف|ادخل\s+مكلف|مكلف\s+جديد)/.test(norm);
+  const hasCompoundTriggers =
+    /إنشاء\s+معطف|انشاء\s+معطف|إنشاء\s+ملف|انشاء\s+ملف|عمل\s+ملف|ملف\s+وعقارات|يمتلك\s+عقار|يملك\s+عقار/.test(
+      clean
+    ) ||
+    (/(مكلف|ملف|معطف)/.test(norm) && /(عقار|عماره|مبنى)/.test(norm));
+
+  const hasCreateVerb = /(انشئ|اضف|سجل\s+مكلف|ادخل\s+مكلف|مكلف\s+جديد|انشاء\s+معطف|انشاء\s+ملف)/.test(norm);
   const hasOpenDossierVerb =
     /(افتح\s+ملف|اعرض\s+ملف|اعرض\s+عقارات|افتح\s+عقارات|ادخل\s+على\s+ملف|افتح\s+صفحه)/.test(norm) &&
-    !/(مكلف\s+جديد|لديه\s+عقار|انشئ)/.test(norm);
-  const hasTaxpayerKeyword = /(مكلف|مكلفا|باسم)/.test(norm);
+    !/(مكلف\s+جديد|لديه\s+عقار|انشئ|يمتلك|يملك)/.test(norm);
+  const hasTaxpayerKeyword = /(مكلف|مكلفا|باسم|لصالح|معطف|ملف)/.test(norm);
   const hasPropertyKeyword = /(عقار|عقارا|عماره|مبنى|فله|بيت|ارض|شارع)/.test(norm);
   const hasUnitsInfo = floorsCount > 0 || apartmentsCount > 0 || shopsCount > 0 || officesCount > 0;
 
@@ -671,17 +722,18 @@ export function parseArabicVoiceCommandDeterministic(
     confidence = 0.95;
   } else if (
     /(تحصيل|تحصيلا|سند\s+قبض|استلام\s+مبلغ|سدد|تسديد)/.test(norm) &&
-    !/(قيمه\s+العقد|قيمة\s+العقد|ايجار\s+العقد|بقيمه\s+عقد|عقد)/.test(norm)
+    !/(قيمه\s+العقد|قيمة\s+العقد|قيمه\s+عليه|قيمة\s+عليه|ايجار\s+العقد|بقيمه\s+عقد|عقد)/.test(norm)
   ) {
     intent = 'record_collection';
     confidence = 0.96;
   } else if (
-    (hasCreateVerb || hasTaxpayerKeyword) &&
-    hasPropertyKeyword &&
-    (hasUnitsInfo || hasTaxpayerKeyword)
+    hasCompoundTriggers ||
+    ((hasCreateVerb || hasTaxpayerKeyword) &&
+      hasPropertyKeyword &&
+      (hasUnitsInfo || hasTaxpayerKeyword))
   ) {
     intent = 'create_compound_record';
-    confidence = 0.97;
+    confidence = 0.98;
   } else if (
     (hasPropertyKeyword && hasUnitsInfo && !hasTaxpayerKeyword) ||
     (/(اضف|انشئ|سجل)/.test(norm) && /(عقار|عقارا|عماره|مبنى)/.test(norm) && !hasTaxpayerKeyword)
@@ -698,13 +750,15 @@ export function parseArabicVoiceCommandDeterministic(
 
   let taxpayerName = '';
   const namePatterns = [
+    /(?:(?:قم\s+(?:مع|بـ|ب)?\s*)?(?:إنشاء|انشاء|فتح|عمل|تسجيل|أضف|اضف)\s+(?:ملف|معطف|سجل|حساب|مكلف)?\s*(?:لـ|للمكلف|باسم|هو)?\s*)([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|يمتلك|يملك|عنده|لديه|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار))/i,
     /(?:(?:أضف|اضف|قم\s+بإضافة|قم\s+باضافة|إضافة|اضافة|سجل|ادخل|تسجيل)\s+)?(?:مكلف(?:ًا|ا)?|المكلف)\s*(?:جديد(?:ًا|ا)?\s*)?(?:اسمه|باسم|يدعى|هو)?\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,5}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار))/i,
     /(?:افتح\s+ملف|اعرض\s+ملف|اعرض\s+عقارات|افتح\s+عقارات)\s+(?:المكلف\s+)?([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|اليوم|غدا|بكره|الاسبوع|الأسبوع|[؟.!]))/i,
-    /(?:مكلف(?:ًا|ا)?\s+(?:جديد(?:ًا|ا)?\s+)?(?:اسمه|باسم)|مكلف\s+اسمه|باسم\s+المكلف|باسم)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|عنده|يملك|في\s+شارع|في\s+منطقه|رقمه|هاتفه|والوكيل|الوكيل))/,
+    /(?:مكلف(?:ًا|ا)?\s+(?:جديد(?:ًا|ا)?\s+)?(?:اسمه|باسم)|مكلف\s+اسمه|باسم\s+المكلف|باسم)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|عنده|يملك|يمتلك|في\s+شارع|في\s+منطقه|رقمه|هاتفه|والوكيل|الوكيل))/,
+    /(?:يمتلك\s+عقار|يملك\s+عقار|لديه\s+عقار|عنده\s+عقار)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,3}?)/i,
     /(?:من\s+حساب\s+العقار\s+الخاص\s+ب|العقار\s+الخاص\s+ب|الخاص\s+بالمكلف\s+|الخاص\s+ب)\s*([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|بمبلغ|وقدره|غدا|بكره|الساعه|والوكيل))/,
     /(?:للمكلف|من\s+المكلف|من\s+حساب|على\s+المكلف|متابعه\s+المتبقي\s+على|المتبقي\s+على|بمتابعه\s+المكلف|بمتابعه|متابعه|ابحث\s+عن|بحث\s+عن)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|في|بمبلغ|وقدره|اليوم|غدا|غدًا|بكره|بعد\s+غد|الاسبوع|الأسبوع|الساعه|والوكيل|[؟.!]))/,
     /(?:سجل\s+زياره|زياره\s+ميدانيه|زياره|اضف|أضف)\s+(?:للمكلف\s+|لـ\s*)?([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,3}?)(?=\s*(?:،|$|اليوم|غدا|غدًا|بكره|الاسبوع|الأسبوع|عقارا|عقارًا|عقار|جديدا|جديدًا|في|[؟.!]))/,
-    /(?:اسمه|يدعى)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){1,4}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار|[؟.!]))/i,
+    /(?:اسمه|يدعى)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){1,4}?)(?=\s*(?:،|$|وأضف|واضف|أضف|اضف|له|عنده|لديه|يملك|يمتلك|في|وعنوانه|عنوانه|برقم|رقمه|هاتفه|والوكيل|الوكيل|عقارا|عقارًا|عقار|[؟.!]))/i,
     /(?:مكلف\s+جديد|اضف\s+مكلف)\s+([\u0600-\u06FF]+(?:\s+[\u0600-\u06FF]+){0,4}?)(?=\s*(?:،|$|لديه|في|رقمه))/,
   ];
 
@@ -716,6 +770,10 @@ export function parseArabicVoiceCommandDeterministic(
         .replace(/\s+(?:لديه|عنده|في|بمبلغ|اليوم|غدًا|غدا|الأسبوع\s+القادم|الاسبوع\s+القادم|عقارًا|عقارا|عقار|جديدًا|جديدا).*$/i, '')
         .replace(/[؟.!،]/g, '')
         .trim();
+
+      if (candidate.startsWith('لصالح')) {
+        candidate = candidate.replace(/^ل(?=صالح)/, '').trim();
+      }
 
       const words = candidate.split(/\s+/);
       if (
@@ -741,16 +799,26 @@ export function parseArabicVoiceCommandDeterministic(
 
   let address = '';
   let region = '';
-  const streetMatch = clean.match(
-    /(?:في\s+|وعنوانه\s+|عنوانه\s+|موقع\s+|بموقع\s+)?((?:شارع|حي|منطقة|منطقه|جولة|جوله|حارة|حاره)\s+[\u0600-\u06FF0-9]+(?:\s+[\u0600-\u06FF0-9]+){0,3}?)(?=\s*(?:،|$|اربع|أربع|ثلاث|خمس|ست|سبع|ثمان|تسع|عشر|\d+|يتكون|مكون|والوكيل|الوكيل|وقيمة|قيمة|ولديه|لديه))/i
+
+  const cityLocationMatch = clean.match(
+    /(?:في\s+|وعنوانه\s+|عنوانه\s+|موقع\s+|بموقع\s+)?((?:صنعاء|عدن|تعز|الحديدة|إب|ذمار|حضرموت|المكلا|مأرب)\s+(?:جوار|قرب|بجانب|خلف|امام|أمام|شارع|حي|منطقة|منطقه|جولة|جوله|حارة|حاره)\s+[\u0600-\u06FF0-9]+(?:\s+[\u0600-\u06FF0-9]+){0,3}?)(?=\s*(?:،|$|رقم|هاتفه|والوكيل|الوكيل|وقيمة|قيمة|\d{5,}))/i
   );
-  if (streetMatch?.[1]) {
-    address = streetMatch[1]
-      .replace(/^(?:في|وعنوانه|عنوانه|موقعه|بموقع)\s+/i, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    address = address.replace(/^شارع\s+شارع\s+/i, 'شارع ');
-    region = address;
+  if (cityLocationMatch?.[1]) {
+    address = cityLocationMatch[1].trim();
+    const cityWord = address.split(/\s+/)[0];
+    region = cityWord;
+  } else {
+    const streetMatch = clean.match(
+      /(?:في\s+|وعنوانه\s+|عنوانه\s+|موقع\s+|بموقع\s+)?((?:شارع|حي|منطقة|منطقه|جولة|جوله|حارة|حاره|جوار|قرب|بجانب|خلف|امام|أمام)\s+[\u0600-\u06FF0-9]+(?:\s+[\u0600-\u06FF0-9]+){0,3}?)(?=\s*(?:،|$|اربع|أربع|ثلاث|خمس|ست|سبع|ثمان|تسع|عشر|\d+|يتكون|مكون|والوكيل|الوكيل|وقيمة|قيمة|ولديه|لديه|رقم|هاتفه))/i
+    );
+    if (streetMatch?.[1]) {
+      address = streetMatch[1]
+        .replace(/^(?:في|وعنوانه|عنوانه|موقعه|بموقع)\s+/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      address = address.replace(/^شارع\s+شارع\s+/i, 'شارع ');
+      region = address;
+    }
   }
 
   let propertyType: PropertyType = 'residential';
@@ -785,7 +853,7 @@ export function parseArabicVoiceCommandDeterministic(
   let notes = '';
   let contractAmount = 0;
   const contractMatch = clean.match(
-    /(?:وقيمة\s+العقد|قيمة\s+العقد|إيجار\s+العقد|ايجار\s+العقد|الإيجار|الايجار|بقيمة\s+عقد|قيمة\s+الإيجار)\s+([\u0600-\u06FF0-9\s]+?)(?=\s*(?:،|$|و|ريال|دولار))/i
+    /(?:وقيمة\s+العقد|قيمة\s+العقد|قيمة\s+عليه|قيمه\s+عليه|إيجار\s+العقد|ايجار\s+العقد|الإيجار|الايجار|بقيمة\s+عقد|قيمة\s+الإيجار)\s+([\u0600-\u06FF0-9\s,]+?)(?=\s*(?:،|$|و|ريال|دولار|صنعاء|في))/i
   );
   if (contractMatch?.[0]) {
     const parsedContract = extractMonetaryAmount(contractMatch[0] + ' ريال');
