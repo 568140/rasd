@@ -5,13 +5,26 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import webpush from 'web-push';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+
+function sanitizeAudioMimeType(rawMime: unknown): string {
+  if (typeof rawMime !== 'string' || !rawMime) return 'audio/webm';
+  const clean = rawMime.split(';')[0].trim().toLowerCase();
+  if (clean.includes('webm')) return 'audio/webm';
+  if (clean.includes('mp4') || clean.includes('m4a')) return 'audio/mp4';
+  if (clean.includes('ogg')) return 'audio/ogg';
+  if (clean.includes('wav')) return 'audio/wav';
+  if (clean.includes('aac')) return 'audio/aac';
+  if (clean.includes('mp3') || clean.includes('mpeg')) return 'audio/mp3';
+  return 'audio/webm';
+}
 
 function getGenAIClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -99,7 +112,7 @@ async function startServer() {
       aiAvailable: Boolean(ai),
       models: {
         nlu: activeNluModel,
-        stt: 'gemini-3.8-flash',
+        stt: 'gemini-3.5-transcribe',
         tts: 'gemini-3.8-flash-lite-tts',
       },
     });
@@ -107,15 +120,20 @@ async function startServer() {
 
   // Stage 1 Server-side Audio Transcription (supports Yemeni & standard Arabic)
   const STT_MODEL_CANDIDATES = [
-    'gemini-3.8-flash',
     'gemini-3.5-transcribe',
+    'gemini-3.8-flash',
     'gemini-flash-latest',
+    'gemini-3.1-flash-lite',
   ] as const;
 
   app.post(['/api/voice/transcribe', '/api/voice/transcribe/'], async (req, res) => {
     try {
       const { audioBase64, mimeType = 'audio/webm', dialectHint = 'ar-YE' } = req.body || {};
-      if (!audioBase64 || typeof audioBase64 !== 'string') {
+      const cleanBase64 =
+        typeof audioBase64 === 'string'
+          ? audioBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '')
+          : '';
+      if (!cleanBase64) {
         res.status(400).json({ error: 'Missing audioBase64 payload' });
         return;
       }
@@ -125,6 +143,8 @@ async function startServer() {
         res.status(200).json({ transcript: '', fallback: true, reason: 'AI_CLIENT_UNAVAILABLE' });
         return;
       }
+
+      const cleanMime = sanitizeAudioMimeType(mimeType);
 
       const transcriptionPrompt = `أنت نظام نسخ وتفريغ صوتي عالي الدقة متخصص في العربية واللهجات المحلية (بما فيها اللهجة اليمنية ${dialectHint} ومصطلحات العمل الميداني: مكلف، عقار، عمارة، أدوار، دور، شقق، شقة، فتحة تجارية، فتحات تجارية، دكان، محل، وكيل، تحصيل، ريال، ألف، غدًا، بكره).
 مهمتك الوحيدة: تفريغ الكلام المنطوق في هذا الملف الصوتي حرفياً (Verbatim) وبدقة كاملة.
@@ -146,8 +166,8 @@ async function startServer() {
               parts: [
                 {
                   inlineData: {
-                    mimeType,
-                    data: audioBase64,
+                    mimeType: cleanMime,
+                    data: cleanBase64,
                   },
                 },
                 {
@@ -157,7 +177,11 @@ async function startServer() {
             },
           });
 
-          const rawText = (response.text || '').trim();
+          const rawText = (response.text || '')
+            .replace(/^```[\w]*\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .replace(/^["'«»]+|["'«»]+$/g, '')
+            .trim();
           if (rawText) {
             res.json({
               success: true,
@@ -446,18 +470,154 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV !== 'production') {
+  // ==========================================
+  // Web Push & Background Alerts Subsystem
+  // ==========================================
+  const vapidKeysFilePath = path.resolve(__dirname, '.vapid-keys.json');
+  let vapidKeys: { publicKey: string; privateKey: string };
+  try {
+    if (fs.existsSync(vapidKeysFilePath)) {
+      vapidKeys = JSON.parse(fs.readFileSync(vapidKeysFilePath, 'utf-8'));
+    } else {
+      vapidKeys = webpush.generateVAPIDKeys();
+      fs.writeFileSync(vapidKeysFilePath, JSON.stringify(vapidKeys, null, 2), 'utf-8');
+    }
+  } catch {
+    vapidKeys = webpush.generateVAPIDKeys();
+  }
+
+  webpush.setVapidDetails(
+    'mailto:admin@rasd-field.local',
+    vapidKeys.publicKey,
+    vapidKeys.privateKey
+  );
+
+  interface StoredSubscription {
+    endpoint: string;
+    keys: { p256dh: string; auth: string };
+    userId?: string;
+    workspaceId?: string;
+    subscribedAt: string;
+  }
+
+  const subscriptionsStore = new Map<string, StoredSubscription>();
+  const sentAlertsIdempotency = new Set<string>();
+
+  app.get('/api/push/vapid-key', (_req, res) => {
+    res.json({ publicKey: vapidKeys.publicKey });
+  });
+
+  app.post('/api/push/subscribe', (req, res) => {
+    const { subscription, userId, workspaceId } = req.body || {};
+    if (!subscription?.endpoint) {
+      res.status(400).json({ error: 'Invalid subscription object' });
+      return;
+    }
+    subscriptionsStore.set(subscription.endpoint, {
+      endpoint: subscription.endpoint,
+      keys: subscription.keys,
+      userId: userId || 'anonymous',
+      workspaceId: workspaceId || 'default',
+      subscribedAt: new Date().toISOString(),
+    });
+    res.json({ success: true, count: subscriptionsStore.size });
+  });
+
+  app.post('/api/push/test', async (_req, res) => {
+    if (subscriptionsStore.size === 0) {
+      res.status(200).json({ success: true, delivered: 0, message: 'No registered push subscriptions yet' });
+      return;
+    }
+
+    const payload = JSON.stringify({
+      title: 'رَصْد — اختبار التنبيهات المباشرة',
+      body: 'تم استلام إشعار الفحص بنجاح. نظام التنبيهات في الخلفية يعمل بصورة مثالية.',
+      icon: '/pwa-192x192.png',
+      data: { url: '/?screen=appointments' },
+    });
+
+    let delivered = 0;
+    for (const [endpoint, sub] of subscriptionsStore.entries()) {
+      try {
+        await webpush.sendNotification(
+          {
+            endpoint: sub.endpoint,
+            keys: sub.keys,
+          },
+          payload
+        );
+        delivered++;
+      } catch (err: unknown) {
+        const statusCode = (err as { statusCode?: number }).statusCode;
+        if (statusCode === 404 || statusCode === 410) {
+          subscriptionsStore.delete(endpoint);
+        }
+      }
+    }
+
+    res.json({ success: true, delivered, total: subscriptionsStore.size });
+  });
+
+  app.post('/api/push/send-alert', async (req, res) => {
+    const {
+      appointmentId,
+      title,
+      scheduledTime,
+      propertyTitle,
+      idempotencyKey,
+      workspaceId,
+    } = req.body || {};
+
+    const key = idempotencyKey || `alert_${appointmentId}_${scheduledTime}`;
+    if (sentAlertsIdempotency.has(key)) {
+      res.json({ success: true, skippedDuplicate: true, key });
+      return;
+    }
+
+    sentAlertsIdempotency.add(key);
+
+    const payload = JSON.stringify({
+      title: title || 'تنبيه موعد ميداني مستحق — رَصْد',
+      body: `حان موعد: ${title} الساعة ${scheduledTime} (${propertyTitle || 'العقار الميداني'})`,
+      icon: '/pwa-192x192.png',
+      badge: '/icon.svg',
+      data: {
+        url: `/?screen=appointments&id=${appointmentId}`,
+        appointmentId,
+      },
+    });
+
+    let sent = 0;
+    for (const [endpoint, sub] of subscriptionsStore.entries()) {
+      if (workspaceId && sub.workspaceId && sub.workspaceId !== 'default' && sub.workspaceId !== workspaceId) {
+        continue;
+      }
+      try {
+        await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, payload);
+        sent++;
+      } catch (err: unknown) {
+        const statusCode = (err as { statusCode?: number }).statusCode;
+        if (statusCode === 404 || statusCode === 410) {
+          subscriptionsStore.delete(endpoint);
+        }
+      }
+    }
+
+    res.json({ success: true, sentCount: sent, idempotencyKey: key });
+  });
+
+  const distPath = path.join(__dirname, 'dist');
+  if (process.env.NODE_ENV === 'production' || fs.existsSync(path.join(distPath, 'index.html'))) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false, ws: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
-    app.use(express.static(distPath));
-    app.get('*all', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

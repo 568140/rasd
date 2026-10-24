@@ -484,6 +484,68 @@ async function runTestSuite() {
     );
   }
 
+  // ----------------------------------------------------
+  // Test 14: منع ظهور رسالة signal is aborted without reason وتحويلها للعربية
+  // ----------------------------------------------------
+  console.log('\n📋 الاختبار 14: معالجة أخطاء المهلة (signal is aborted without reason) وتحويلها للعربية');
+  {
+    const { mapVoiceErrorToArabic, deduplicateOverlappingSpeech } = await import(
+      '../src/services/voiceEngine'
+    );
+    const rawAbortErr = new Error('signal is aborted without reason');
+    rawAbortErr.name = 'AbortError';
+    const mappedMsg = mapVoiceErrorToArabic(rawAbortErr);
+
+    assert(
+      !mappedMsg.includes('signal is aborted') && mappedMsg.includes('انتهت مهلة الاتصال'),
+      `تحويل خطأ AbortError إلى رسالة عربية واضحة: «${mappedMsg}»`
+    );
+
+    const mapped404 = mapVoiceErrorToArabic('STATIC_HOST_NO_BACKEND', 404);
+    assert(
+      mapped404.includes('خادم التفريغ السحابي غير متوفر'),
+      `تحويل خطأ 404 للاستضافة الثابتة إلى رسالة عربية واضحة: «${mapped404}»`
+    );
+
+    // ----------------------------------------------------
+    // Test 15: منع تكرار المقاطع التراكمي في محرك الهاتف المباشر (Android Chrome)
+    // ----------------------------------------------------
+    console.log('\n📋 الاختبار 15: منع التكرار التراكمي لمحرك الهاتف المباشر على أندرويد');
+    let acc = '';
+    acc = deduplicateOverlappingSpeech(acc, 'سجل');
+    acc = deduplicateOverlappingSpeech(acc, 'سجل عقار');
+    acc = deduplicateOverlappingSpeech(acc, 'سجل عقار باسم');
+    acc = deduplicateOverlappingSpeech(acc, 'سجل عقار باسم كامل عبد الرحمن');
+    acc = deduplicateOverlappingSpeech(acc, 'باسم كامل عبد الرحمن في شارع الثلاثين');
+
+    assert(
+      acc === 'سجل عقار باسم كامل عبد الرحمن في شارع الثلاثين',
+      `دمج المقاطع التراكمية المتداخلة بدون تكرار: «${acc}»`
+    );
+  }
+
+  // ----------------------------------------------------
+  // Test 16: استخراج الساعات المنطوقة بالعربية والكسور الزمنية للمواعيد
+  // ----------------------------------------------------
+  console.log('\n📋 الاختبار 16: استخراج الساعات المنطوقة لفظيًا في المواعيد (الثامنة ونصف، الرابعة وربع عصرًا)');
+  {
+    const morningAppt = parseArabicVoiceCommandDeterministic(
+      'ذكرني غدا الساعة الثامنة ونصف صباحا بمتابعة كامل'
+    );
+    assert(
+      morningAppt.intent === 'create_appointment' && morningAppt.timeStr === '08:30',
+      `استخراج الساعة الثامنة ونصف صباحًا (08:30): المحسوب ${morningAppt.timeStr}`
+    );
+
+    const afternoonAppt = parseArabicVoiceCommandDeterministic(
+      'حدد موعد غدا الساعة الرابعة وربع عصرا لزيارة عقار صالح'
+    );
+    assert(
+      afternoonAppt.intent === 'create_appointment' && afternoonAppt.timeStr === '16:15',
+      `استخراج الساعة الرابعة وربع عصرًا بنظام 24 ساعة (16:15): المحسوب ${afternoonAppt.timeStr}`
+    );
+  }
+
   console.log('\n======================================================');
   console.log(`📊 نتيجة الفحص: ${passedCount} نجح | ${failedCount} فشل`);
   console.log('======================================================\n');

@@ -290,6 +290,89 @@ export function sanitizeSpokenRepetitions(input: string): string {
   return text.trim();
 }
 
+/**
+ * Deduplicates cumulative or overlapping speech segments emitted by Android Chrome webkitSpeechRecognition
+ * when continuous mode is enabled or when sessions auto-restart after brief pauses.
+ */
+export function deduplicateOverlappingSpeech(existingText: string, incomingChunk: string): string {
+  const base = existingText.replace(/\s+/g, ' ').trim();
+  const next = incomingChunk.replace(/\s+/g, ' ').trim();
+
+  if (!base) return next;
+  if (!next) return base;
+  if (base === next) return base;
+
+  // If the new chunk is a cumulative superset of the existing text (Android Chrome behavior)
+  if (next.startsWith(base)) {
+    return next;
+  }
+  // If the existing text already ends with the exact new chunk
+  if (base.endsWith(next)) {
+    return base;
+  }
+
+  // Check word-level suffix/prefix overlap (at least 2 words or 1 long word >= 4 chars)
+  const baseWords = base.split(' ');
+  const nextWords = next.split(' ');
+  const maxOverlap = Math.min(baseWords.length, nextWords.length);
+
+  for (let len = maxOverlap; len >= 1; len--) {
+    const suffix = baseWords.slice(baseWords.length - len).join(' ');
+    const prefix = nextWords.slice(0, len).join(' ');
+    if (suffix === prefix && (len >= 2 || suffix.length >= 4)) {
+      const remaining = nextWords.slice(len).join(' ');
+      return remaining ? `${base} ${remaining}` : base;
+    }
+  }
+
+  return `${base} ${next}`.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Translates raw network, AbortController, and HTTP errors into user-friendly Arabic messages.
+ * Specifically prevents raw DOMException messages like "signal is aborted without reason" from reaching the UI.
+ */
+export function mapVoiceErrorToArabic(err: unknown, statusCode?: number): string {
+  if (statusCode === 404) {
+    return 'خادم التفريغ السحابي غير متوفر في هذه البيئة (404). يمكنك التسجيل فورًا عبر محرك الهاتف المباشر.';
+  }
+  if (statusCode === 429) {
+    return 'تم استنفاد حصة طلبات الذكاء الاصطناعي مؤقتًا. تم التبديل إلى المحرك المحلي.';
+  }
+
+  const rawMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err || '');
+  const lower = rawMsg.toLowerCase();
+
+  if (
+    lower.includes('abort') ||
+    lower.includes('signal is aborted') ||
+    lower.includes('voice_stt_timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout')
+  ) {
+    return 'انتهت مهلة الاتصال بخادم التفريغ الصوتي بسبب بطء الشبكة. يمكنك إعادة محاولة تفريغ التسجيل المحفوظ أو التبديل إلى محرك الهاتف المباشر.';
+  }
+
+  if (
+    lower.includes('failed to fetch') ||
+    lower.includes('networkerror') ||
+    lower.includes('network request failed') ||
+    lower.includes('load failed')
+  ) {
+    return 'تعذر الاتصال بخادم التفريغ الصوتي. تحقق من اتصال الإنترنت أو استخدم محرك الهاتف المباشر.';
+  }
+
+  if (lower.includes('unexpected token') || lower.includes('is not valid json')) {
+    return 'خادم التفريغ السحابي غير مفعل في هذه الاستضافة. تم التبديل إلى محرك الهاتف المباشر.';
+  }
+
+  if (/[\u0600-\u06FF]/.test(rawMsg)) {
+    return err instanceof Error ? err.message : String(err);
+  }
+
+  return 'تعذر إتمام التفريغ الصوتي السحابي حاليًا. يمكنك إعادة المحاولة أو استخدام محرك الهاتف المباشر.';
+}
+
 export function normalizeForSearchMatch(input: string): string {
   return normalizeArabicSpeech(input)
     .replace(/[أإآ]/g, 'ا')
@@ -887,13 +970,83 @@ export function parseArabicVoiceCommandDeterministic(
   const dateIso = targetDate.toISOString().slice(0, 10);
 
   let timeStr = '10:00';
-  const hourMatch = norm.match(/الساعه\s+(\d{1,2})(?:\s*:\s*(\d{2}))?\s*(صباحا|مساء|عصرا|ظهرا)?/);
-  if (hourMatch) {
-    let hr = parseInt(hourMatch[1], 10);
-    const min = hourMatch[2] || '00';
-    const period = hourMatch[3] || '';
-    if ((period === 'مساء' || period === 'عصرا') && hr < 12) hr += 12;
-    timeStr = `${String(hr).padStart(2, '0')}:${min}`;
+  const spokenHoursMap: Record<string, number> = {
+    الواحده: 1,
+    واحده: 1,
+    واحد: 1,
+    الثانيه: 2,
+    ثنتين: 2,
+    اثنين: 2,
+    الثالثه: 3,
+    ثلاث: 3,
+    ثلاثه: 3,
+    الرابعه: 4,
+    اربع: 4,
+    اربعه: 4,
+    الخامسه: 5,
+    خمس: 5,
+    خمسه: 5,
+    السادسه: 6,
+    ست: 6,
+    سته: 6,
+    السابعه: 7,
+    سبع: 7,
+    سبعه: 7,
+    الثامنه: 8,
+    ثمان: 8,
+    ثمانيه: 8,
+    التاسعه: 9,
+    تسع: 9,
+    تسعه: 9,
+    العاشره: 10,
+    عشر: 10,
+    عشره: 10,
+    الحاديه: 11,
+    احدعشر: 11,
+    الثانيه_عشر: 12,
+    اثناعشر: 12,
+  };
+
+  const hourDigitMatch = norm.match(
+    /الساعه\s+(\d{1,2})(?:\s*:\s*(\d{2}))?(?:\s+(ونصف|ونص|وربع|الا\s+ربع))?\s*(صباحا|الصبح|صباح|مساء|المساء|عصرا|العصر|ظهرا|الظهر|ليلا|الليل)?/
+  );
+  if (hourDigitMatch) {
+    let hr = parseInt(hourDigitMatch[1], 10);
+    let min = hourDigitMatch[2] || '00';
+    const frac = hourDigitMatch[3] || '';
+    const period = hourDigitMatch[4] || '';
+    if (frac === 'ونصف' || frac === 'ونص') min = '30';
+    else if (frac === 'وربع') min = '15';
+    else if (frac.includes('ربع')) {
+      hr = hr > 1 ? hr - 1 : 12;
+      min = '45';
+    }
+    if ((/مساء|المساء|عصرا|العصر|ليلا|الليل/.test(period) || (hr >= 1 && hr <= 6 && !/صباح|الصبح/.test(period) && /عصر|مساء/.test(norm))) && hr < 12) {
+      hr += 12;
+    } else if (/ظهرا|الظهر/.test(period) && hr < 12 && hr !== 12) {
+      if (hr < 6) hr += 12;
+    }
+    timeStr = `${String(Math.min(23, Math.max(0, hr))).padStart(2, '0')}:${min}`;
+  } else {
+    const hourWordMatch = norm.match(
+      /الساعه\s+(الواحده|واحده|واحد|الثانيه\s+عشره|الثانيه\s+عشر|الحاديه\s+عشره|الحاديه\s+عشر|الثانيه|ثنتين|اثنين|الثالثه|ثلاثه|ثلاث|الرابعه|اربعه|اربع|الخامسه|خمسه|خمس|السادسه|سته|ست|السابعه|سبعه|سبع|الثامنه|ثمانيه|ثمان|التاسعه|تسعه|تسع|العاشره|عشره|عشر|احدعشر|اثناعشر)(?:\s+(ونصف|ونص|وربع))?\s*(صباحا|الصبح|صباح|مساء|المساء|عصرا|العصر|ظهرا|الظهر|ليلا|الليل)?/
+    );
+    if (hourWordMatch) {
+      const rawWord = hourWordMatch[1].replace(/\s+/g, '');
+      let hr =
+        rawWord.includes('الثانيهعشر') || rawWord.includes('اثناعشر')
+          ? 12
+          : rawWord.includes('الحاديهعشر') || rawWord.includes('احدعشر')
+            ? 11
+            : spokenHoursMap[rawWord] || 10;
+      const frac = hourWordMatch[2] || '';
+      const period = hourWordMatch[3] || '';
+      const min = frac === 'ونصف' || frac === 'ونص' ? '30' : frac === 'وربع' ? '15' : '00';
+      if (/مساء|المساء|عصرا|العصر|ليلا|الليل/.test(period) && hr < 12) {
+        hr += 12;
+      }
+      timeStr = `${String(Math.min(23, Math.max(0, hr))).padStart(2, '0')}:${min}`;
+    }
   }
 
   let reminderTopic = '';
@@ -1175,6 +1328,8 @@ export interface ServerTranscriptionResult {
   modelUsed?: string;
   error?: string;
   fallback?: boolean;
+  statusCode?: number;
+  isTimeoutOrNetwork?: boolean;
 }
 
 export async function transcribeAudioOnServer(
@@ -1182,7 +1337,8 @@ export async function transcribeAudioOnServer(
   mimeType: string,
   dialectHint = 'ar-YE'
 ): Promise<ServerTranscriptionResult> {
-  if (!audioBase64) {
+  const cleanBase64 = (audioBase64 || '').replace(/^data:[^;]+;base64,/, '').trim();
+  if (!cleanBase64) {
     return { success: false, transcript: '', error: 'الملف الصوتي فارغ' };
   }
 
@@ -1191,51 +1347,104 @@ export async function transcribeAudioOnServer(
       success: false,
       transcript: '',
       fallback: true,
-      error: 'الجهاز غير متصل بالإنترنت حاليًا',
+      statusCode: 0,
+      isTimeoutOrNetwork: true,
+      error: 'الجهاز غير متصل بالإنترنت حاليًا. يمكنك التسجيل عبر محرك الهاتف المباشر أو إعادة المحاولة عند عودة الاتصال.',
     };
   }
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout for audio transcription
-    const res = await fetch('/api/voice/transcribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audioBase64, mimeType, dialectHint }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => {
+        try {
+          controller.abort(new DOMException('VOICE_STT_TIMEOUT', 'AbortError'));
+        } catch {
+          controller.abort();
+        }
+      }, 25000); // 25s timeout per attempt for mobile networks
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && typeof data.transcript === 'string' && data.transcript.trim()) {
+      const res = await fetch('/api/voice/transcribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ audioBase64: cleanBase64, mimeType, dialectHint }),
+        signal: controller.signal,
+      });
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        // Static hosting rewrite (e.g. Vercel rewriting /api/* to /index.html)
         return {
-          success: true,
-          transcript: data.transcript.trim(),
-          modelUsed: data.modelUsed,
+          success: false,
+          transcript: '',
+          fallback: true,
+          statusCode: 404,
+          error: mapVoiceErrorToArabic('STATIC_HOST_NO_BACKEND', 404),
         };
+      }
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && typeof data.transcript === 'string' && data.transcript.trim()) {
+          return {
+            success: true,
+            transcript: sanitizeSpokenRepetitions(data.transcript.trim()),
+            modelUsed: data.modelUsed,
+            statusCode: res.status,
+          };
+        }
+        return {
+          success: false,
+          transcript: typeof data.transcript === 'string' ? data.transcript.trim() : '',
+          fallback: true,
+          statusCode: res.status,
+          error:
+            data.reason === 'AI_CLIENT_UNAVAILABLE'
+              ? 'مفتاح خدمة الذكاء الاصطناعي غير مضبوط على الخادم. تم التبديل إلى محرك الهاتف المباشر.'
+              : data.reason === 'MODELS_EXHAUSTED_OR_UNAVAILABLE'
+                ? 'خدمة التفريغ السحابي مشغولة حاليًا. يرجى إعادة المحاولة أو استخدام محرك الهاتف المباشر.'
+                : mapVoiceErrorToArabic(data.error || 'لم يتم تمييز كلمات واضحة في التسجيل', res.status),
+        };
+      }
+
+      if (res.status >= 500 && attempt < maxAttempts) {
+        continue;
+      }
+
+      return {
+        success: false,
+        transcript: '',
+        fallback: true,
+        statusCode: res.status,
+        error: mapVoiceErrorToArabic(`HTTP_${res.status}`, res.status),
+      };
+    } catch (err) {
+      if (timeoutId) clearTimeout(timeoutId);
+      const raw = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+      const isAbort = /abort|timeout/i.test(raw);
+      if (!isAbort && attempt < maxAttempts) {
+        continue;
       }
       return {
         success: false,
-        transcript: typeof data.transcript === 'string' ? data.transcript.trim() : '',
+        transcript: '',
         fallback: true,
-        error: data.reason || data.error || 'تعذر الحصول على تفريغ صوتي دقيق من الخادم',
+        isTimeoutOrNetwork: true,
+        error: mapVoiceErrorToArabic(err),
       };
     }
-    return {
-      success: false,
-      transcript: '',
-      fallback: true,
-      error: `فشل الاتصال بخادم التفريغ (رمز الحالة: ${res.status})`,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      transcript: '',
-      fallback: true,
-      error: err instanceof Error ? err.message : String(err),
-    };
   }
+
+  return {
+    success: false,
+    transcript: '',
+    fallback: true,
+    isTimeoutOrNetwork: true,
+    error: mapVoiceErrorToArabic('VOICE_STT_TIMEOUT'),
+  };
 }
 
 export async function analyzeVoiceTranscriptHybrid(
@@ -1243,18 +1452,24 @@ export async function analyzeVoiceTranscriptHybrid(
   snapshot: VoiceWorkspaceSnapshot,
   previousDraft?: VoiceExtractedPayload | null
 ): Promise<VoiceExtractedPayload> {
-  const deterministic = parseArabicVoiceCommandDeterministic(
-    rawTranscript,
-    snapshot.referenceDate || new Date()
-  );
+  const refDate = snapshot.referenceDate || new Date();
+  const deterministic = parseArabicVoiceCommandDeterministic(rawTranscript, refDate);
 
   if (typeof window !== 'undefined' && navigator.onLine) {
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6500);
+      timeoutId = setTimeout(() => {
+        try {
+          controller.abort(new DOMException('VOICE_NLU_TIMEOUT', 'AbortError'));
+        } catch {
+          controller.abort();
+        }
+      }, 8500);
+
       const res = await fetch('/api/voice/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
           transcript: rawTranscript,
           contextSummary: {
@@ -1273,9 +1488,10 @@ export async function analyzeVoiceTranscriptHybrid(
         }),
         signal: controller.signal,
       });
-      clearTimeout(timeout);
+      if (timeoutId) clearTimeout(timeoutId);
 
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         const ai = data?.analysis;
         if (ai && typeof ai === 'object') {
@@ -1312,6 +1528,46 @@ export async function analyzeVoiceTranscriptHybrid(
                 ? `عقار ${finalTaxpayerName}`
                 : deterministic.propertyTitle);
 
+          // Resolve date and time from AI if provided
+          let finalDateIso = deterministic.dateIso;
+          if (typeof ai.explicitDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(ai.explicitDate.trim())) {
+            finalDateIso = ai.explicitDate.trim();
+          } else if (typeof ai.dateOffsetDays === 'number' && !isNaN(ai.dateOffsetDays) && ai.dateOffsetDays >= 0) {
+            const d = new Date(refDate.getTime());
+            d.setDate(d.getDate() + Math.round(ai.dateOffsetDays));
+            finalDateIso = d.toISOString().slice(0, 10);
+          }
+
+          let finalTimeStr = deterministic.timeStr;
+          if (typeof ai.explicitTime === 'string' && /^\d{1,2}:\d{2}$/.test(ai.explicitTime.trim())) {
+            const [h, m] = ai.explicitTime.trim().split(':');
+            finalTimeStr = `${h.padStart(2, '0')}:${m}`;
+          }
+
+          const validPropertyTypes = new Set<PropertyType>([
+            'residential',
+            'commercial',
+            'industrial',
+            'agricultural',
+            'mixed',
+          ]);
+          const finalPropertyType: PropertyType =
+            typeof ai.propertyType === 'string' && validPropertyTypes.has(ai.propertyType as PropertyType)
+              ? (ai.propertyType as PropertyType)
+              : deterministic.propertyType;
+
+          const validPaymentMethods = new Set<PaymentMethod>(['cash', 'bank_transfer', 'check', 'electronic']);
+          const finalPaymentMethod: PaymentMethod =
+            typeof ai.paymentMethod === 'string' && validPaymentMethods.has(ai.paymentMethod as PaymentMethod)
+              ? (ai.paymentMethod as PaymentMethod)
+              : deterministic.paymentMethod;
+
+          const validUnitTypes = new Set<UnitType>(['apartment', 'shop', 'office', 'warehouse', 'other']);
+          const finalTargetUnitType: UnitType =
+            typeof ai.targetUnitType === 'string' && validUnitTypes.has(ai.targetUnitType as UnitType)
+              ? (ai.targetUnitType as UnitType)
+              : deterministic.targetUnitType;
+
           let aiResult: VoiceExtractedPayload = {
             ...deterministic,
             intent: validatedIntent,
@@ -1331,7 +1587,12 @@ export async function analyzeVoiceTranscriptHybrid(
               (typeof ai.taxpayerPhone === 'string' && ai.taxpayerPhone.trim()) ||
               deterministic.taxpayerPhone ||
               '',
+            nationalId:
+              (typeof ai.nationalId === 'string' && ai.nationalId.trim()) ||
+              deterministic.nationalId ||
+              '',
             propertyTitle: finalPropTitle,
+            propertyType: finalPropertyType,
             region: finalRegion,
             address: finalAddress,
             floorsCount: finalFloors,
@@ -1347,13 +1608,25 @@ export async function analyzeVoiceTranscriptHybrid(
               (typeof ai.currency === 'string' && ai.currency.trim()) ||
               deterministic.currency ||
               'ريال يمني',
+            paymentMethod: finalPaymentMethod,
+            dateIso: finalDateIso,
+            timeStr: finalTimeStr,
             reminderTopic:
               (typeof ai.reminderTopic === 'string' && ai.reminderTopic.trim()) ||
               deterministic.reminderTopic ||
               '',
+            targetUnitNumber:
+              (typeof ai.targetUnitNumber === 'string' && ai.targetUnitNumber.trim()) ||
+              deterministic.targetUnitNumber ||
+              '',
+            targetUnitType: finalTargetUnitType,
             searchQuery:
               (typeof ai.searchQuery === 'string' && ai.searchQuery.trim()) ||
               deterministic.searchQuery ||
+              '',
+            notes:
+              (typeof ai.notes === 'string' && ai.notes.trim()) ||
+              deterministic.notes ||
               '',
           };
 
@@ -1365,6 +1638,7 @@ export async function analyzeVoiceTranscriptHybrid(
         }
       }
     } catch {
+      if (timeoutId) clearTimeout(timeoutId);
       // Fallback to deterministic rules when offline or timeout
     }
   }

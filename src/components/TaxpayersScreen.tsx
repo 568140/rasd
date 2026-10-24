@@ -89,7 +89,12 @@ const VISIT_PURPOSE_LABELS: Record<VisitPurpose, string> = {
 };
 
 const VISIT_STATUS_LABELS: Record<VisitStatus, string> = {
+  planned: 'مخططة',
+  in_progress: 'قيد التنفيذ',
   completed: 'مكتملة بنجاح',
+  postponed: 'مؤجلة',
+  impeded: 'تعثرت / تعذرت',
+  cancelled: 'ملغاة',
   requires_followup: 'تتطلب متابعة لاحقة',
   occupant_absent: 'المكلف / الشاغل غير متواجد',
   access_denied: 'تعذر الوصول للعقار',

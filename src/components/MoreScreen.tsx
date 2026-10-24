@@ -17,12 +17,14 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronLeft,
+  Volume2,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { CurrencyCode, ScreenId } from '../types/rasd';
 import { FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../services/firebase';
 import { DIRTY_DOZEN_AND_RBAC_TESTS } from '../../firestore.rules.test';
+import { SoundSettingsPanel } from './SoundSettingsPanel';
 
 export const MoreScreen: React.FC = () => {
   const {
@@ -37,11 +39,12 @@ export const MoreScreen: React.FC = () => {
     updateUserProfileInfo,
     updateWorkspaceSettings,
     logout,
+    showToast,
   } = useRasd();
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
-  const [subPanel, setSubPanel] = useState<'none' | 'profile' | 'workspace' | 'transparency'>('none');
+  const [subPanel, setSubPanel] = useState<'none' | 'profile' | 'workspace' | 'sounds' | 'transparency'>('none');
   const [confirmLogout, setConfirmLogout] = useState(false);
 
   // Profile Form State
@@ -212,7 +215,7 @@ export const MoreScreen: React.FC = () => {
       </div>
 
       {/* Settings, Sync & Transparency Hub */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <button
           type="button"
           onClick={() => {
@@ -232,6 +235,24 @@ export const MoreScreen: React.FC = () => {
             <span>الإعدادات الشخصية</span>
           </div>
           <p className="text-xs text-slate-500">تعديل الاسم، المسمى الوظيفي، ورقم التواصل</p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSubPanel(subPanel === 'sounds' ? 'none' : 'sounds')}
+          className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
+            subPanel === 'sounds'
+              ? 'border-[#0D9488] ring-2 ring-teal-500/15'
+              : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0D9488]'
+          }`}
+        >
+          <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
+            <Volume2 className="w-4 h-4 text-[#0D9488]" />
+            <span>أصوات الإشعارات والتنبيهات</span>
+          </div>
+          <p className="text-xs text-slate-500">
+            اختيار نغمات التنبيه والمواعيد (تعمل بدون إنترنت)
+          </p>
         </button>
 
         <button
@@ -276,6 +297,26 @@ export const MoreScreen: React.FC = () => {
           </p>
         </button>
       </div>
+
+      {/* Sub-panel: Offline Notification & Alert Sounds */}
+      {subPanel === 'sounds' && (
+        <div className="bg-white dark:bg-[#0D1829] border border-teal-200/80 dark:border-teal-800/80 rounded-3xl p-5 space-y-4 shadow-xs animate-in fade-in duration-200">
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+              <Volume2 className="w-5 h-5 text-[#0D9488]" />
+              <span>تخصيص أصوات الإشعارات والتنبيهات (بدون إنترنت)</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setSubPanel('none')}
+              className="min-h-[34px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
+            >
+              إغلاق
+            </button>
+          </div>
+          <SoundSettingsPanel onShowToast={showToast} />
+        </div>
+      )}
 
       {/* Sub-panel: Personal Settings */}
       {subPanel === 'profile' && (

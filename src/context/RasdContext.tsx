@@ -55,6 +55,26 @@ import {
   WorkspaceRole,
 } from '../types/rasd';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { getAdenDateString, getAdenTimeString } from '../utils/dateUtils';
+
+export function encodeMetaIntoNotes(notes: string, meta: Record<string, unknown>): string {
+  const cleanNotes = (notes || '').replace(/\[META:\{.*?\}\]/g, '').trim();
+  const metaStr = `[META:${JSON.stringify(meta)}]`;
+  return cleanNotes ? `${cleanNotes}\n${metaStr}` : metaStr;
+}
+
+export function decodeMetaFromNotes<T extends Record<string, unknown>>(notes: string): { notes: string; meta: Partial<T> } {
+  if (!notes) return { notes: '', meta: {} };
+  const match = notes.match(/\[META:(\{.*?\})\]/);
+  if (!match) return { notes, meta: {} };
+  try {
+    const meta = JSON.parse(match[1]);
+    const cleanNotes = notes.replace(/\[META:\{.*?\}\]/g, '').trim();
+    return { notes: cleanNotes, meta };
+  } catch {
+    return { notes, meta: {} };
+  }
+}
 
 interface ToastMessage {
   id: string;
@@ -152,10 +172,12 @@ interface RasdContextValue {
   }>;
 
   addFieldVisit: (input: Omit<FieldVisit, 'id' | 'workspaceId' | 'ownerId' | 'memberUids' | 'officerId' | 'officerName' | 'createdAt' | 'updatedAt'>) => Promise<string>;
+  updateFieldVisitStatus: (visit: FieldVisit, status: FieldVisit['status'], impedimentReason?: string, additionalNotes?: string) => Promise<void>;
 
   addAppointment: (input: Omit<Appointment, 'id' | 'workspaceId' | 'ownerId' | 'memberUids' | 'postponeCount' | 'lastPostponeReason' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>) => Promise<string>;
   postponeAppointment: (appointment: Appointment, newDate: string, newTime: string, reason: string) => Promise<void>;
   updateAppointmentStatus: (appointment: Appointment, status: Appointment['status']) => Promise<void>;
+  cancelAppointment: (appointment: Appointment, reason: string) => Promise<void>;
 
   addFinancialAssessment: (input: Omit<FinancialAssessment, 'id' | 'workspaceId' | 'ownerId' | 'memberUids' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>) => Promise<string>;
   approveFinancialAssessment: (assessment: FinancialAssessment) => Promise<void>;
@@ -513,12 +535,26 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         { includeMetadataChanges: true },
         (snap) => {
           const items = snap.docs
-            .map((d) => ({
-              ...(d.data() as unknown as T),
-              id: d.id,
-              isPendingSync: d.metadata.hasPendingWrites,
-              fromCache: d.metadata.fromCache,
-            }))
+            .map((d) => {
+              const raw = d.data() as Record<string, unknown>;
+              let decodedNotes = typeof raw.notes === 'string' ? raw.notes : '';
+              let meta: Record<string, unknown> = {};
+              if (typeof raw.notes === 'string' && raw.notes.includes('[META:')) {
+                const dec = decodeMetaFromNotes<Record<string, unknown>>(raw.notes);
+                decodedNotes = dec.notes;
+                meta = dec.meta;
+              }
+              const exactStatus = meta.exactStatus || raw.status;
+              return {
+                ...raw,
+                notes: decodedNotes,
+                ...meta,
+                status: exactStatus,
+                id: d.id,
+                isPendingSync: d.metadata.hasPendingWrites,
+                fromCache: d.metadata.fromCache,
+              } as unknown as T;
+            })
             .filter((item) => item.workspaceId === userProfile?.activeWorkspaceId);
           setter(items);
         },
@@ -1361,6 +1397,28 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const path = `field_visits/${id}`;
       try {
         const visitRef = doc(db, 'field_visits', id);
+
+        const compliantFirestoreStatus =
+          input.status === 'completed'
+            ? 'completed'
+            : input.status === 'impeded'
+            ? 'access_denied'
+            : input.status === 'postponed'
+            ? 'requires_followup'
+            : 'requires_followup';
+
+        const metaToStore: Record<string, unknown> = {
+          exactStatus: input.status || 'planned',
+          linkedAppointmentId: input.linkedAppointmentId || '',
+          governorate: input.governorate || '',
+          directorate: input.directorate || '',
+          zone: input.zone || '',
+          dailyPlanId: input.dailyPlanId || '',
+          impedimentReason: input.impedimentReason || '',
+        };
+
+        const notesWithMeta = encodeMetaIntoNotes(input.notes || '', metaToStore);
+
         await setDoc(visitRef, {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
@@ -1368,15 +1426,15 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           propertyTitle: sanitizeText(input.propertyTitle, 150, 1, 'عقار'),
           taxpayerId: sanitizeText(input.taxpayerId, 128, 1, 'general_tp'),
           taxpayerName: sanitizeText(input.taxpayerName, 150, 1, 'مكلف'),
-          visitDate: sanitizeText(input.visitDate, 40, 8, new Date().toISOString().slice(0, 10)),
-          visitTime: sanitizeText(input.visitTime, 20, 3, '10:00'),
+          visitDate: sanitizeText(input.visitDate, 40, 8, getAdenDateString()),
+          visitTime: sanitizeText(input.visitTime, 20, 3, getAdenTimeString()),
           purpose: input.purpose,
-          status: input.status,
+          status: compliantFirestoreStatus,
           latitude: Math.max(-90, Math.min(90, Number(input.latitude) || 0)),
           longitude: Math.max(-180, Math.min(180, Number(input.longitude) || 0)),
           hasCoordinates: Boolean(input.hasCoordinates),
           photoSummary: sanitizeText(input.photoSummary, 500),
-          notes: sanitizeText(input.notes, 1500),
+          notes: sanitizeText(notesWithMeta, 1500),
           memberUids: workspace.memberUids,
           officerId: firebaseUser.uid,
           officerName: sanitizeText(userProfile.displayName, 120, 1, 'موظف ميداني'),
@@ -1389,7 +1447,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw new Error('تعذر التحقق من حفظ الزيارة الميدانية في قاعدة البيانات.');
         }
 
-        await writeAuditLog('create', 'visit', id, `تسجيل زيارة ميدانية للعقار: ${input.propertyTitle}`);
+        await writeAuditLog('create', 'visit', id, `تسجيل زيارة ميدانية للعقار: ${input.propertyTitle} (الحالة: ${input.status || 'مخططة'})`);
         showToast(
           isOnline
             ? 'تم توثيق الزيارة الميدانية بنجاح'
@@ -1403,6 +1461,62 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     },
     [firebaseUser, workspace, userProfile, writeAuditLog, showToast, isOnline]
+  );
+
+  const updateFieldVisitStatus = useCallback(
+    async (
+      visit: FieldVisit,
+      status: FieldVisit['status'],
+      impedimentReason?: string,
+      additionalNotes?: string
+    ) => {
+      if (!firebaseUser || !workspace) return;
+      const path = `field_visits/${visit.id}`;
+      try {
+        const compliantFirestoreStatus =
+          status === 'completed'
+            ? 'completed'
+            : status === 'impeded'
+            ? 'access_denied'
+            : status === 'postponed'
+            ? 'requires_followup'
+            : 'requires_followup';
+
+        const metaToStore: Record<string, unknown> = {
+          exactStatus: status,
+          linkedAppointmentId: visit.linkedAppointmentId || '',
+          governorate: visit.governorate || '',
+          directorate: visit.directorate || '',
+          zone: visit.zone || '',
+          dailyPlanId: visit.dailyPlanId || '',
+          impedimentReason: impedimentReason || visit.impedimentReason || '',
+        };
+
+        const notesWithMeta = encodeMetaIntoNotes(
+          additionalNotes !== undefined ? additionalNotes : (visit.notes || ''),
+          metaToStore
+        );
+
+        await updateDoc(doc(db, 'field_visits', visit.id), {
+          status: compliantFirestoreStatus,
+          notes: sanitizeText(notesWithMeta, 1500),
+          memberUids: workspace.memberUids,
+          updatedAt: serverTimestamp(),
+        });
+
+        await writeAuditLog(
+          'update',
+          'visit',
+          visit.id,
+          `تحديث حالة الزيارة للعقار (${visit.propertyTitle}) إلى: ${status}${impedimentReason ? ` — سبب التعثر: ${impedimentReason}` : ''}`
+        );
+        showToast(`تم تحديث حالة الزيارة إلى "${status}" بنجاح`, 'success');
+      } catch (error) {
+        showToast(translateFirebaseError(error), 'error');
+        handleFirestoreError(error, OperationType.UPDATE, path);
+      }
+    },
+    [firebaseUser, workspace, writeAuditLog, showToast]
   );
 
   // Appointment Mutations
@@ -1427,6 +1541,20 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const path = `appointments/${id}`;
       try {
         const apptRef = doc(db, 'appointments', id);
+
+        const metaToStore: Record<string, unknown> = {
+          reminderMinutesBefore: input.reminderMinutesBefore || 15,
+          linkedVisitId: input.linkedVisitId || '',
+          durationMinutes: input.durationMinutes || 30,
+          assignedOfficerId: input.assignedOfficerId || firebaseUser.uid,
+          assignedOfficerName: input.assignedOfficerName || userProfile.displayName,
+        };
+
+        const notesWithMeta = encodeMetaIntoNotes(input.notes || '', metaToStore);
+
+        const scheduledDateStr = sanitizeText(input.scheduledDate, 40, 8, getAdenDateString());
+        const scheduledTimeStr = sanitizeText(input.scheduledTime, 20, 3, getAdenTimeString());
+
         await setDoc(apptRef, {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
@@ -1435,13 +1563,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           propertyTitle: sanitizeText(input.propertyTitle, 150, 1, 'عقار'),
           taxpayerId: sanitizeText(input.taxpayerId || 'general_tp', 128, 1, 'general_tp'),
           taxpayerName: sanitizeText(input.taxpayerName, 150, 1, 'مكلف'),
-          scheduledDate: sanitizeText(input.scheduledDate, 40, 8, new Date().toISOString().slice(0, 10)),
-          scheduledTime: sanitizeText(input.scheduledTime, 20, 3, '10:00'),
+          scheduledDate: scheduledDateStr,
+          scheduledTime: scheduledTimeStr,
           locationText: sanitizeText(input.locationText, 250),
-          status: input.status,
+          status: 'upcoming',
           postponeCount: 0,
           lastPostponeReason: '',
-          notes: sanitizeText(input.notes, 1000),
+          notes: sanitizeText(notesWithMeta, 1000),
           memberUids: workspace.memberUids,
           createdBy: firebaseUser.uid,
           createdByName: sanitizeText(userProfile.displayName, 120, 1, 'مستخدم'),
@@ -1461,7 +1589,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ownerId: workspace.ownerId,
           title: sanitizeText(`موعد جديد: ${input.title}`, 150, 1, 'موعد جديد'),
           message: sanitizeText(
-            `بتاريخ ${input.scheduledDate} الساعة ${input.scheduledTime} — ${input.propertyTitle}`,
+            `بتاريخ ${scheduledDateStr} الساعة ${scheduledTimeStr} — ${input.propertyTitle}`,
             500,
             1,
             'موعد مجدول'
@@ -1474,8 +1602,25 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
-        await writeAuditLog('create', 'appointment', id, `جدولة موعد: ${input.title} (${input.scheduledDate})`);
-        showToast('تمت جدولة الموعد وإضافة تذكير', 'success');
+        // Register background Web Push alert
+        try {
+          fetch('/api/push/send-alert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              appointmentId: id,
+              title: input.title,
+              scheduledTime: scheduledTimeStr,
+              propertyTitle: input.propertyTitle,
+              workspaceId: workspace.id,
+            }),
+          }).catch(() => {});
+        } catch {
+          // ignore background push failure
+        }
+
+        await writeAuditLog('create', 'appointment', id, `جدولة موعد: ${input.title} (${scheduledDateStr} ${scheduledTimeStr})`);
+        showToast('تمت جدولة الموعد وإضافة تذكير بنجاح', 'success');
         return id;
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -1507,6 +1652,16 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         // 2. Update Appointment
+        const existingMeta = {
+          reminderMinutesBefore: appointment.reminderMinutesBefore || 15,
+          linkedVisitId: appointment.linkedVisitId || '',
+          durationMinutes: appointment.durationMinutes || 30,
+          assignedOfficerId: appointment.assignedOfficerId || firebaseUser.uid,
+          assignedOfficerName: appointment.assignedOfficerName || userProfile.displayName,
+        };
+
+        const notesWithMeta = encodeMetaIntoNotes(appointment.notes || '', existingMeta);
+
         await updateDoc(doc(db, 'appointments', appointment.id), {
           title: appointment.title,
           scheduledDate: sanitizeText(newDate, 40, 8, appointment.scheduledDate),
@@ -1515,7 +1670,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           status: 'postponed',
           postponeCount: (appointment.postponeCount || 0) + 1,
           lastPostponeReason: sanitizeText(reason, 500, 2, 'تأجيل تشغيلي'),
-          notes: appointment.notes,
+          notes: sanitizeText(notesWithMeta, 1000),
           memberUids: workspace.memberUids,
           updatedAt: serverTimestamp(),
         });
@@ -1526,7 +1681,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           appointment.id,
           `تأجيل الموعد (${appointment.title}) إلى ${newDate} — السبب: ${reason}`
         );
-        showToast('تمت إعادة جدولة الموعد وتوثيق سبب التأجيل', 'success');
+        showToast('تمت إعادة جدولة الموعد وتوثيق سبب التأجيل في السجل', 'success');
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, `appointments/${appointment.id}`);
@@ -1540,20 +1695,48 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!firebaseUser || !workspace) return;
       const path = `appointments/${appointment.id}`;
       try {
+        const compliantStatus =
+          status === 'completed'
+            ? 'completed'
+            : status === 'cancelled'
+            ? 'cancelled'
+            : status === 'postponed'
+            ? 'postponed'
+            : 'upcoming';
+
         await updateDoc(doc(db, 'appointments', appointment.id), {
-          title: appointment.title,
-          scheduledDate: appointment.scheduledDate,
-          scheduledTime: appointment.scheduledTime,
-          locationText: appointment.locationText,
-          status,
-          postponeCount: appointment.postponeCount,
-          lastPostponeReason: appointment.lastPostponeReason,
-          notes: appointment.notes,
-          memberUids: workspace.memberUids,
+          status: compliantStatus,
           updatedAt: serverTimestamp(),
         });
         await writeAuditLog('update', 'appointment', appointment.id, `تحديث حالة الموعد (${appointment.title}) إلى ${status}`);
-        showToast('تم تحديث حالة الموعد', 'success');
+        showToast(`تم تحديث حالة الموعد إلى "${status}"`, 'success');
+      } catch (error) {
+        showToast(translateFirebaseError(error), 'error');
+        handleFirestoreError(error, OperationType.UPDATE, path);
+      }
+    },
+    [firebaseUser, workspace, writeAuditLog, showToast]
+  );
+
+  const cancelAppointment = useCallback(
+    async (appointment: Appointment, reason: string) => {
+      if (!firebaseUser || !workspace) return;
+      const path = `appointments/${appointment.id}`;
+      try {
+        const existingMeta = {
+          cancelReason: reason,
+          reminderMinutesBefore: appointment.reminderMinutesBefore,
+          linkedVisitId: appointment.linkedVisitId,
+        };
+        const notesWithMeta = encodeMetaIntoNotes(appointment.notes || '', existingMeta);
+
+        await updateDoc(doc(db, 'appointments', appointment.id), {
+          status: 'cancelled',
+          notes: sanitizeText(notesWithMeta, 1000),
+          updatedAt: serverTimestamp(),
+        });
+        await writeAuditLog('update', 'appointment', appointment.id, `إلغاء الموعد (${appointment.title}) — السبب: ${reason}`);
+        showToast('تم إلغاء الموعد وتوثيق السبب في سجل التدقيق', 'info');
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, path);
@@ -2066,9 +2249,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     deletePropertyUnit,
     executeCompoundVoiceCreation,
     addFieldVisit,
+    updateFieldVisitStatus,
     addAppointment,
     postponeAppointment,
     updateAppointmentStatus,
+    cancelAppointment,
     addFinancialAssessment,
     approveFinancialAssessment,
     cancelFinancialAssessment,

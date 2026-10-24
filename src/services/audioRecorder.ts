@@ -257,6 +257,13 @@ export class AudioRecorder {
 
       try {
         if (this.mediaRecorder.state !== 'inactive') {
+          try {
+            if (this.mediaRecorder.state === 'recording') {
+              this.mediaRecorder.requestData();
+            }
+          } catch {
+            // ignore if requestData is not supported in current state
+          }
           this.mediaRecorder.stop();
         }
       } catch {
@@ -281,6 +288,9 @@ export class AudioRecorder {
       if (!AudioCtx) return;
 
       this.audioContext = new AudioCtx();
+      if (this.audioContext.state === 'suspended') {
+        void this.audioContext.resume().catch(() => {});
+      }
       const source = this.audioContext.createMediaStreamSource(stream);
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;

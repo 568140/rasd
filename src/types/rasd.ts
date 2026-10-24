@@ -171,7 +171,16 @@ export type VisitPurpose =
   | 'collection_followup'
   | 'dispute_check';
 
-export type VisitStatus = 'completed' | 'requires_followup' | 'occupant_absent' | 'access_denied';
+export type VisitStatus =
+  | 'planned'
+  | 'in_progress'
+  | 'completed'
+  | 'postponed'
+  | 'impeded'
+  | 'cancelled'
+  | 'requires_followup'
+  | 'occupant_absent'
+  | 'access_denied';
 
 export interface FieldVisit extends SyncMeta {
   workspaceId: string;
@@ -192,11 +201,23 @@ export interface FieldVisit extends SyncMeta {
   memberUids: string[];
   officerId: string;
   officerName: string;
+  linkedAppointmentId?: string;
+  governorate?: string;
+  directorate?: string;
+  zone?: string;
+  dailyPlanId?: string;
+  impedimentReason?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
 
-export type AppointmentStatus = 'upcoming' | 'postponed' | 'completed' | 'cancelled';
+export type AppointmentStatus =
+  | 'upcoming'
+  | 'due'
+  | 'postponed'
+  | 'completed'
+  | 'cancelled'
+  | 'missed';
 
 export interface Appointment extends SyncMeta {
   workspaceId: string;
@@ -216,6 +237,11 @@ export interface Appointment extends SyncMeta {
   memberUids: string[];
   createdBy: string;
   createdByName: string;
+  reminderMinutesBefore?: number;
+  linkedVisitId?: string;
+  durationMinutes?: number;
+  assignedOfficerId?: string;
+  assignedOfficerName?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -244,6 +270,7 @@ export interface FinancialAssessment extends SyncMeta {
   propertyTitle: string;
   taxpayerId: string;
   taxpayerName: string;
+  contractValue?: number;
   amount: number;
   currency: string;
   periodLabel: string;

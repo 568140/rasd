@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Building2,
   Users,
@@ -19,10 +19,15 @@ import {
   Compass,
   Layers,
   Wallet,
+  ChevronDown,
+  ChevronUp,
+  TrendingUp,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 
 export const HomeScreen: React.FC = () => {
+  const [isTasksCardCollapsed, setIsTasksCardCollapsed] = useState(false);
+  const [isFinanceCardCollapsed, setIsFinanceCardCollapsed] = useState(false);
   const {
     userProfile,
     workspace,
@@ -372,180 +377,299 @@ export const HomeScreen: React.FC = () => {
       </section>
 
       {/* 4. Two-Column Section: Due Tasks / Alerts & Financial Ledger Summary */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Right Column (7 cols): Due Tasks & Upcoming Schedule */}
-        <section className="lg:col-span-7 bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 shadow-2xs">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-base font-bold text-[#0B192C] dark:text-white font-display">
-                المهام المستحقة والتنبيهات الميدانية
-              </h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                جدول اليوم (<span className="font-mono">{todayStr}</span>) والمواعيد القادمة
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setActiveScreen('appointments')}
-              className="min-h-[38px] px-3 rounded-xl text-xs font-semibold text-[#0284C7] dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/50 flex items-center gap-1 cursor-pointer"
+        <section className="lg:col-span-7 relative overflow-hidden bg-gradient-to-b from-white via-white to-slate-50/70 dark:from-[#0D1829] dark:via-[#0D1829] dark:to-[#0A1322] border border-slate-200/90 dark:border-slate-800/90 rounded-3xl p-5 shadow-sm hover:shadow-md transition-all duration-300">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-l from-[#0284C7] via-[#0D9488] to-sky-400" />
+          <div className={`flex items-center justify-between gap-3 ${isTasksCardCollapsed ? '' : 'mb-4 pb-3.5 border-b border-slate-100 dark:border-slate-800/80'}`}>
+            <div
+              onClick={() => setIsTasksCardCollapsed((prev) => !prev)}
+              className="flex items-center gap-3 cursor-pointer select-none group min-w-0 flex-1"
             >
-              <span>كل المواعيد</span>
-              <ArrowLeft className="w-3.5 h-3.5" />
-            </button>
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-500/15 to-teal-500/15 dark:from-sky-500/20 dark:to-teal-500/20 border border-sky-200/60 dark:border-sky-800/60 text-[#0284C7] dark:text-sky-400 flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                <CalendarClock className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-base font-bold text-[#0B192C] dark:text-white font-display group-hover:text-[#0284C7] dark:group-hover:text-sky-400 transition-colors">
+                    المهام المستحقة والتنبيهات الميدانية
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-sky-50 dark:bg-sky-950/80 text-[#0284C7] dark:text-sky-300 border border-sky-200/60 dark:border-sky-800/70">
+                    {upcomingAppointments.length} قادم
+                  </span>
+                  {overdueAppointments.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-lg text-[11px] font-bold bg-rose-50 dark:bg-rose-950/80 text-rose-600 dark:text-rose-300 border border-rose-200/60 dark:border-rose-800/70">
+                      {overdueAppointments.length} متأخر
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  {isTasksCardCollapsed
+                    ? `اضغط لتوسيع جدول اليوم (${todayStr}) والمواعيد الميدانية`
+                    : <>جدول اليوم (<span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{todayStr}</span>) والمواعيد القادمة</>}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setActiveScreen('appointments')}
+                className="min-h-[36px] px-3 rounded-xl text-xs font-semibold text-[#0284C7] dark:text-sky-400 bg-sky-50/70 hover:bg-sky-100/80 dark:bg-sky-950/40 dark:hover:bg-sky-950/80 border border-sky-200/50 dark:border-sky-800/50 flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <span className="hidden sm:inline">كل المواعيد</span>
+                <ArrowLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsTasksCardCollapsed((prev) => !prev)}
+                aria-expanded={!isTasksCardCollapsed}
+                title={isTasksCardCollapsed ? 'توسيع البطاقة' : 'طي البطاقة'}
+                className="w-9 h-9 rounded-xl bg-slate-100/90 hover:bg-slate-200/80 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center cursor-pointer transition-colors"
+              >
+                {isTasksCardCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+              </button>
+            </div>
           </div>
 
-          {overdueAppointments.length > 0 && (
-            <div className="mb-4 p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/80 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 text-xs text-rose-800 dark:text-rose-300">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-                <span>
-                  يوجد <strong>{overdueAppointments.length}</strong> موعد متأخر تجاوز وقت استحقاقه ويتطلب إنجازًا أو إعادة جدولة.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActiveScreen('appointments')}
-                className="min-h-[34px] px-3 rounded-xl bg-rose-600 text-white text-xs font-semibold shrink-0 cursor-pointer"
-              >
-                معالجة الآن
-              </button>
-            </div>
-          )}
-
-          {upcomingAppointments.length === 0 ? (
-            <div className="py-8 px-4 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
-              <CalendarClock className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-              <p className="text-sm font-bold text-[#0B192C] dark:text-slate-200">
-                لا توجد مواعيد قادمة مجدولة حاليًا
-              </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">
-                أضف موعدًا ميدانيًا وربطه بمكلف أو عقار لتلقي التذكيرات.
-              </p>
-              <button
-                type="button"
-                onClick={() => setActiveScreen('appointments')}
-                className="min-h-[42px] px-4 rounded-xl bg-[#0B192C] dark:bg-[#0D9488] text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>جدولة موعد جديد</span>
-              </button>
-            </div>
-          ) : (
-            <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
-              {upcomingAppointments.map((appt) => {
-                const isToday = appt.scheduledDate === todayStr;
-                return (
-                  <div key={appt.id} className="py-3.5 flex items-center justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div
-                        className={`px-2.5 py-1.5 rounded-xl text-center shrink-0 font-mono text-xs font-bold ${
-                          isToday
-                            ? 'bg-teal-50 dark:bg-teal-950/80 text-[#0D9488] dark:text-teal-300 border border-teal-200 dark:border-teal-800'
-                            : 'bg-slate-100 dark:bg-slate-800 text-[#0B192C] dark:text-slate-300'
-                        }`}
-                      >
-                        <div>{appt.scheduledTime}</div>
-                        <div className="text-[10px] font-normal opacity-80">{appt.scheduledDate.slice(5)}</div>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold text-[#0B192C] dark:text-white truncate">
-                          {appt.title}
-                        </div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap items-center gap-1.5">
-                          <span>{appt.propertyTitle}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>{appt.taxpayerName}</span>
-                          {appt.isPendingSync && (
-                            <>
-                              <span aria-hidden="true">·</span>
-                              <span className="text-amber-600 dark:text-amber-400">محلي</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
+          {!isTasksCardCollapsed && (
+            <div className="space-y-3 animate-in fade-in duration-200">
+              {overdueAppointments.length > 0 && (
+                <div className="p-3.5 rounded-2xl bg-gradient-to-l from-rose-50 via-rose-50/90 to-orange-50/50 dark:from-rose-950/50 dark:via-rose-950/40 dark:to-slate-900 border border-rose-200/90 dark:border-rose-800/80 flex items-center justify-between gap-3 shadow-2xs">
+                  <div className="flex items-center gap-2.5 text-xs text-rose-800 dark:text-rose-300">
+                    <div className="w-8 h-8 rounded-xl bg-rose-100 dark:bg-rose-900/60 flex items-center justify-center shrink-0">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedTaxpayerId(appt.taxpayerId);
-                        setSelectedPropertyId(appt.propertyId);
-                        setActiveScreen('taxpayers');
-                      }}
-                      className="min-h-[38px] px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-[#0B192C] dark:text-slate-200 shrink-0 cursor-pointer"
-                    >
-                      ملف المكلف
-                    </button>
+                    <span>
+                      يوجد <strong>{overdueAppointments.length}</strong> موعد متأخر تجاوز وقت استحقاقه ويتطلب إنجازًا أو إعادة جدولة.
+                    </span>
                   </div>
-                );
-              })}
+                  <button
+                    type="button"
+                    onClick={() => setActiveScreen('appointments')}
+                    className="min-h-[34px] px-3.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold shrink-0 cursor-pointer shadow-2xs transition-colors"
+                  >
+                    معالجة الآن
+                  </button>
+                </div>
+              )}
+
+              {upcomingAppointments.length === 0 ? (
+                <div className="py-8 px-4 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-900/30">
+                  <CalendarClock className="w-9 h-9 text-slate-400 mx-auto mb-2" />
+                  <p className="text-sm font-bold text-[#0B192C] dark:text-slate-200">
+                    لا توجد مواعيد قادمة مجدولة حاليًا
+                  </p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">
+                    أضف موعدًا ميدانيًا وربطه بمكلف أو عقار لتلقي التذكيرات.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveScreen('appointments')}
+                    className="min-h-[42px] px-4 rounded-xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0D9488] text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>جدولة موعد جديد</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {upcomingAppointments.map((appt) => {
+                    const isToday = appt.scheduledDate === todayStr;
+                    return (
+                      <div
+                        key={appt.id}
+                        className="p-3 rounded-2xl bg-slate-50/80 hover:bg-sky-50/40 dark:bg-slate-900/60 dark:hover:bg-slate-800/70 border border-slate-200/70 dark:border-slate-800/90 flex items-center justify-between gap-3 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div
+                            className={`px-3 py-2 rounded-xl text-center shrink-0 font-mono text-xs font-bold shadow-2xs ${
+                              isToday
+                                ? 'bg-gradient-to-br from-teal-500/15 to-emerald-500/10 dark:from-teal-950 dark:to-teal-900/60 text-[#0D9488] dark:text-teal-300 border border-teal-300/70 dark:border-teal-700'
+                                : 'bg-white dark:bg-slate-800 text-[#0B192C] dark:text-slate-200 border border-slate-200/80 dark:border-slate-700'
+                            }`}
+                          >
+                            <div>{appt.scheduledTime}</div>
+                            <div className="text-[10px] font-normal opacity-80 mt-0.5">{appt.scheduledDate.slice(5)}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-bold text-[#0B192C] dark:text-white truncate">
+                                {appt.title}
+                              </div>
+                              {isToday && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-100/80 dark:bg-teal-950 text-[#0D9488] dark:text-teal-300 shrink-0">
+                                  اليوم
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-1 flex flex-wrap items-center gap-1.5">
+                              <span className="font-medium text-slate-700 dark:text-slate-300">{appt.propertyTitle}</span>
+                              <span aria-hidden="true">·</span>
+                              <span>{appt.taxpayerName}</span>
+                              {appt.isPendingSync && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="px-1.5 py-0.5 rounded bg-amber-100/80 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 text-[10px] font-semibold">
+                                    محلي
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedTaxpayerId(appt.taxpayerId);
+                            setSelectedPropertyId(appt.propertyId);
+                            setActiveScreen('taxpayers');
+                          }}
+                          className="min-h-[36px] px-3.5 rounded-xl bg-white hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200/80 dark:border-slate-700 text-xs font-semibold text-[#0B192C] dark:text-slate-200 shrink-0 cursor-pointer shadow-2xs transition-colors"
+                        >
+                          ملف المكلف
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </section>
 
         {/* Left Column (5 cols): Financial Ledger Summary */}
-        <section className="lg:col-span-5 bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 rounded-3xl p-5 flex flex-col justify-between shadow-2xs">
+        <section className="lg:col-span-5 relative overflow-hidden bg-gradient-to-b from-white via-white to-slate-50/70 dark:from-[#0D1829] dark:via-[#0D1829] dark:to-[#0A1322] border border-slate-200/90 dark:border-slate-800/90 rounded-3xl p-5 flex flex-col justify-between shadow-sm hover:shadow-md transition-all duration-300">
+          <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-l from-[#0D9488] via-[#0284C7] to-indigo-500" />
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-base font-bold text-[#0B192C] dark:text-white font-display">
-                  الملخص المالي المعتمد
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  العملة: <span className="font-mono font-semibold">{workspace?.defaultCurrency || 'SAR'}</span>
-                </p>
+            <div
+              onClick={() => setIsFinanceCardCollapsed((prev) => !prev)}
+              className={`flex items-center justify-between gap-3 cursor-pointer select-none group ${
+                isFinanceCardCollapsed ? '' : 'mb-4 pb-3.5 border-b border-slate-100 dark:border-slate-800/80'
+              }`}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-teal-500/15 to-sky-500/15 dark:from-teal-500/20 dark:to-sky-500/20 border border-teal-200/60 dark:border-teal-800/60 text-[#0D9488] dark:text-teal-400 flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                  <Wallet className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-[#0B192C] dark:text-white font-display group-hover:text-[#0D9488] dark:group-hover:text-teal-400 transition-colors">
+                      الملخص المالي المعتمد
+                    </h2>
+                    <span className="px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                      {workspace?.defaultCurrency || 'SAR'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                    {isFinanceCardCollapsed ? (
+                      <span className="font-mono font-semibold text-[#0D9488] dark:text-teal-400">
+                        المحصّل: {approvedPaymentsTotal.toLocaleString('en-US')} / {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                      </span>
+                    ) : (
+                      <>العملة الأساسية: <span className="font-mono font-semibold">{workspace?.defaultCurrency || 'SAR'}</span> · دفتر الأستاذ المالي</>
+                    )}
+                  </p>
+                </div>
               </div>
-              <div className="w-9 h-9 rounded-2xl bg-sky-50 dark:bg-sky-950/70 text-[#0284C7] dark:text-sky-400 flex items-center justify-center">
-                <Wallet className="w-4 h-4" />
-              </div>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsFinanceCardCollapsed((prev) => !prev);
+                }}
+                aria-expanded={!isFinanceCardCollapsed}
+                title={isFinanceCardCollapsed ? 'توسيع البطاقة' : 'طي البطاقة'}
+                className="w-9 h-9 rounded-xl bg-slate-100/90 hover:bg-slate-200/80 dark:bg-slate-800/90 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+              >
+                {isFinanceCardCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+              </button>
             </div>
 
-            <div className="space-y-3">
-              <div className="p-4 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900/90 border border-slate-200/70 dark:border-slate-800">
-                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                  <span>إجمالي التقييمات المعتمدة</span>
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-[#0284C7]" />
+            {!isFinanceCardCollapsed && (
+              <div className="space-y-3 animate-in fade-in duration-200">
+                <div className="p-4 rounded-2xl bg-gradient-to-l from-[#F4F7FA] to-slate-50/90 dark:from-slate-900/95 dark:to-slate-900/60 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <span className="font-semibold">إجمالي التقييمات المعتمدة</span>
+                    <div className="w-7 h-7 rounded-lg bg-sky-100/80 dark:bg-sky-950/80 flex items-center justify-center">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-[#0284C7] dark:text-sky-400" />
+                    </div>
+                  </div>
+                  <div className="text-xl font-bold text-[#0B192C] dark:text-white tabular-nums mt-1.5 font-mono">
+                    {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-slate-200/70 dark:border-slate-700 font-medium">
+                      {assessments.filter((a) => a.status === 'approved').length} معتمد ومقفل
+                    </span>
+                    <span>·</span>
+                    <span>{assessments.filter((a) => a.status === 'draft').length} مسودة</span>
+                  </div>
                 </div>
-                <div className="text-xl font-bold text-[#0B192C] dark:text-white tabular-nums mt-1 font-mono">
-                  {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
-                </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  {assessments.filter((a) => a.status === 'approved').length} معتمد ومقفل ·{' '}
-                  {assessments.filter((a) => a.status === 'draft').length} مسودة
-                </div>
-              </div>
 
-              <div className="p-4 rounded-2xl bg-teal-50/50 dark:bg-teal-950/30 border border-teal-200/70 dark:border-teal-900/60">
-                <div className="flex items-center justify-between text-xs text-teal-800 dark:text-teal-300">
-                  <span>إجمالي المدفوعات المحصلة</span>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-[#0D9488]" />
-                </div>
-                <div className="text-xl font-bold text-[#0D9488] dark:text-teal-400 tabular-nums mt-1 font-mono">
-                  {approvedPaymentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
-                </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                  {transactions.length} معاملة مسجلة ·{' '}
-                  {transactions.filter((t) => t.status === 'reversed').length} قيد عكسي
+                <div className="p-4 rounded-2xl bg-gradient-to-l from-teal-50/80 via-teal-50/40 to-emerald-50/30 dark:from-teal-950/40 dark:via-teal-950/25 dark:to-slate-900/80 border border-teal-200/80 dark:border-teal-900/70 shadow-2xs">
+                  <div className="flex items-center justify-between text-xs text-teal-800 dark:text-teal-300">
+                    <span className="font-semibold">إجمالي المدفوعات المحصلة</span>
+                    <div className="w-7 h-7 rounded-lg bg-teal-100/80 dark:bg-teal-900/60 flex items-center justify-center">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-[#0D9488] dark:text-teal-400" />
+                    </div>
+                  </div>
+                  <div className="text-xl font-bold text-[#0D9488] dark:text-teal-400 tabular-nums mt-1.5 font-mono">
+                    {approvedPaymentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                  </div>
+                  <div className="mt-2.5">
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mb-1">
+                      <span className="flex items-center gap-1">
+                        <TrendingUp className="w-3 h-3 text-[#0D9488]" />
+                        نسبة التحصيل الفعلي
+                      </span>
+                      <span className="font-mono font-bold text-[#0D9488] dark:text-teal-400">
+                        {approvedAssessmentsTotal > 0
+                          ? `${Math.min(100, Math.round((approvedPaymentsTotal / approvedAssessmentsTotal) * 100))}%`
+                          : '0%'}
+                      </span>
+                    </div>
+                    <div className="w-full h-1.5 rounded-full bg-teal-950/10 dark:bg-teal-950 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-l from-[#0D9488] to-sky-500 transition-all duration-500"
+                        style={{
+                          width: `${
+                            approvedAssessmentsTotal > 0
+                              ? Math.min(100, Math.round((approvedPaymentsTotal / approvedAssessmentsTotal) * 100))
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+                    {transactions.length} معاملة مسجلة ·{' '}
+                    {transactions.filter((t) => t.status === 'reversed').length} قيد عكسي
+                  </div>
                 </div>
               </div>
+            )}
+          </div>
+
+          {!isFinanceCardCollapsed && (
+            <div className="grid grid-cols-2 gap-2.5 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800/80">
+              <button
+                type="button"
+                onClick={() => setActiveScreen('assessments')}
+                className="min-h-[42px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-[#0B192C] dark:text-slate-200 cursor-pointer transition-colors"
+              >
+                التقييمات المالية
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveScreen('transactions')}
+                className="min-h-[42px] rounded-xl bg-gradient-to-l from-[#0B192C] to-[#132A46] hover:opacity-95 dark:from-[#0284C7] dark:to-[#0D9488] text-xs font-semibold text-white cursor-pointer shadow-2xs transition-all"
+              >
+                المعاملات والدفعات
+              </button>
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2.5 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setActiveScreen('assessments')}
-              className="min-h-[42px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-semibold text-[#0B192C] dark:text-slate-200 cursor-pointer transition-colors"
-            >
-              التقييمات المالية
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveScreen('transactions')}
-              className="min-h-[42px] rounded-xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0284C7] text-xs font-semibold text-white cursor-pointer transition-colors"
-            >
-              المعاملات والدفعات
-            </button>
-          </div>
+          )}
         </section>
       </div>
 

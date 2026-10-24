@@ -30,6 +30,8 @@ import {
   analyzeVoiceTranscriptHybrid,
   buildVoiceExecutionPlan,
   computeFinancialSummary,
+  deduplicateOverlappingSpeech,
+  mapVoiceErrorToArabic,
   markPlanAsExecuted,
   parseArabicVoiceCommandDeterministic,
   sanitizeSpokenRepetitions,
@@ -184,6 +186,11 @@ export const VoiceAssistantScreen: React.FC = () => {
   const [audioResult, setAudioResult] = useState<AudioRecordingResult | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState<boolean>(false);
 
+  // Engine selection & server connectivity probe
+  const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'static_or_offline'>('checking');
+  const [preferredEngine, setPreferredEngine] = useState<'server_gemini' | 'browser_speech'>('server_gemini');
+  const [serverCheckMessage, setServerCheckMessage] = useState<string>('جارٍ فحص الاتصال بالخادم...');
+
   const [liveInterimSpeech, setLiveInterimSpeech] = useState<string>('');
   const [transcriptInput, setTranscriptInput] = useState<string>('');
   const [transcriptionSource, setTranscriptionSource] = useState<'server_gemini' | 'browser_speech' | 'manual'>('manual');
@@ -215,6 +222,74 @@ export const VoiceAssistantScreen: React.FC = () => {
   const unmountedRef = useRef<boolean>(false);
   const accumulatedBaseTranscriptRef = useRef<string>('');
   const livePreviewChunksRef = useRef<string[]>([]);
+
+  // Browser speech session tracking (prevents Android auto-stop & cumulative duplication)
+  const isBrowserRecordingActiveRef = useRef<boolean>(false);
+  const browserCommittedTextRef = useRef<string>('');
+  const browserLatestSessionTextRef = useRef<string>('');
+  const browserTimerIntervalRef = useRef<number | null>(null);
+  const browserStartTimeRef = useRef<number>(0);
+
+  const clearBrowserTimer = useCallback(() => {
+    if (browserTimerIntervalRef.current !== null) {
+      window.clearInterval(browserTimerIntervalRef.current);
+      browserTimerIntervalRef.current = null;
+    }
+  }, []);
+
+  // Probe server readiness on mount & when network reconnects
+  const probeServerStatus = useCallback(async () => {
+    setServerStatus('checking');
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => {
+        try {
+          controller.abort(new DOMException('PROBE_TIMEOUT', 'AbortError'));
+        } catch {
+          controller.abort();
+        }
+      }, 6000);
+
+      const res = await fetch('/api/voice/status', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      if (timeoutId) clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!unmountedRef.current && data && data.aiAvailable) {
+          setServerStatus('online');
+          setPreferredEngine('server_gemini');
+          setServerCheckMessage('خادم الذكاء الاصطناعي متصل وجاهز (Gemini 3.5)');
+          return true;
+        }
+      }
+    } catch {
+      if (timeoutId) clearTimeout(timeoutId);
+      // static hosting or network offline
+    }
+    if (!unmountedRef.current) {
+      setServerStatus('static_or_offline');
+      setPreferredEngine('browser_speech');
+      setServerCheckMessage('نمط التعرف الصوتي المباشر للهاتف مفعّل');
+    }
+    return false;
+  }, []);
+
+  useEffect(() => {
+    void probeServerStatus();
+    const handleOnline = () => {
+      void probeServerStatus();
+    };
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [probeServerStatus]);
 
   // Initialize AudioRecorder instance
   useEffect(() => {
@@ -248,6 +323,8 @@ export const VoiceAssistantScreen: React.FC = () => {
 
     return () => {
       unmountedRef.current = true;
+      isBrowserRecordingActiveRef.current = false;
+      clearBrowserTimer();
       if (audioRecorderRef.current) {
         audioRecorderRef.current.cancel();
       }
@@ -266,7 +343,7 @@ export const VoiceAssistantScreen: React.FC = () => {
         window.speechSynthesis.cancel();
       }
     };
-  }, []);
+  }, [clearBrowserTimer]);
 
   const workspaceSnapshot: VoiceWorkspaceSnapshot = useMemo(
     () => ({
@@ -362,12 +439,16 @@ export const VoiceAssistantScreen: React.FC = () => {
   };
 
   const resetCurrentCommand = () => {
+    isBrowserRecordingActiveRef.current = false;
+    clearBrowserTimer();
     if (phase === 'recording') {
       audioRecorderRef.current?.cancel();
     }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.onresult = null;
         recognitionRef.current.stop();
       } catch {
         // ignore
@@ -381,6 +462,8 @@ export const VoiceAssistantScreen: React.FC = () => {
 
     accumulatedBaseTranscriptRef.current = '';
     livePreviewChunksRef.current = [];
+    browserCommittedTextRef.current = '';
+    browserLatestSessionTextRef.current = '';
     setPhase('ready');
     setRecordingDuration(0);
     setRecordingVolume(0);
@@ -402,90 +485,75 @@ export const VoiceAssistantScreen: React.FC = () => {
     setSelectedUnitIdOverride(undefined);
   };
 
-  // Start live browser speech preview concurrently if supported
-  const startLiveBrowserPreview = () => {
-    const win = window as unknown as {
-      SpeechRecognition?: new () => SpeechRecognitionLike;
-      webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-    };
-    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
-    if (!SpeechRec) return;
+  const stopBrowserRecognitionSession = useCallback(async (): Promise<string> => {
+    isBrowserRecordingActiveRef.current = false;
+    clearBrowserTimer();
 
-    try {
-      const rec = new SpeechRec();
-      rec.lang = dialect;
-      rec.continuous = true;
-      rec.interimResults = true;
-
-      rec.onresult = (event: SpeechRecognitionEventLike) => {
-        if (unmountedRef.current) return;
-        let interim = '';
-        const len = event.results.length;
-        for (let i = 0; i < len; i++) {
-          const res = event.results[i];
-          const transcriptPiece = (res[0]?.transcript || '').trim();
-          if (res.isFinal) {
-            if (transcriptPiece && !livePreviewChunksRef.current.includes(transcriptPiece)) {
-              livePreviewChunksRef.current.push(transcriptPiece);
-            }
-          } else if (transcriptPiece) {
-            interim = transcriptPiece;
-          }
-        }
-        setLiveInterimSpeech(interim);
-      };
-
-      rec.onerror = () => {
-        // Silent error for optional live preview
-      };
-
-      rec.onend = () => {
-        // Do not auto-restart; authoritative audio is in MediaRecorder
-      };
-
-      recognitionRef.current = rec;
-      rec.start();
-    } catch {
-      // Live preview is optional
-    }
-  };
-
-  const stopLiveBrowserPreview = (): string => {
-    let combined = livePreviewChunksRef.current.join(' ').trim();
-    if (liveInterimSpeech.trim()) {
-      combined = [combined, liveInterimSpeech.trim()].filter(Boolean).join(' ');
-    }
     if (recognitionRef.current) {
+      const rec = recognitionRef.current;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        const prevOnEnd = rec.onend;
+        rec.onend = () => {
+          try {
+            prevOnEnd?.();
+          } catch {
+            // ignore
+          }
+          finish();
+        };
+        setTimeout(finish, 320);
+        try {
+          rec.stop();
+        } catch {
+          finish();
+        }
+      });
+
       try {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.stop();
+        rec.onend = null;
+        rec.onerror = null;
+        rec.onresult = null;
       } catch {
         // ignore
       }
       recognitionRef.current = null;
     }
-    setLiveInterimSpeech('');
-    return combined;
-  };
 
-  // Step 1 -> Step 2: Start Audio Recording
-  const handleStartRecording = async () => {
+    const fullText = deduplicateOverlappingSpeech(
+      browserCommittedTextRef.current,
+      browserLatestSessionTextRef.current
+    );
+    setLiveInterimSpeech('');
+    setRecordingVolume(0);
+    return sanitizeSpokenRepetitions(fullText);
+  }, [clearBrowserTimer]);
+
+  // Step 1 -> Step 2: Start Audio Recording (Dual Mode: Server Gemini STT or Direct Browser Recognition)
+  const handleStartRecording = async (engineOverride?: 'server_gemini' | 'browser_speech') => {
     if (phase === 'recording' || phase === 'transcribing' || phase === 'analyzing') {
       return;
     }
 
-    if (!AudioRecorder.isSupported()) {
-      setShowManualInput(true);
-      showToast('المتصفح لا يدعم تسجيل الصوت المباشر (MediaRecorder). يمكنك كتابة طلبك نصيًا.', 'warning');
-      return;
+    const activeEngine = engineOverride || preferredEngine;
+    if (engineOverride && engineOverride !== preferredEngine) {
+      setPreferredEngine(engineOverride);
     }
 
     setExecutionReport(null);
     setExecutionError(null);
     setTranscriptionError(null);
     livePreviewChunksRef.current = [];
+    browserCommittedTextRef.current = '';
+    browserLatestSessionTextRef.current = '';
     setLiveInterimSpeech('');
+    setRecordingDuration(0);
+    setRecordingVolume(0);
 
     if (!executionReport && transcriptInput.trim()) {
       accumulatedBaseTranscriptRef.current = transcriptInput.trim();
@@ -495,9 +563,187 @@ export const VoiceAssistantScreen: React.FC = () => {
       setExtractedState(null);
     }
 
-    const started = await audioRecorderRef.current?.start();
-    if (started) {
-      startLiveBrowserPreview();
+    // Mode A: Direct Browser Speech Recognition Mode (Zero server dependency, continuous with auto-restart & overlap deduplication)
+    if (activeEngine === 'browser_speech') {
+      const win = window as unknown as {
+        SpeechRecognition?: new () => SpeechRecognitionLike;
+        webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+      };
+      const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+      if (!SpeechRec) {
+        setShowManualInput(true);
+        showToast(
+          'المتصفح الحالي لا يدعم محرك التعرف الصوتي المباشر. يمكنك استخدام نمط الذكاء الاصطناعي أو الكتابة اليدوية.',
+          'warning'
+        );
+        return;
+      }
+
+      // Ensure MediaRecorder is not holding the microphone
+      audioRecorderRef.current?.cancel();
+
+      try {
+        const rec = new SpeechRec();
+        rec.lang = dialect;
+        rec.continuous = true;
+        rec.interimResults = true;
+
+        isBrowserRecordingActiveRef.current = true;
+        browserStartTimeRef.current = Date.now();
+        clearBrowserTimer();
+        browserTimerIntervalRef.current = window.setInterval(() => {
+          if (!unmountedRef.current && isBrowserRecordingActiveRef.current) {
+            const elapsed = Math.floor((Date.now() - browserStartTimeRef.current) / 1000);
+            setRecordingDuration(elapsed);
+            setRecordingVolume((prev) => (prev > 15 ? Math.max(18, prev - 10) : 22));
+          }
+        }, 500);
+
+        rec.onstart = () => {
+          if (!unmountedRef.current) {
+            setPhase('recording');
+            setRecordingVolume(35);
+          }
+        };
+
+        rec.onresult = (event: SpeechRecognitionEventLike) => {
+          if (unmountedRef.current) return;
+          let sessionFinal = '';
+          let sessionInterim = '';
+          const len = event.results.length;
+
+          for (let i = 0; i < len; i++) {
+            const res = event.results[i];
+            const piece = (res[0]?.transcript || '').trim();
+            if (!piece) continue;
+            if (res.isFinal) {
+              sessionFinal = deduplicateOverlappingSpeech(sessionFinal, piece);
+            } else {
+              sessionInterim = deduplicateOverlappingSpeech(sessionInterim, piece);
+            }
+          }
+
+          const currentSubSession = deduplicateOverlappingSpeech(sessionFinal, sessionInterim);
+          browserLatestSessionTextRef.current = currentSubSession;
+
+          const combinedAll = deduplicateOverlappingSpeech(
+            browserCommittedTextRef.current,
+            currentSubSession
+          );
+
+          setRecordingVolume(Math.min(95, 45 + Math.floor(Math.random() * 45)));
+          setLiveInterimSpeech(combinedAll);
+          if (combinedAll) {
+            setTranscriptInput(combinedAll);
+          }
+        };
+
+        rec.onerror = (err: { error?: string }) => {
+          if (unmountedRef.current) return;
+          const code = err.error || '';
+          if (code === 'not-allowed' || code === 'service-not-allowed') {
+            isBrowserRecordingActiveRef.current = false;
+            clearBrowserTimer();
+            showToast('تم رفض إذن الوصول إلى الميكروفون أو خدمة التعرف الصوتي في الهاتف.', 'error');
+            setPhase('ready');
+          } else if (code === 'audio-capture') {
+            isBrowserRecordingActiveRef.current = false;
+            clearBrowserTimer();
+            showToast('تعذر التقاط الصوت من الميكروفون. تأكد من عدم انشغاله بتطبيق آخر.', 'error');
+            setPhase('ready');
+          } else if (code === 'network') {
+            isBrowserRecordingActiveRef.current = false;
+            clearBrowserTimer();
+            setPhase('ready');
+            setShowManualInput(true);
+            showToast('محرك التعرف الصوتي في المتصفح يتطلب اتصالًا بالشبكة على هذا الجهاز.', 'warning');
+          }
+          // Ignore 'no-speech' and 'aborted' during active recording; onend will handle auto-restart
+        };
+
+        rec.onend = () => {
+          if (unmountedRef.current) return;
+          if (browserLatestSessionTextRef.current) {
+            browserCommittedTextRef.current = deduplicateOverlappingSpeech(
+              browserCommittedTextRef.current,
+              browserLatestSessionTextRef.current
+            );
+            browserLatestSessionTextRef.current = '';
+          }
+          // Auto-restart if user is still recording (prevents Android 2-second pause cutoff)
+          if (isBrowserRecordingActiveRef.current) {
+            setTimeout(() => {
+              if (isBrowserRecordingActiveRef.current && !unmountedRef.current && recognitionRef.current === rec) {
+                try {
+                  rec.start();
+                } catch {
+                  // Ignore if already started
+                }
+              }
+            }, 120);
+          }
+        };
+
+        recognitionRef.current = rec;
+        rec.start();
+        setPhase('recording');
+        return;
+      } catch (e) {
+        isBrowserRecordingActiveRef.current = false;
+        clearBrowserTimer();
+        console.warn('Failed to start native SpeechRecognition:', e);
+      }
+    }
+
+    // Mode B: Server Gemini STT with exclusive MediaRecorder access (no concurrent SpeechRecognition mic conflict!)
+    if (!AudioRecorder.isSupported()) {
+      setShowManualInput(true);
+      showToast('المتصفح لا يدعم تسجيل الصوت المباشر (MediaRecorder). يمكنك كتابة طلبك نصيًا.', 'warning');
+      return;
+    }
+
+    await audioRecorderRef.current?.start();
+  };
+
+  // Run Server Gemini STT on an AudioRecordingResult (used both after recording and when clicking Retry)
+  const processServerAudioTranscription = async (recordedAudio: AudioRecordingResult) => {
+    setPhase('transcribing');
+    setTranscriptionError(null);
+
+    try {
+      const serverStt = await transcribeAudioOnServer(
+        recordedAudio.base64Audio,
+        recordedAudio.mimeType,
+        dialect
+      );
+
+      if (serverStt.success && serverStt.transcript.trim()) {
+        setServerStatus('online');
+        setTranscriptionSource('server_gemini');
+        setTranscriptionError(null);
+        await proceedWithTranscript(serverStt.transcript.trim(), 'server_gemini');
+        return;
+      }
+
+      const is404 = serverStt.statusCode === 404;
+      if (is404) {
+        setServerStatus('static_or_offline');
+        setPreferredEngine('browser_speech');
+        setServerCheckMessage('نمط التعرف الصوتي المباشر للهاتف مفعّل');
+        showToast('خادم التفريغ السحابي غير متوفر في هذه البيئة. تم التبديل إلى محرك الهاتف المباشر.', 'warning');
+      }
+
+      const friendlyError =
+        serverStt.error ||
+        mapVoiceErrorToArabic('EMPTY_TRANSCRIPT', serverStt.statusCode);
+
+      setTranscriptionSource('manual');
+      setTranscriptionError(friendlyError);
+      setPhase('ready');
+    } catch (err) {
+      const friendlyError = mapVoiceErrorToArabic(err);
+      setTranscriptionError(friendlyError);
+      setPhase('ready');
     }
   };
 
@@ -505,57 +751,33 @@ export const VoiceAssistantScreen: React.FC = () => {
   const handleStopRecording = async () => {
     if (phase !== 'recording') return;
 
-    setPhase('transcribing');
-    const livePreviewText = stopLiveBrowserPreview();
-    const result = await audioRecorderRef.current?.stop();
-    setAudioResult(result || null);
-
-    if (!result) {
-      // If recorder produced empty audio, fall back to live preview or manual
-      if (livePreviewText) {
+    // Handle Direct Browser Speech Recognition stop
+    if (preferredEngine === 'browser_speech' || isBrowserRecordingActiveRef.current) {
+      setPhase('transcribing');
+      const finalBrowserText = await stopBrowserRecognitionSession();
+      const currentFull = finalBrowserText || transcriptInput.trim();
+      if (currentFull) {
         setTranscriptionSource('browser_speech');
-        await proceedWithTranscript(livePreviewText, 'browser_speech');
+        setTranscriptionError(null);
+        await proceedWithTranscript(currentFull, 'browser_speech');
       } else {
         setPhase('ready');
+        showToast('لم يتم التقاط كلمات واضحة. يرجى التحدث بوضوح وإعادة المحاولة.', 'warning');
       }
       return;
     }
 
-    // Call server Gemini STT layer
-    try {
-      const serverStt = await transcribeAudioOnServer(
-        result.base64Audio,
-        result.mimeType,
-        dialect
-      );
+    // Handle Server Gemini STT with MediaRecorder
+    setPhase('transcribing');
+    const result = await audioRecorderRef.current?.stop();
+    setAudioResult(result || null);
 
-      if (serverStt.success && serverStt.transcript.trim()) {
-        setTranscriptionSource('server_gemini');
-        setTranscriptionError(null);
-        await proceedWithTranscript(serverStt.transcript.trim(), 'server_gemini');
-      } else if (livePreviewText.trim()) {
-        // Server failed or was offline, fallback seamlessly to browser live capture
-        setTranscriptionSource('browser_speech');
-        setTranscriptionError(serverStt.error || 'تم استخدام التعرف المحلي لعدم توفر خادم النسخ');
-        await proceedWithTranscript(livePreviewText.trim(), 'browser_speech');
-      } else {
-        setTranscriptionSource('manual');
-        setTranscriptionError(serverStt.error || 'لم يتم تمييز كلمات واضحة في التسجيل');
-        setPhase('review');
-        setIsEditingTranscript(true);
-        showToast('لم نتمكن من تفريغ الصوت آلياً. يرجى كتابة طلبك أو إعادة التسجيل بصوت أوضح.', 'warning');
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (livePreviewText.trim()) {
-        setTranscriptionSource('browser_speech');
-        await proceedWithTranscript(livePreviewText.trim(), 'browser_speech');
-      } else {
-        setTranscriptionError(errMsg);
-        setPhase('review');
-        setIsEditingTranscript(true);
-      }
+    if (!result) {
+      setPhase('ready');
+      return;
     }
+
+    await processServerAudioTranscription(result);
   };
 
   // Step 4 -> Step 5: Process Transcript & Run Understanding Layer
@@ -1479,6 +1701,53 @@ export const VoiceAssistantScreen: React.FC = () => {
           </div>
         </div>
 
+        {/* Server Status & Engine Toggle Selector */}
+        <div className="mt-3 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-[11px] text-sky-200">
+            <span
+              className={`w-2 h-2 rounded-full ${
+                serverStatus === 'online'
+                  ? 'bg-emerald-400'
+                  : serverStatus === 'checking'
+                    ? 'bg-amber-400 animate-pulse'
+                    : 'bg-sky-400'
+              }`}
+            />
+            <span className="font-semibold">{serverCheckMessage}</span>
+          </div>
+
+          <div className="inline-flex items-center bg-black/40 p-0.5 rounded-xl border border-white/10 text-[11px]">
+            <button
+              type="button"
+              onClick={() => {
+                setPreferredEngine('server_gemini');
+                showToast('تم تفعيل محرك الذكاء الاصطناعي السحابي (Gemini STT)', 'info');
+              }}
+              className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                preferredEngine === 'server_gemini'
+                  ? 'bg-teal-500 text-slate-950 font-black shadow'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              ذكاء اصطناعي (Gemini)
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPreferredEngine('browser_speech');
+                showToast('تم تفعيل محرك التعرف الصوتي المباشر للهاتف (Web Speech)', 'info');
+              }}
+              className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                preferredEngine === 'browser_speech'
+                  ? 'bg-sky-500 text-white font-black shadow'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              مباشر بالهاتف
+            </button>
+          </div>
+        </div>
+
         {/* Center: Stage Status + Large Microphone Control */}
         <div className="py-5 flex flex-col items-center text-center">
           {/* Status Label */}
@@ -1524,7 +1793,13 @@ export const VoiceAssistantScreen: React.FC = () => {
           {/* Main Microphone Button */}
           <button
             type="button"
-            onClick={phase === 'recording' ? handleStopRecording : handleStartRecording}
+            onClick={() => {
+              if (phase === 'recording') {
+                void handleStopRecording();
+              } else {
+                void handleStartRecording();
+              }
+            }}
             disabled={phase === 'transcribing' || phase === 'analyzing' || phase === 'executing'}
             aria-label={phase === 'recording' ? 'إيقاف التسجيل' : 'بدء التسجيل'}
             className={`w-24 h-24 rounded-full flex flex-col items-center justify-center transition-all shadow-xl cursor-pointer select-none disabled:opacity-50 ${
@@ -1548,8 +1823,10 @@ export const VoiceAssistantScreen: React.FC = () => {
             {phase === 'recording'
               ? 'تحدث بأمرك كاملًا بدون استعجال... ثم اضغط لإيقاف التسجيل'
               : phase === 'transcribing'
-                ? 'جارٍ معالجة الملف الصوتي بالكامل عبر الذكاء الاصطناعي...'
-                : 'اضغط على الميكروفون وتحدث بأمرك الميداني'}
+                ? 'جارٍ معالجة الكلام وتحويله إلى نص عربي دقيق...'
+                : preferredEngine === 'browser_speech'
+                  ? 'اضغط على الميكروفون للتسجيل عبر محرك الهاتف المباشر'
+                  : 'اضغط على الميكروفون وتحدث بأمرك الميداني'}
           </p>
 
           {/* Actions during/after recording */}
@@ -1557,7 +1834,7 @@ export const VoiceAssistantScreen: React.FC = () => {
             {phase === 'recording' && (
               <button
                 type="button"
-                onClick={handleStopRecording}
+                onClick={() => void handleStopRecording()}
                 className="px-4 py-2 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition cursor-pointer"
               >
                 <CheckCircle2 className="w-4 h-4" />
@@ -1610,6 +1887,67 @@ export const VoiceAssistantScreen: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Fallback Notice Card when transcription fails, times out, or returns 404 */}
+      {transcriptionError && !transcriptInput && !executionReport && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 rounded-3xl p-4 border border-amber-200 dark:border-amber-800 space-y-3">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <h4 className="text-xs font-black text-amber-900 dark:text-amber-200">
+                تنبيه تحويل الصوت
+              </h4>
+              <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                {transcriptionError}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-amber-200/60 dark:border-amber-800/60">
+            {audioResult && (
+              <button
+                type="button"
+                onClick={() => void processServerAudioTranscription(audioResult)}
+                className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                إعادة محاولة تفريغ التسجيل المحفوظ
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setTranscriptionError(null);
+                void handleStartRecording('browser_speech');
+              }}
+              className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+            >
+              <Mic className="w-3.5 h-3.5" />
+              التسجيل الآن عبر محرك الهاتف المباشر
+            </button>
+            {audioResult?.audioUrl && (
+              <button
+                type="button"
+                onClick={handleAudioPlaybackToggle}
+                className="px-3 py-1.5 rounded-xl bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+              >
+                {isPlayingAudio ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                {isPlayingAudio ? 'إيقاف الصوت' : 'سماع التسجيل المحفوظ'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setShowManualInput(true);
+                setTranscriptionError(null);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-slate-700 hover:bg-slate-50 transition cursor-pointer"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              كتابة الطلب يدويًا
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 2. Step 4: Full Transcribed Text & Audio Review Card */}
       {transcriptInput && !executionReport && (

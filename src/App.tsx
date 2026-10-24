@@ -19,6 +19,7 @@ import {
   Wifi,
   WifiOff,
   RefreshCw,
+  Bell,
 } from 'lucide-react';
 import { RasdProvider, useRasd } from './context/RasdContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -34,6 +35,9 @@ import { ReportsScreen } from './components/ReportsScreen';
 import { TeamScreen } from './components/TeamScreen';
 import { AuditLogScreen } from './components/AuditLogScreen';
 import { MoreScreen } from './components/MoreScreen';
+import { ActiveAlertBanner } from './components/ActiveAlertBanner';
+import { NotificationCenterModal } from './components/NotificationCenterModal';
+import { evaluateAppointmentStatus } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { ScreenId } from './types/rasd';
 
@@ -76,11 +80,24 @@ const RasdShell: React.FC = () => {
     setSelectedPropertyId,
     selectedTaxpayerId,
     setSelectedTaxpayerId,
+    appointments,
+    notifications,
     darkMode,
     toggleDarkMode,
     toasts,
     dismissToast,
   } = useRasd();
+
+  const [isNotifOpen, setIsNotifOpen] = React.useState(false);
+
+  const dueCount = React.useMemo(() => {
+    return (
+      appointments.filter((a) => {
+        const s = evaluateAppointmentStatus(a.status, a.scheduledDate, a.scheduledTime, 15);
+        return s === 'due';
+      }).length + notifications.filter((n) => !n.isRead).length
+    );
+  }, [appointments, notifications]);
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 
@@ -301,6 +318,19 @@ const RasdShell: React.FC = () => {
             )}
             <button
               type="button"
+              onClick={() => setIsNotifOpen(true)}
+              className="relative min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center transition-colors cursor-pointer text-slate-700 dark:text-slate-200"
+              aria-label="مركز التنبيهات"
+            >
+              <Bell className="w-4 h-4" />
+              {dueCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center animate-pulse shadow-xs">
+                  {dueCount > 9 ? '+9' : dueCount}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
               onClick={toggleDarkMode}
               className="min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center transition-colors cursor-pointer"
               aria-label="تبديل المظهر"
@@ -314,6 +344,15 @@ const RasdShell: React.FC = () => {
           </div>
         </div>
       </header>
+
+      {/* Real-time In-App Due Appointment Alert Banner */}
+      <ActiveAlertBanner />
+
+      {/* Notification Center Slide-over Modal */}
+      <NotificationCenterModal
+        isOpen={isNotifOpen}
+        onClose={() => setIsNotifOpen(false)}
+      />
 
       {/* Floating Material 3 Snackbar / Toast Notifications */}
       {toasts.length > 0 && (
