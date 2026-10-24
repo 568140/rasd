@@ -5,6 +5,7 @@
  */
 
 export type ThemePaletteId =
+  | 'rasd_reference_burgundy'
   | 'emerald_luxury'
   | 'modern_indigo'
   | 'royal_graphite'
@@ -24,10 +25,10 @@ export interface ThemePaletteDefinition {
     // Primary dark brand color (headers, primary buttons, deep surfaces)
     primary: string;
     primaryHover: string;
-    // Accent 1 (Teal / Emerald / Indigo interactive highlight)
+    // Accent 1 (Burgundy / Teal / Emerald interactive highlight)
     accent: string;
     accentHover: string;
-    // Accent 2 (Secondary blue / violet / gold highlight)
+    // Accent 2 (Secondary warm gold / blue highlight)
     secondary: string;
     // Hero banner gradient stops
     heroFrom: string;
@@ -54,14 +55,41 @@ export interface ThemeSettings {
   cardStyle: CardTemplateStyle;
 }
 
-const STORAGE_KEY = 'rasd_ui_theme_settings_v1';
+const STORAGE_KEY = 'rasd_ui_theme_settings_v2';
 
 export const RASD_THEME_PALETTES: ThemePaletteDefinition[] = [
+  {
+    id: 'rasd_reference_burgundy',
+    name: 'الهوية الرسمية الدافئة (المرجع الأساسي)',
+    subtitle: 'عاجي دافئ (#F7F5F0) وعنابي رسمي هادئ (#743B46) مطابق للتصميم المرجعي المعتمد',
+    badgeText: 'المرجع الرسمي',
+    previewSwatches: ['#743B46', '#A77B35', '#52765D'],
+    vars: {
+      primary: '#743B46',
+      primaryHover: '#5D2D37',
+      accent: '#743B46',
+      accentHover: '#5D2D37',
+      secondary: '#A77B35',
+      heroFrom: '#743B46',
+      heroVia: '#5D2D37',
+      heroTo: '#472129',
+      bgLight: '#F7F5F0',
+      cardLight: '#FFFEFC',
+      cardSubtleLight: '#F0ECE5',
+      borderLight: '#E7E1D8',
+      bgDark: '#161514',
+      cardDark: '#22201F',
+      cardSubtleDark: '#2B2826',
+      borderDark: '#383431',
+      tintBgLight: '#F4EFE8',
+      tintBgDark: '#2F1F23',
+    },
+  },
   {
     id: 'emerald_luxury',
     name: 'الزمرد السيادي العصري',
     subtitle: 'أخضر زمردي فاخر مع لمسات تيل مشرقة وخلفيات نقية عالية التباين',
-    badgeText: 'الافتراضي العصري',
+    badgeText: 'زمردي رسمي',
     previewSwatches: ['#064E3B', '#059669', '#0EA5E9'],
     vars: {
       primary: '#064E3B',
@@ -222,7 +250,7 @@ export const RASD_THEME_PALETTES: ThemePaletteDefinition[] = [
 ];
 
 const DEFAULT_THEME_SETTINGS: ThemeSettings = {
-  paletteId: 'emerald_luxury',
+  paletteId: 'rasd_reference_burgundy',
   cardStyle: 'elevated',
 };
 

@@ -7,9 +7,17 @@ import {
   getFirestore,
   doc,
   getDocFromServer,
+  setLogLevel,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { FirestoreErrorInfo, OperationType } from '../types/rasd';
+
+// Prevent Firestore internal 10s offline-mode fallback notices from triggering runtime error overlays
+try {
+  setLogLevel('silent');
+} catch {
+  // Ignore if unsupported
+}
 
 const app = initializeApp(firebaseConfig);
 
@@ -18,23 +26,18 @@ const dbId =
     ? firebaseConfig.firestoreDatabaseId
     : undefined;
 
+const firestoreSettings = {
+  localCache: persistentLocalCache({
+    tabManager: persistentSingleTabManager({ forceOwnership: true }),
+  }),
+  experimentalAutoDetectLongPolling: true,
+};
+
 let firestoreInstance;
 try {
   firestoreInstance = dbId
-    ? initializeFirestore(
-        app,
-        {
-          localCache: persistentLocalCache({
-            tabManager: persistentSingleTabManager({ forceOwnership: true }),
-          }),
-        },
-        dbId
-      )
-    : initializeFirestore(app, {
-        localCache: persistentLocalCache({
-          tabManager: persistentSingleTabManager({ forceOwnership: true }),
-        }),
-      });
+    ? initializeFirestore(app, firestoreSettings, dbId)
+    : initializeFirestore(app, firestoreSettings);
 } catch {
   firestoreInstance = dbId ? getFirestore(app, dbId) : getFirestore(app);
 }
@@ -48,12 +51,19 @@ export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 
 export async function testConnection(): Promise<boolean> {
+  if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
+    console.warn('Firebase configuration is incomplete.');
+    return false;
+  }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return false;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+      // Operating in offline mode with persistentLocalCache enabled
       return false;
     }
     // Permission denied on /test/connection still proves server connectivity
@@ -61,8 +71,8 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
-// Run connection test on boot as required
-testConnection();
+// Run non-blocking connection check on boot
+void testConnection();
 
 export function handleFirestoreError(
   error: unknown,
@@ -86,7 +96,7 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.warn('Firestore Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 

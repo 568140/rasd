@@ -1,17 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Volume2,
-  VolumeX,
   BellRing,
   Check,
   Play,
   Upload,
   Trash2,
   Smartphone,
-  Repeat,
-  WifiOff,
   Sparkles,
-  Clock,
   AlertCircle,
 } from 'lucide-react';
 import {
@@ -32,6 +28,8 @@ import {
 interface SoundSettingsPanelProps {
   compact?: boolean;
   onShowToast?: (text: string, type?: 'success' | 'error' | 'warning' | 'info') => void;
+  onEnablePush?: () => void;
+  enablingPush?: boolean;
 }
 
 const QUICK_REMINDER_PRESETS = [5, 15, 20, 30, 45, 60, 75, 120];
@@ -39,6 +37,8 @@ const QUICK_REMINDER_PRESETS = [5, 15, 20, 30, 45, 60, 75, 120];
 export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
   compact = false,
   onShowToast,
+  onEnablePush,
+  enablingPush = false,
 }) => {
   const [settings, setSettings] = useState<AlertSoundSettings>(() => alertSound.getSettings());
   const [targetType, setTargetType] = useState<'notification' | 'urgent'>('notification');
@@ -181,102 +181,102 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
     targetType === 'notification' ? settings.notificationToneId : settings.urgentToneId;
 
   return (
-    <div className="space-y-4" dir="rtl">
-      {/* Top Status & Master Toggle */}
-      <div className="p-3.5 rounded-2xl bg-gradient-to-l from-teal-50/80 via-sky-50/60 to-slate-50 dark:from-teal-950/35 dark:via-sky-950/25 dark:to-slate-900 border border-teal-200/80 dark:border-teal-900/60 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div
-            className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 transition-colors ${
-              settings.enabled
-                ? 'bg-[#0D9488] text-white shadow-xs'
-                : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
-            }`}
-          >
-            {settings.enabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />}
-          </div>
+    <div className="space-y-3.5" dir="rtl">
+      {/* 1. Master Notification Toggle Card — Matching Reference Image ("تفعيل الإشعارات") */}
+      <div className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-[0_2px_10px_rgba(41,39,37,0.03)] space-y-2.5">
+        <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs sm:text-sm font-bold text-[#0B192C] dark:text-white">
-                الأصوات والتنبيهات المحلية
-              </span>
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-100 dark:bg-teal-950 text-[#0D9488] dark:text-teal-300 inline-flex items-center gap-1">
-                <WifiOff className="w-2.5 h-2.5" />
-                تعمل بدون إنترنت
-              </span>
+            <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+              تفعيل الإشعارات
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-              مولّد صوتي مدمج داخل التطبيق يعمل فورًا دون الحاجة لأي اتصال بالشبكة
+            <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-0.5 leading-relaxed">
+              ستصلك تنبيهات المواعيد والالتزامات حتى عند إغلاق التطبيق.
             </p>
           </div>
+
+          {/* Burgundy Switch Toggle */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.enabled}
+            onClick={() => alertSound.updateSettings({ enabled: !settings.enabled })}
+            className={`relative w-12 h-7 rounded-full transition-colors cursor-pointer shrink-0 p-1 flex items-center ${
+              settings.enabled
+                ? 'bg-[#743B46] justify-start'
+                : 'bg-[#D6CFC5] dark:bg-[#3A3532] justify-end'
+            }`}
+          >
+            <span className="w-5 h-5 rounded-full bg-white shadow-xs transition-transform" />
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => alertSound.updateSettings({ enabled: !settings.enabled })}
-          className={`min-h-[36px] px-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-            settings.enabled
-              ? 'bg-[#0D9488] hover:bg-teal-700 text-white'
-              : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
-          }`}
-        >
-          {settings.enabled ? 'الصوت مفعّل' : 'الصوت مكتوم'}
-        </button>
+        {onEnablePush && (
+          <div className="pt-2 border-t border-[#EFECE6] dark:border-[#383431] flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[#77716B] dark:text-[#ACA59C] flex items-center gap-1.5">
+              <Smartphone className="w-3.5 h-3.5 text-[#743B46] dark:text-[#E5B9C0]" />
+              <span>ربط اشتراك إشعارات الهاتف (Web Push)</span>
+            </span>
+            <button
+              type="button"
+              onClick={onEnablePush}
+              disabled={enablingPush}
+              className="min-h-[30px] px-3 rounded-xl bg-[#EFECE6] hover:bg-[#E5DFD5] dark:bg-[#2B2826] text-[#743B46] dark:text-[#E5B9C0] text-[11px] font-bold cursor-pointer transition-colors"
+            >
+              {enablingPush ? 'جاري التفعيل...' : 'تفعيل على الهاتف'}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Manual Numeric Input for Alert Lead Time: التنبيه قبل الموعد بـ ... دقيقة */}
-      <div className="p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 space-y-2.5 shadow-2xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <label
-            htmlFor="rasd-default-reminder-minutes"
-            className="text-xs sm:text-sm font-bold text-[#0B192C] dark:text-white flex items-center gap-1.5"
-          >
-            <Clock className="w-4 h-4 text-[#0284C7]" />
-            <span>التنبيه قبل الموعد بـ</span>
-          </label>
+      {/* 2. Manual Numeric Input Card — Matching Reference Image ("التنبيه قبل الموعد بـ [ 30 ] دقيقة") */}
+      <div className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-[0_2px_10px_rgba(41,39,37,0.03)] space-y-2.5">
+        <label
+          htmlFor="rasd-default-reminder-minutes"
+          className="block text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]"
+        >
+          التنبيه قبل الموعد بـ
+        </label>
 
-          <div className="flex items-center gap-2">
-            <input
-              id="rasd-default-reminder-minutes"
-              type="number"
-              inputMode="numeric"
-              min={MIN_REMINDER_MINUTES}
-              max={MAX_REMINDER_MINUTES}
-              step={1}
-              value={reminderInputText}
-              onChange={(e) => handleReminderInputChange(e.target.value)}
-              onBlur={handleReminderInputBlur}
-              placeholder="مثال: 30"
-              className={`w-24 min-h-[38px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-950 border text-xs sm:text-sm font-mono font-extrabold text-center focus:outline-none transition-colors ${
-                reminderError
-                  ? 'border-rose-500 text-rose-600 dark:text-rose-400'
-                  : 'border-slate-300 dark:border-slate-700 text-[#0B192C] dark:text-white focus:border-[#0284C7]'
-              }`}
-            />
-            <span className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-300">
-              دقيقة
-            </span>
-          </div>
+        <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-[#F7F5F0] dark:bg-[#1B1918] border border-[#E2DBD0] dark:border-[#383431]">
+          <span className="text-xs font-bold text-[#77716B] dark:text-[#ACA59C] px-2">
+            دقيقة
+          </span>
+          <input
+            id="rasd-default-reminder-minutes"
+            type="number"
+            inputMode="numeric"
+            min={MIN_REMINDER_MINUTES}
+            max={MAX_REMINDER_MINUTES}
+            step={1}
+            value={reminderInputText}
+            onChange={(e) => handleReminderInputChange(e.target.value)}
+            onBlur={handleReminderInputBlur}
+            placeholder="30"
+            className={`w-28 min-h-[36px] px-3 rounded-lg bg-[#FFFEFC] dark:bg-[#22201F] border text-sm font-mono font-extrabold text-center focus:outline-none transition-colors ${
+              reminderError
+                ? 'border-[#A64B45] text-[#A64B45]'
+                : 'border-[#E7E1D8] dark:border-[#383431] text-[#292725] dark:text-[#F4F1EA] focus:border-[#743B46]'
+            }`}
+          />
         </div>
 
         {reminderError ? (
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#A64B45]">
             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
             <span>{reminderError}</span>
           </div>
         ) : (
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-            أدخل أي عدد صحيح موجب من <strong>{MIN_REMINDER_MINUTES}</strong> إلى{' '}
-            <strong>{MAX_REMINDER_MINUTES}</strong> دقيقة (حتى 24 ساعة). القيمة المحفوظة حاليًا:{' '}
-            <strong className="font-mono text-[#0D9488] dark:text-teal-400">
+          <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C] leading-relaxed">
+            أدخل عدد الدقائق قبل الموعد لإرسال التنبيه (من {MIN_REMINDER_MINUTES} إلى {MAX_REMINDER_MINUTES} دقيقة). القيمة المحفوظة حاليًا:{' '}
+            <strong className="font-mono text-[#743B46] dark:text-[#E5B9C0]">
               {settings.defaultReminderMinutes} دقيقة
-            </strong>{' '}
-            وتُطبّق تلقائيًا على فحص المواعيد والإشعارات المحلية وإشعارات الهاتف.
+            </strong>
           </p>
         )}
 
-        {/* Quick-fill helper buttons alongside manual numeric entry */}
+        {/* Quick-fill helper chips */}
         <div className="flex flex-wrap items-center gap-1.5 pt-1">
-          <span className="text-[10px] font-semibold text-slate-400 ml-1">اختيار سريع:</span>
+          <span className="text-[10px] font-bold text-[#77716B] ml-1">اختيار سريع:</span>
           {QUICK_REMINDER_PRESETS.map((preset) => {
             const isActivePreset =
               !reminderError && settings.defaultReminderMinutes === preset;
@@ -292,8 +292,8 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
                 }}
                 className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
                   isActivePreset
-                    ? 'bg-[#0284C7] text-white'
-                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'
+                    ? 'bg-[#743B46] text-white'
+                    : 'bg-[#F0ECE5] hover:bg-[#E5DFD5] dark:bg-[#2B2826] text-[#5C554E] dark:text-[#D5CFC7]'
                 }`}
               >
                 {preset} د
@@ -303,247 +303,287 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
         </div>
       </div>
 
-      {/* Volume Slider & Quick Switches */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800">
-          <div className="flex items-center justify-between text-xs font-bold text-[#0B192C] dark:text-white mb-2">
-            <span className="flex items-center gap-1.5">
-              <Volume2 className="w-3.5 h-3.5 text-[#0284C7]" />
-              مستوى صوت التنبيه
-            </span>
-            <span className="font-mono text-[#0284C7] dark:text-sky-400">
-              {Math.round(settings.volume * 100)}%
-            </span>
-          </div>
-          <input
-            type="range"
-            min={10}
-            max={100}
-            step={5}
-            value={Math.round(settings.volume * 100)}
-            onChange={(e) => {
-              const v = Number(e.target.value) / 100;
-              alertSound.updateSettings({ volume: v, enabled: true });
-            }}
-            onMouseUp={() => alertSound.playTone(activeToneId, settings.volume, true)}
-            onTouchEnd={() => alertSound.playTone(activeToneId, settings.volume, true)}
-            className="w-full accent-[#0D9488] cursor-pointer"
-          />
+      {/* 3. Notification Types & Behavior Toggles — Matching Reference Image ("نوع التنبيهات") */}
+      <div className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-[0_2px_10px_rgba(41,39,37,0.03)] space-y-3">
+        <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+          نوع التنبيهات
         </div>
 
-        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-800 flex flex-col justify-center gap-2">
-          <label className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <Smartphone className="w-3.5 h-3.5 text-[#0D9488]" />
-              اهتزاز الهاتف مع النغمة
+        <div className="divide-y divide-[#EFECE6] dark:divide-[#383431]">
+          <div className="py-2.5 flex items-center justify-between gap-3">
+            <span className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA]">
+              المواعيد القادمة والتذكير المسبق
             </span>
-            <input
-              type="checkbox"
-              checked={settings.vibrate}
-              onChange={(e) => alertSound.updateSettings({ vibrate: e.target.checked })}
-              className="w-4 h-4 accent-[#0D9488] rounded cursor-pointer"
-            />
-          </label>
-          <label className="flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <Repeat className="w-3.5 h-3.5 text-amber-500" />
-              تكرار تنبيه الموعد المستحق حتى الإغلاق
-            </span>
-            <input
-              type="checkbox"
-              checked={settings.repeatUrgentAlarm}
-              onChange={(e) => alertSound.updateSettings({ repeatUrgentAlarm: e.target.checked })}
-              className="w-4 h-4 accent-[#0D9488] rounded cursor-pointer"
-            />
-          </label>
-        </div>
-      </div>
-
-      {/* Category Selector Tabs: Regular Notification Tone vs Urgent Appointment Tone */}
-      <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-xs font-bold">
-        <button
-          type="button"
-          onClick={() => setTargetType('notification')}
-          className={`py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-            targetType === 'notification'
-              ? 'bg-white dark:bg-[#0D1829] text-[#0284C7] dark:text-sky-400 shadow-2xs'
-              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          <BellRing className="w-3.5 h-3.5" />
-          <span>نغمة الإشعارات والتذكير</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setTargetType('urgent')}
-          className={`py-2 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-            targetType === 'urgent'
-              ? 'bg-white dark:bg-[#0D1829] text-rose-600 dark:text-rose-400 shadow-2xs'
-              : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          <span>نغمة الموعد المستحق/العاجل</span>
-        </button>
-      </div>
-
-      {/* Built-in Offline Tones Grid */}
-      <div className={`grid grid-cols-1 ${compact ? '' : 'sm:grid-cols-2'} gap-2.5`}>
-        {BUILTIN_SOUND_TONES.map((tone) => {
-          const isSelected = activeToneId === tone.id;
-          const isPlaying = playingToneId === `${targetType}_${tone.id}`;
-
-          return (
-            <div
-              key={tone.id}
-              onClick={() => handleSelectTone(tone.id)}
-              className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-2.5 ${
-                isSelected
-                  ? 'bg-sky-50/80 dark:bg-sky-950/40 border-[#0284C7] dark:border-sky-500 ring-1 ring-[#0284C7]/30'
-                  : 'bg-white dark:bg-slate-900/60 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.enabled}
+              onClick={() => alertSound.updateSettings({ enabled: !settings.enabled })}
+              className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 p-0.5 flex items-center ${
+                settings.enabled
+                  ? 'bg-[#743B46] justify-start'
+                  : 'bg-[#D6CFC5] dark:bg-[#3A3532] justify-end'
               }`}
             >
-              <div className="flex items-start gap-2.5 min-w-0">
-                <div
-                  className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
-                    isSelected
-                      ? 'bg-[#0284C7] text-white'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
-                  }`}
-                >
-                  {isSelected ? <Check className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                </div>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-bold text-[#0B192C] dark:text-white truncate">
-                      {tone.name}
-                    </span>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-                      {tone.durationLabel}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1">
-                    {tone.description}
-                  </p>
-                </div>
-              </div>
+              <span className="w-5 h-5 rounded-full bg-white shadow-xs" />
+            </button>
+          </div>
 
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handlePreview(tone.id);
-                }}
-                className={`min-h-[32px] px-2.5 rounded-xl text-[11px] font-bold flex items-center gap-1 shrink-0 transition-colors cursor-pointer ${
-                  isPlaying
-                    ? 'bg-[#0D9488] text-white'
-                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
-                }`}
-                title="معاينة النغمة"
-              >
-                <Play className="w-3 h-3" />
-                <span>سماع</span>
-              </button>
-            </div>
-          );
-        })}
+          <div className="py-2.5 flex items-center justify-between gap-3">
+            <span className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA]">
+              المواعيد المتأخرة والتكرار التلقائي
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.repeatUrgentAlarm}
+              onClick={() =>
+                alertSound.updateSettings({ repeatUrgentAlarm: !settings.repeatUrgentAlarm })
+              }
+              className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 p-0.5 flex items-center ${
+                settings.repeatUrgentAlarm
+                  ? 'bg-[#743B46] justify-start'
+                  : 'bg-[#D6CFC5] dark:bg-[#3A3532] justify-end'
+              }`}
+            >
+              <span className="w-5 h-5 rounded-full bg-white shadow-xs" />
+            </button>
+          </div>
 
-        {/* Custom Local Audio File Option (Offline) */}
-        <div
-          onClick={() => {
-            if (settings.customAudioDataUrl) {
-              handleSelectTone('custom');
-            } else {
-              fileInputRef.current?.click();
-            }
+          <div className="py-2.5 flex items-center justify-between gap-3">
+            <span className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA]">
+              التنبيهات العامة واهتزاز الهاتف
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.vibrate}
+              onClick={() => alertSound.updateSettings({ vibrate: !settings.vibrate })}
+              className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 p-0.5 flex items-center ${
+                settings.vibrate
+                  ? 'bg-[#743B46] justify-start'
+                  : 'bg-[#D6CFC5] dark:bg-[#3A3532] justify-end'
+              }`}
+            >
+              <span className="w-5 h-5 rounded-full bg-white shadow-xs" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 4. Sound & Tone Selection Card — Matching Reference Image ("الصوت") */}
+      <div className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-[0_2px_10px_rgba(41,39,37,0.03)] space-y-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA] flex items-center gap-1.5">
+            <Volume2 className="w-4 h-4 text-[#743B46] dark:text-[#E5B9C0]" />
+            <span>الصوت ومستوى الرنين</span>
+          </span>
+          <span className="text-xs font-mono font-bold text-[#743B46] dark:text-[#E5B9C0]">
+            {Math.round(settings.volume * 100)}%
+          </span>
+        </div>
+
+        <input
+          type="range"
+          min={10}
+          max={100}
+          step={5}
+          value={Math.round(settings.volume * 100)}
+          onChange={(e) => {
+            const v = Number(e.target.value) / 100;
+            alertSound.updateSettings({ volume: v, enabled: true });
           }}
-          className={`p-3 rounded-2xl border border-dashed transition-all cursor-pointer flex items-center justify-between gap-2.5 ${
-            activeToneId === 'custom'
-              ? 'bg-teal-50/80 dark:bg-teal-950/40 border-[#0D9488] ring-1 ring-[#0D9488]/30'
-              : 'bg-slate-50/60 dark:bg-slate-900/40 border-slate-300 dark:border-slate-700 hover:border-[#0D9488]'
-          }`}
-        >
-          <div className="flex items-start gap-2.5 min-w-0">
-            <div
-              className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${
-                activeToneId === 'custom'
-                  ? 'bg-[#0D9488] text-white'
-                  : 'bg-slate-200/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
-              }`}
-            >
-              {activeToneId === 'custom' ? <Check className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
-            </div>
-            <div className="min-w-0">
-              <div className="text-xs font-bold text-[#0B192C] dark:text-white truncate">
-                {settings.customAudioName ? `نغمة مخصصة: ${settings.customAudioName}` : 'اختيار ملف صوتي من جهازك'}
-              </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                {settings.customAudioDataUrl
-                  ? 'محفوظة محليًا في المتصفح وتعمل بدون إنترنت'
-                  : 'ارفع نغمة MP3 أو WAV لحفظها على الهاتف بدون إنترنت'}
-              </p>
-            </div>
-          </div>
+          onMouseUp={() => alertSound.playTone(activeToneId, settings.volume, true)}
+          onTouchEnd={() => alertSound.playTone(activeToneId, settings.volume, true)}
+          className="w-full accent-[#743B46] cursor-pointer"
+        />
 
-          <div className="flex items-center gap-1 shrink-0">
-            {settings.customAudioDataUrl && (
-              <>
+        {/* Category Selector Tabs */}
+        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#EFECE6] dark:bg-[#2B2826] border border-[#E5DEC9] dark:border-[#383431] text-xs font-bold">
+          <button
+            type="button"
+            onClick={() => setTargetType('notification')}
+            className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              targetType === 'notification'
+                ? 'bg-[#FFFEFC] dark:bg-[#22201F] text-[#743B46] dark:text-[#E5B9C0] shadow-2xs'
+                : 'text-[#77716B] hover:text-[#292725]'
+            }`}
+          >
+            <BellRing className="w-3.5 h-3.5" />
+            <span>نغمة الإشعارات</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTargetType('urgent')}
+            className={`py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              targetType === 'urgent'
+                ? 'bg-[#FFFEFC] dark:bg-[#22201F] text-[#A64B45] dark:text-[#F2A7A2] shadow-2xs'
+                : 'text-[#77716B] hover:text-[#292725]'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>نغمة الموعد المستحق</span>
+          </button>
+        </div>
+
+        {/* Built-in Offline Tones Grid */}
+        <div className={`grid grid-cols-1 ${compact ? '' : 'sm:grid-cols-2'} gap-2`}>
+          {BUILTIN_SOUND_TONES.map((tone) => {
+            const isSelected = activeToneId === tone.id;
+            const isPlaying = playingToneId === `${targetType}_${tone.id}`;
+
+            return (
+              <div
+                key={tone.id}
+                onClick={() => handleSelectTone(tone.id)}
+                className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-2.5 ${
+                  isSelected
+                    ? 'bg-[#F4EFE8] dark:bg-[#2F2527] border-[#743B46] ring-1 ring-[#743B46]/25'
+                    : 'bg-[#F7F5F0]/60 dark:bg-[#1B1918] border-[#E7E1D8] dark:border-[#383431] hover:border-[#743B46]/50'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                      isSelected
+                        ? 'bg-[#743B46] text-white'
+                        : 'bg-[#EFECE6] dark:bg-[#2B2826] text-[#77716B]'
+                    }`}
+                  >
+                    {isSelected ? <Check className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA] truncate">
+                        {tone.name}
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#EFECE6] dark:bg-[#2B2826] text-[#77716B]">
+                        {tone.durationLabel}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-0.5 line-clamp-1">
+                      {tone.description}
+                    </p>
+                  </div>
+                </div>
+
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    handlePreview('custom');
+                    handlePreview(tone.id);
                   }}
-                  className="min-h-[32px] px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1 cursor-pointer"
+                  className={`min-h-[30px] px-2.5 rounded-lg text-[11px] font-bold flex items-center gap-1 shrink-0 transition-colors cursor-pointer ${
+                    isPlaying
+                      ? 'bg-[#743B46] text-white'
+                      : 'bg-[#EFECE6] hover:bg-[#E5DFD5] dark:bg-[#2B2826] text-[#292725] dark:text-[#F4F1EA]'
+                  }`}
                 >
                   <Play className="w-3 h-3" />
                   <span>سماع</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleRemoveCustomAudio();
-                  }}
-                  className="p-2 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400 cursor-pointer"
-                  title="حذف النغمة المخصصة"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-              className="min-h-[32px] px-2.5 rounded-xl bg-[#0B192C] dark:bg-[#0D9488] text-white text-[11px] font-bold cursor-pointer"
-            >
-              {settings.customAudioDataUrl ? 'تغيير' : 'رفع نغمة'}
-            </button>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="audio/*"
-            onChange={handleCustomFileUpload}
-            className="hidden"
-          />
-        </div>
-      </div>
+              </div>
+            );
+          })}
 
-      {/* Bottom Action: Test Offline Notification & Sound */}
-      <div className="pt-1 flex justify-end">
-        <button
-          type="button"
-          onClick={handleFullOfflineTest}
-          className="w-full sm:w-auto min-h-[40px] px-4 rounded-2xl bg-gradient-to-l from-[#0B192C] to-[#0369A1] hover:opacity-95 text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-all"
-        >
-          <BellRing className="w-4 h-4 text-teal-300" />
-          <span>تجربة صوت وإشعار فوري (بدون إنترنت)</span>
-        </button>
+          {/* Custom Local Audio File Option */}
+          <div
+            onClick={() => {
+              if (settings.customAudioDataUrl) {
+                handleSelectTone('custom');
+              } else {
+                fileInputRef.current?.click();
+              }
+            }}
+            className={`p-3 rounded-xl border border-dashed transition-all cursor-pointer flex items-center justify-between gap-2.5 ${
+              activeToneId === 'custom'
+                ? 'bg-[#F4EFE8] dark:bg-[#2F2527] border-[#743B46]'
+                : 'bg-[#F7F5F0]/50 dark:bg-[#1B1918] border-[#D5CFC7] dark:border-[#383431] hover:border-[#743B46]'
+            }`}
+          >
+            <div className="flex items-start gap-2.5 min-w-0">
+              <div
+                className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
+                  activeToneId === 'custom'
+                    ? 'bg-[#743B46] text-white'
+                    : 'bg-[#EFECE6] dark:bg-[#2B2826] text-[#77716B]'
+                }`}
+              >
+                {activeToneId === 'custom' ? <Check className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA] truncate">
+                  {settings.customAudioName ? `نغمة مخصصة: ${settings.customAudioName}` : 'اختيار نغمة من الهاتف'}
+                </div>
+                <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-0.5">
+                  {settings.customAudioDataUrl
+                    ? 'محفوظة محليًا وتعمل بدون إنترنت'
+                    : 'ارفع ملف صوتي MP3 أو WAV'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 shrink-0">
+              {settings.customAudioDataUrl && (
+                <>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handlePreview('custom');
+                    }}
+                    className="min-h-[30px] px-2.5 rounded-lg bg-[#EFECE6] dark:bg-[#2B2826] text-[11px] font-bold text-[#292725] dark:text-[#F4F1EA] flex items-center gap-1 cursor-pointer"
+                  >
+                    <Play className="w-3 h-3" />
+                    <span>سماع</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleRemoveCustomAudio();
+                    }}
+                    className="p-1.5 rounded-lg bg-[#F6E9E7] text-[#A64B45] cursor-pointer"
+                    title="حذف النغمة المخصصة"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+                className="min-h-[30px] px-2.5 rounded-lg bg-[#743B46] text-white text-[11px] font-bold cursor-pointer"
+              >
+                {settings.customAudioDataUrl ? 'تغيير' : 'رفع'}
+              </button>
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*"
+              onChange={handleCustomFileUpload}
+              className="hidden"
+            />
+          </div>
+        </div>
+
+        {/* Test Notification & Sound CTA */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleFullOfflineTest}
+            className="w-full min-h-[42px] px-4 rounded-xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-all"
+          >
+            <BellRing className="w-4 h-4" />
+            <span>تجربة صوت وإشعار فوري للهاتف</span>
+          </button>
+        </div>
       </div>
     </div>
   );
 };
+

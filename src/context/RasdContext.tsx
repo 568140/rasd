@@ -447,7 +447,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
           }
         } catch (error) {
-          console.error('Bootstrap Firestore Error at', currentStepPath, error);
+          console.warn('Bootstrap Firestore notice at', currentStepPath, error);
         } finally {
           if (bootstrappingPromiseRef.current?.uid === uid) {
             bootstrappingPromiseRef.current = null;
@@ -471,7 +471,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         applyOptimisticSession(user);
         setAuthReady(true);
         ensureUserAndWorkspace(user).catch((e) => {
-          console.error(e);
+          console.warn(e);
         });
       } else {
         alertSound.syncUserReminderPreference(null);

@@ -7,8 +7,10 @@ import React from 'react';
 import {
   Home,
   Building2,
+  Users,
   Mic,
   CalendarClock,
+  MoreHorizontal,
   Menu,
   ShieldCheck,
   ArrowRight,
@@ -21,7 +23,7 @@ import {
   RefreshCw,
   Bell,
   Palette,
-  KeyRound,
+  User,
 } from 'lucide-react';
 import { RasdProvider, useRasd } from './context/RasdContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -49,8 +51,8 @@ import { ScreenId } from './types/rasd';
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
   home: 'رَصْد — المساعد الميداني',
-  taxpayers: 'المكلفون والعقارات — الملف الموحد',
-  properties: 'دليل العقارات والوحدات العام',
+  taxpayers: 'المكلفون والمنشآت',
+  properties: 'العقارات والوحدات',
   voice: 'المساعد الصوتي الذكي',
   appointments: 'المواعيد والتذكيرات',
   more: 'المزيد والإعدادات',
@@ -67,10 +69,10 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
 
 const PRIMARY_TABS: { id: ScreenId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'home', label: 'الرئيسية', icon: Home },
-  { id: 'taxpayers', label: 'المكلفون والعقارات', icon: Building2 },
-  { id: 'voice', label: 'الصوت', icon: Mic },
   { id: 'appointments', label: 'المواعيد', icon: CalendarClock },
-  { id: 'more', label: 'المزيد', icon: Menu },
+  { id: 'properties', label: 'العقارات', icon: Building2 },
+  { id: 'taxpayers', label: 'المكلفون', icon: Users },
+  { id: 'more', label: 'المزيد', icon: MoreHorizontal },
 ];
 
 const RasdShell: React.FC = () => {
@@ -78,6 +80,8 @@ const RasdShell: React.FC = () => {
     authReady,
     firebaseUser,
     userProfile,
+    workspace,
+    isOwner,
     isOnline,
     pendingSyncCount,
     activeScreen,
@@ -245,14 +249,14 @@ const RasdShell: React.FC = () => {
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-[#F4F7FA] dark:bg-[#060D18] flex flex-col items-center justify-center p-6" dir="rtl">
-        <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-[#0B192C] via-[#0369A1] to-[#0D9488] text-white flex items-center justify-center mb-4 shadow-lg shadow-sky-950/20 animate-pulse">
+      <div className="min-h-screen bg-[#F7F5F0] dark:bg-[#161514] flex flex-col items-center justify-center p-6" dir="rtl">
+        <div className="w-16 h-16 rounded-3xl bg-[#743B46] text-white flex items-center justify-center mb-4 shadow-md animate-pulse">
           <ShieldCheck className="w-8 h-8" />
         </div>
-        <div className="text-base font-bold text-[#0B192C] dark:text-white font-display">
+        <div className="text-base font-extrabold text-[#292725] dark:text-[#F4F1EA] font-display">
           رَصْد — المساعد الميداني الذكي
         </div>
-        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
+        <div className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-1.5">
           جاري التحقق من جلسة المصادقة الآمنة...
         </div>
       </div>
@@ -270,12 +274,12 @@ const RasdShell: React.FC = () => {
                 key={t.id}
                 className={`pointer-events-auto p-3.5 rounded-2xl shadow-lg border text-xs font-semibold flex items-center justify-between gap-2.5 ${
                   t.type === 'error'
-                    ? 'bg-rose-600 text-white border-rose-700'
+                    ? 'bg-[#A64B45] text-white border-[#8E3B36]'
                     : t.type === 'warning'
-                    ? 'bg-amber-600 text-white border-amber-700'
+                    ? 'bg-[#A77B35] text-white border-[#8D662A]'
                     : t.type === 'success'
-                    ? 'bg-[#0D9488] text-white border-teal-700'
-                    : 'bg-[#0B192C] text-white border-slate-800'
+                    ? 'bg-[#52765D] text-white border-[#41604B]'
+                    : 'bg-[#743B46] text-white border-[#5D2D37]'
                 }`}
               >
                 <span className="leading-relaxed">{t.text}</span>
@@ -291,33 +295,14 @@ const RasdShell: React.FC = () => {
             ))}
           </div>
         )}
-        <div className="fixed bottom-4 left-4 z-40" dir="rtl">
-          <button
-            type="button"
-            onClick={() => setIsVapidToolOpen(true)}
-            className="min-h-[42px] px-4 rounded-2xl bg-[#0D9488] hover:bg-teal-700 text-white text-xs font-extrabold shadow-lg flex items-center gap-2 cursor-pointer"
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>أداة توليد مفاتيح VAPID (مؤقتة)</span>
-          </button>
-        </div>
-        {isVapidToolOpen && (
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto" dir="rtl">
-            <div className="w-full max-w-2xl my-auto">
-              <TempVapidGenerator
-                onClose={() => setIsVapidToolOpen(false)}
-                onShowToast={showToast}
-              />
-            </div>
-          </div>
-        )}
         <AuthScreen />
       </>
     );
   }
 
-  const isSubScreen = !['home', 'taxpayers', 'voice', 'appointments', 'more'].includes(activeScreen);
+  const isSubScreen = !['home', 'appointments', 'properties', 'taxpayers', 'more'].includes(activeScreen);
   const hasDetailOpen = Boolean(selectedPropertyId || selectedTaxpayerId);
+  const isHomeRoot = activeScreen === 'home' && !hasDetailOpen;
 
   const handleBack = () => {
     if (selectedPropertyId && activeScreen === 'properties') {
@@ -333,62 +318,102 @@ const RasdShell: React.FC = () => {
       setSelectedPropertyId(null);
       return;
     }
-    setActiveScreen('more');
+    setActiveScreen('home');
   };
 
-  return (
-    <div className="min-h-screen bg-[#F4F7FA] dark:bg-[#060D18] text-[#0B192C] dark:text-slate-100 flex flex-col" dir="rtl">
-      {/* Android Material 3 Top App Bar */}
-      <header className="sticky top-0 z-30 h-16 bg-white/95 dark:bg-[#0B192C]/95 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800/80 px-4 shadow-2xs">
-        <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-3">
-          {/* Right Zone (Start in RTL): Brand Emblem or Back Action + Screen Title & User */}
-          <div className="flex items-center gap-3 min-w-0">
-            {isSubScreen || hasDetailOpen ? (
-              <button
-                type="button"
-                onClick={handleBack}
-                className="min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 text-[#0B192C] dark:text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                aria-label="رجوع"
-              >
-                <ArrowRight className="w-5 h-5" />
-              </button>
-            ) : (
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#0B192C] via-[#0369A1] to-[#0D9488] text-white flex items-center justify-center shadow-xs shrink-0">
-                <ShieldCheck className="w-5 h-5" />
-              </div>
-            )}
+  const roleLabel = isOwner ? 'مدير النظام' : userProfile?.jobTitle || 'مسؤول ميداني';
 
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm sm:text-base font-bold tracking-tight text-[#0B192C] dark:text-white truncate font-display">
-                  {SCREEN_TITLES[activeScreen] || 'رَصْد'}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                <span className="truncate">{userProfile?.displayName || 'المسؤول الميداني'}</span>
-                <span aria-hidden="true">·</span>
-                {!isOnline ? (
-                  <span className="text-amber-600 dark:text-amber-400 font-medium inline-flex items-center gap-1">
-                    <WifiOff className="w-3 h-3" />
-                    <span>دون اتصال</span>
-                  </span>
-                ) : pendingSyncCount > 0 ? (
-                  <span className="text-sky-600 dark:text-sky-400 font-medium inline-flex items-center gap-1">
-                    <RefreshCw className="w-3 h-3 animate-spin" />
-                    <span>مزامنة ({pendingSyncCount})</span>
-                  </span>
-                ) : (
-                  <span className="text-teal-600 dark:text-teal-400 font-medium inline-flex items-center gap-1">
-                    <Wifi className="w-3 h-3" />
-                    <span>متصل</span>
-                  </span>
-                )}
-              </div>
-            </div>
+  return (
+    <div className="min-h-screen bg-[#F7F5F0] dark:bg-[#161514] text-[#292725] dark:text-[#F4F1EA] flex flex-col" dir="rtl">
+      {/* Reference-Aligned Top App Header */}
+      <header className="sticky top-0 z-30 min-h-[70px] bg-[#F7F5F0]/95 dark:bg-[#161514]/95 backdrop-blur-md border-b border-[#E7E1D8] dark:border-[#383431] px-4 py-2.5">
+        <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-3">
+          {/* Right Zone (Start in RTL): User Greeting Stack on Home, or Back + Screen Title on Subscreens */}
+          <div className="flex items-center gap-3 min-w-0">
+            {isHomeRoot ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setActiveScreen('more')}
+                  className="w-11 h-11 rounded-full bg-[#EFECE6] dark:bg-[#2B2826] border border-[#DFD8CE] dark:border-[#3E3936] text-[#5C554E] dark:text-[#D5CFC7] flex items-center justify-center shrink-0 cursor-pointer hover:border-[#743B46] transition-colors"
+                  aria-label="الملف الشخصي والإعدادات"
+                >
+                  <User className="w-5 h-5" />
+                </button>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-[#77716B] dark:text-[#ACA59C] leading-none">
+                    مرحبًا بك
+                  </div>
+                  <div className="text-sm sm:text-base font-extrabold text-[#292725] dark:text-[#F4F1EA] truncate leading-snug mt-0.5 font-display">
+                    {userProfile?.displayName || 'المسؤول الميداني'}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-[#77716B] dark:text-[#ACA59C] truncate">
+                    <span className="truncate">
+                      {workspace?.name || 'مساحة رَصْد'} - {roleLabel}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    {!isOnline ? (
+                      <span className="text-[#A77B35] font-semibold inline-flex items-center gap-1 shrink-0">
+                        <WifiOff className="w-3 h-3" />
+                        <span>دون اتصال</span>
+                      </span>
+                    ) : pendingSyncCount > 0 ? (
+                      <span className="text-[#743B46] dark:text-[#E5B9C0] font-semibold inline-flex items-center gap-1 shrink-0">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        <span>مزامنة ({pendingSyncCount})</span>
+                      </span>
+                    ) : (
+                      <span className="text-[#52765D] dark:text-[#86B394] font-semibold inline-flex items-center gap-1 shrink-0">
+                        <Wifi className="w-3 h-3" />
+                        <span>متصل</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleBack}
+                  className="min-h-[42px] min-w-[42px] rounded-2xl bg-[#EFECE6] hover:bg-[#E5DFD6] dark:bg-[#2B2826] dark:hover:bg-[#383431] text-[#292725] dark:text-[#F4F1EA] flex items-center justify-center transition-colors cursor-pointer shrink-0 border border-[#E7E1D8] dark:border-[#383431]"
+                  aria-label="رجوع"
+                >
+                  <ArrowRight className="w-5 h-5" />
+                </button>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm sm:text-base font-extrabold tracking-tight text-[#292725] dark:text-[#F4F1EA] truncate font-display">
+                      {SCREEN_TITLES[activeScreen] || 'رَصْد'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-[#77716B] dark:text-[#ACA59C] truncate">
+                    <span className="truncate">{userProfile?.displayName || 'المسؤول الميداني'}</span>
+                    <span aria-hidden="true">·</span>
+                    {!isOnline ? (
+                      <span className="text-[#A77B35] font-medium inline-flex items-center gap-1">
+                        <WifiOff className="w-3 h-3" />
+                        <span>دون اتصال</span>
+                      </span>
+                    ) : pendingSyncCount > 0 ? (
+                      <span className="text-[#743B46] dark:text-[#E5B9C0] font-medium inline-flex items-center gap-1">
+                        <RefreshCw className="w-3 h-3 animate-spin" />
+                        <span>مزامنة ({pendingSyncCount})</span>
+                      </span>
+                    ) : (
+                      <span className="text-[#52765D] dark:text-[#86B394] font-medium inline-flex items-center gap-1">
+                        <Wifi className="w-3 h-3" />
+                        <span>متصل</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Center Zone: Desktop Secondary Quick Navigation */}
-          <nav className="hidden lg:flex items-center gap-5 text-xs font-semibold text-slate-600 dark:text-slate-300">
+          <nav className="hidden lg:flex items-center gap-5 text-xs font-bold text-[#77716B] dark:text-[#ACA59C]">
             <button
               type="button"
               onClick={() => {
@@ -398,8 +423,8 @@ const RasdShell: React.FC = () => {
               }}
               className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 activeScreen === 'taxpayers'
-                  ? 'border-[#0D9488] text-[#0D9488] dark:text-teal-400'
-                  : 'border-transparent hover:text-[#0284C7] dark:hover:text-sky-400'
+                  ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                  : 'border-transparent hover:text-[#292725] dark:hover:text-white'
               }`}
             >
               المكلفون والعقارات
@@ -413,8 +438,8 @@ const RasdShell: React.FC = () => {
               }}
               className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 activeScreen === 'visits'
-                  ? 'border-[#0D9488] text-[#0D9488] dark:text-teal-400'
-                  : 'border-transparent hover:text-[#0284C7] dark:hover:text-sky-400'
+                  ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                  : 'border-transparent hover:text-[#292725] dark:hover:text-white'
               }`}
             >
               الزيارات
@@ -428,8 +453,8 @@ const RasdShell: React.FC = () => {
               }}
               className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 activeScreen === 'map'
-                  ? 'border-[#0D9488] text-[#0D9488] dark:text-teal-400'
-                  : 'border-transparent hover:text-[#0284C7] dark:hover:text-sky-400'
+                  ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                  : 'border-transparent hover:text-[#292725] dark:hover:text-white'
               }`}
             >
               الخريطة
@@ -443,8 +468,8 @@ const RasdShell: React.FC = () => {
               }}
               className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 activeScreen === 'assessments' || activeScreen === 'transactions'
-                  ? 'border-[#0D9488] text-[#0D9488] dark:text-teal-400'
-                  : 'border-transparent hover:text-[#0284C7] dark:hover:text-sky-400'
+                  ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                  : 'border-transparent hover:text-[#292725] dark:hover:text-white'
               }`}
             >
               المالية
@@ -458,70 +483,89 @@ const RasdShell: React.FC = () => {
               }}
               className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
                 activeScreen === 'reports'
-                  ? 'border-[#0D9488] text-[#0D9488] dark:text-teal-400'
-                  : 'border-transparent hover:text-[#0284C7] dark:hover:text-sky-400'
+                  ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                  : 'border-transparent hover:text-[#292725] dark:hover:text-white'
               }`}
             >
               التقارير
             </button>
           </nav>
 
-          {/* Left Zone (End in RTL): Install & Theme Controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Left Zone (End in RTL): Notification Bell, Voice, Dark Mode & Menu */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {!isInstalled && isInstallable && (
               <button
                 type="button"
                 onClick={install}
-                className="min-h-[38px] px-3.5 rounded-xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0D9488] dark:hover:bg-teal-600 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
+                className="min-h-[38px] px-3 rounded-xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">تثبيت التطبيق</span>
+                <span className="hidden sm:inline">تثبيت</span>
               </button>
             )}
+
             <button
               type="button"
-              onClick={() => setIsVapidToolOpen(true)}
-              className="min-h-[42px] px-3 rounded-2xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/70 dark:hover:bg-teal-900/70 border border-teal-200 dark:border-teal-800 flex items-center gap-1.5 transition-colors cursor-pointer text-[#0D9488] dark:text-teal-300"
-              title="أداة توليد مفاتيح VAPID المحلية (مؤقتة)"
-              aria-label="أداة توليد مفاتيح VAPID المحلية"
+              onClick={() => setActiveScreen('voice')}
+              className={`min-h-[40px] min-w-[40px] rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                activeScreen === 'voice'
+                  ? 'bg-[#743B46] text-white border-[#743B46]'
+                  : 'bg-[#FFFEFC] dark:bg-[#22201F] hover:bg-[#EFECE6] dark:hover:bg-[#2B2826] text-[#292725] dark:text-[#F4F1EA] border-[#E7E1D8] dark:border-[#383431]'
+              }`}
+              title="المساعد الصوتي الذكي"
+              aria-label="المساعد الصوتي الذكي"
             >
-              <KeyRound className="w-4 h-4" />
-              <span className="text-xs font-extrabold">VAPID</span>
+              <Mic className="w-4 h-4" />
             </button>
+
             <button
               type="button"
               onClick={() => setIsThemeModalOpen(true)}
-              className="min-h-[42px] px-3 rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer text-slate-700 dark:text-slate-200"
+              className="hidden sm:flex min-h-[40px] px-2.5 rounded-xl bg-[#FFFEFC] dark:bg-[#22201F] hover:bg-[#EFECE6] dark:hover:bg-[#2B2826] border border-[#E7E1D8] dark:border-[#383431] items-center gap-1.5 transition-colors cursor-pointer text-[#292725] dark:text-[#F4F1EA]"
               title="القوالب اللونية وتصميم الواجهة"
               aria-label="القوالب اللونية وتصميم الواجهة"
             >
-              <Palette className="w-4 h-4 text-[#0D9488]" />
-              <span className="hidden sm:inline text-xs font-bold">القوالب</span>
+              <Palette className="w-4 h-4 text-[#743B46] dark:text-[#E5B9C0]" />
+              <span className="hidden md:inline text-xs font-bold">المظهر</span>
             </button>
+
+            <button
+              type="button"
+              onClick={toggleDarkMode}
+              className="min-h-[40px] min-w-[40px] rounded-xl bg-[#FFFEFC] dark:bg-[#22201F] hover:bg-[#EFECE6] dark:hover:bg-[#2B2826] border border-[#E7E1D8] dark:border-[#383431] flex items-center justify-center transition-colors cursor-pointer text-[#292725] dark:text-[#F4F1EA]"
+              aria-label="تبديل الوضع الليلي والنهاري"
+              title="تبديل الوضع الليلي والنهاري"
+            >
+              {darkMode ? (
+                <Sun className="w-4 h-4 text-[#D9A441]" />
+              ) : (
+                <Moon className="w-4 h-4 text-[#5C554E]" />
+              )}
+            </button>
+
             <button
               type="button"
               onClick={() => setIsNotifOpen(true)}
-              className="relative min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center transition-colors cursor-pointer text-slate-700 dark:text-slate-200"
-              aria-label="مركز التنبيهات"
+              className="relative min-h-[40px] min-w-[40px] rounded-xl bg-[#FFFEFC] dark:bg-[#22201F] hover:bg-[#EFECE6] dark:hover:bg-[#2B2826] border border-[#E7E1D8] dark:border-[#383431] flex items-center justify-center transition-colors cursor-pointer text-[#292725] dark:text-[#F4F1EA]"
+              aria-label="مركز الإشعارات والتنبيهات"
+              title="الإشعارات والتنبيهات"
             >
               <Bell className="w-4 h-4" />
               {dueCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-rose-600 text-white text-[10px] font-bold flex items-center justify-center animate-pulse shadow-xs">
+                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#A64B45] text-white text-[10px] font-bold flex items-center justify-center shadow-xs">
                   {dueCount > 9 ? '+9' : dueCount}
                 </span>
               )}
             </button>
+
             <button
               type="button"
-              onClick={toggleDarkMode}
-              className="min-h-[42px] min-w-[42px] rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center transition-colors cursor-pointer"
-              aria-label="تبديل المظهر"
+              onClick={() => setActiveScreen('more')}
+              className="min-h-[40px] min-w-[40px] rounded-xl bg-[#FFFEFC] dark:bg-[#22201F] hover:bg-[#EFECE6] dark:hover:bg-[#2B2826] border border-[#E7E1D8] dark:border-[#383431] flex items-center justify-center transition-colors cursor-pointer text-[#292725] dark:text-[#F4F1EA]"
+              aria-label="القائمة والإعدادات"
+              title="القائمة والإعدادات"
             >
-              {darkMode ? (
-                <Sun className="w-4 h-4 text-amber-400" />
-              ) : (
-                <Moon className="w-4 h-4 text-[#0B192C]" />
-              )}
+              <Menu className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -530,7 +574,7 @@ const RasdShell: React.FC = () => {
       {/* Real-time In-App Due Appointment Alert Banner */}
       <ActiveAlertBanner />
 
-      {/* Notification Center Slide-over Modal */}
+      {/* Notification Center Modal */}
       <NotificationCenterModal
         isOpen={isNotifOpen}
         onClose={() => setIsNotifOpen(false)}
@@ -557,7 +601,7 @@ const RasdShell: React.FC = () => {
         </div>
       )}
 
-      {/* Floating Material 3 Snackbar / Toast Notifications */}
+      {/* Floating Toast Notifications */}
       {toasts.length > 0 && (
         <div className="fixed top-20 left-4 right-4 z-50 max-w-md mx-auto space-y-2 pointer-events-none">
           {toasts.map((t) => (
@@ -565,12 +609,12 @@ const RasdShell: React.FC = () => {
               key={t.id}
               className={`pointer-events-auto p-3.5 rounded-2xl shadow-lg border text-xs font-semibold flex items-center justify-between gap-2.5 ${
                 t.type === 'error'
-                  ? 'bg-rose-600 text-white border-rose-700'
+                  ? 'bg-[#A64B45] text-white border-[#8E3B36]'
                   : t.type === 'warning'
-                  ? 'bg-amber-600 text-white border-amber-700'
+                  ? 'bg-[#A77B35] text-white border-[#8D662A]'
                   : t.type === 'success'
-                  ? 'bg-[#0D9488] text-white border-teal-700'
-                  : 'bg-[#0B192C] text-white border-slate-800'
+                  ? 'bg-[#52765D] text-white border-[#41604B]'
+                  : 'bg-[#743B46] text-white border-[#5D2D37]'
               }`}
             >
               <span className="leading-relaxed">{t.text}</span>
@@ -606,15 +650,14 @@ const RasdShell: React.FC = () => {
         )}
       </main>
 
-      {/* Fixed 5-Item Android Material 3 Bottom Navigation Bar */}
+      {/* Fixed 5-Item Reference Bottom Navigation Bar */}
       <nav
         aria-label="التنقل الرئيسي"
-        className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#0B192C]/95 backdrop-blur-md border-t border-slate-200/90 dark:border-slate-800/90 bottom-nav-safe shadow-[0_-4px_20px_rgba(11,25,44,0.05)]"
+        className="fixed bottom-0 left-0 right-0 z-40 bg-[#FFFEFC]/95 dark:bg-[#22201F]/95 backdrop-blur-md border-t border-[#E7E1D8] dark:border-[#383431] bottom-nav-safe shadow-[0_-4px_20px_rgba(41,39,37,0.04)]"
       >
         <div className="max-w-lg mx-auto h-[68px] grid grid-cols-5 items-center px-2">
           {PRIMARY_TABS.map((tab) => {
             const Icon = tab.icon;
-            const isVoiceTab = tab.id === 'voice';
             const isActive =
               activeScreen === tab.id ||
               (tab.id === 'more' && isSubScreen);
@@ -628,26 +671,25 @@ const RasdShell: React.FC = () => {
                   setSelectedTaxpayerId(null);
                   setActiveScreen(tab.id);
                 }}
-                className={`min-h-[54px] flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer ${
+                className={`relative min-h-[56px] flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer ${
                   isActive
-                    ? 'text-[#0B192C] dark:text-teal-300 font-bold'
-                    : 'text-slate-500 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-slate-200 font-medium'
+                    ? 'text-[#743B46] dark:text-[#E5B9C0] font-extrabold'
+                    : 'text-[#77716B] dark:text-[#ACA59C] hover:text-[#292725] dark:hover:text-[#F4F1EA] font-medium'
                 }`}
               >
+                {isActive && (
+                  <span className="absolute top-0.5 w-8 h-1 rounded-full bg-[#743B46] dark:bg-[#E5B9C0]" />
+                )}
                 <div
-                  className={`px-4 py-1 rounded-full transition-all flex items-center justify-center ${
-                    isVoiceTab && isActive
-                      ? 'bg-gradient-to-r from-[#0369A1] to-[#0D9488] text-white shadow-sm'
-                      : isVoiceTab
-                      ? 'bg-sky-50 dark:bg-sky-950/70 text-[#0284C7] dark:text-sky-400'
-                      : isActive
-                      ? 'bg-teal-100/80 dark:bg-teal-950/80 text-[#0D9488] dark:text-teal-300'
+                  className={`px-3.5 py-1 rounded-xl transition-all flex items-center justify-center ${
+                    isActive
+                      ? 'bg-[#743B46]/10 dark:bg-[#743B46]/25 text-[#743B46] dark:text-[#E5B9C0]'
                       : ''
                   }`}
                 >
                   <Icon className="w-5 h-5" />
                 </div>
-                <span className="text-[11px] mt-1 whitespace-nowrap">{tab.label}</span>
+                <span className="text-[11px] mt-0.5 whitespace-nowrap">{tab.label}</span>
               </button>
             );
           })}

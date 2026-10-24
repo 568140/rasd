@@ -2,43 +2,53 @@
 
 @layer base {
   :root {
-    font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
+    font-family: 'Tajawal', 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
     direction: rtl;
 
-    /* Modern Dynamic Theme Variables (Default: Sovereign Emerald) */
-    --rasd-primary: #064e3b;
-    --rasd-primary-hover: #065f46;
-    --rasd-accent: #059669;
-    --rasd-accent-hover: #047857;
-    --rasd-secondary: #0284c7;
+    /* Official Reference Design Tokens (Warm Ivory & Executive Burgundy) */
+    --rasd-primary: #743B46;
+    --rasd-primary-hover: #5D2D37;
+    --rasd-accent: #743B46;
+    --rasd-accent-hover: #5D2D37;
+    --rasd-secondary: #A77B35;
 
-    --rasd-hero-from: #042f2e;
-    --rasd-hero-via: #064e3b;
-    --rasd-hero-to: #0f766e;
+    --rasd-hero-from: #743B46;
+    --rasd-hero-via: #5D2D37;
+    --rasd-hero-to: #472129;
 
-    --rasd-bg-light: #f3f7f5;
-    --rasd-card-light: #ffffff;
-    --rasd-card-subtle-light: #edf4f1;
-    --rasd-border-light: #d5e3dc;
+    --rasd-bg-light: #F7F5F0;
+    --rasd-card-light: #FFFEFC;
+    --rasd-card-subtle-light: #F0ECE5;
+    --rasd-border-light: #E7E1D8;
 
-    --rasd-bg-dark: #041311;
-    --rasd-card-dark: #091e1a;
-    --rasd-card-subtle-dark: #0d2924;
-    --rasd-border-dark: #163b34;
+    --rasd-text-primary: #292725;
+    --rasd-text-secondary: #77716B;
+
+    --rasd-success: #52765D;
+    --rasd-success-bg: #ECF2EE;
+    --rasd-warning: #A77B35;
+    --rasd-warning-bg: #F6EFE2;
+    --rasd-danger: #A64B45;
+    --rasd-danger-bg: #F6E9E7;
+
+    --rasd-bg-dark: #161514;
+    --rasd-card-dark: #22201F;
+    --rasd-card-subtle-dark: #2B2826;
+    --rasd-border-dark: #383431;
   }
 
   h1, h2, h3, h4, .font-display {
-    font-family: 'Readex Pro', 'IBM Plex Sans Arabic', sans-serif;
+    font-family: 'Tajawal', 'Readex Pro', 'IBM Plex Sans Arabic', sans-serif;
     letter-spacing: -0.01em;
   }
 
   .font-mono, .tabular-nums {
-    font-family: 'IBM Plex Mono', 'IBM Plex Sans Arabic', monospace;
+    font-family: 'IBM Plex Mono', 'Tajawal', monospace;
     font-variant-numeric: tabular-nums;
   }
 }
 
-/* Android Material 3 mobile ergonomics & safe areas */
+/* Mobile ergonomics & safe areas */
 * {
   -webkit-tap-highlight-color: transparent;
   box-sizing: border-box;
@@ -47,14 +57,14 @@
 html, body {
   overscroll-behavior-y: none;
   background-color: var(--rasd-bg-light);
-  color: #0f172a;
+  color: var(--rasd-text-primary);
   -webkit-font-smoothing: antialiased;
   transition: background-color 0.25s ease, color 0.25s ease;
 }
 
 html.dark, html.dark body {
   background-color: var(--rasd-bg-dark);
-  color: #f8fafc;
+  color: #F4F1EA;
 }
 
 /* ============================================================================
@@ -62,18 +72,53 @@ html.dark, html.dark body {
    ============================================================================ */
 
 /* 1. Canvas & Structural Surfaces */
-html:not(.dark) .bg-\[\#F4F7FA\] {
+html:not(.dark) .bg-\[\#F4F7FA\],
+html:not(.dark) .bg-slate-50 {
   background-color: var(--rasd-bg-light) !important;
 }
 
-html.dark .dark\:bg-\[\#060D18\] {
+html.dark .dark\:bg-\[\#060D18\],
+html.dark .dark\:bg-slate-950 {
   background-color: var(--rasd-bg-dark) !important;
+}
+
+html:not(.dark) .bg-white {
+  background-color: var(--rasd-card-light) !important;
 }
 
 html.dark .dark\:bg-\[\#0D1829\],
 html.dark .dark\:bg-\[\#0F1E33\],
-html.dark .dark\:bg-\[\#0B192C\]\/95 {
+html.dark .dark\:bg-\[\#0B192C\],
+html.dark .dark\:bg-\[\#0B192C\]\/95,
+html.dark .dark\:bg-slate-900 {
   background-color: var(--rasd-card-dark) !important;
+}
+
+html:not(.dark) .bg-slate-100,
+html:not(.dark) .bg-slate-100\/80,
+html:not(.dark) .bg-slate-50\/80 {
+  background-color: var(--rasd-card-subtle-light) !important;
+}
+
+html.dark .dark\:bg-slate-800,
+html.dark .dark\:bg-slate-800\/80,
+html.dark .dark\:bg-slate-800\/60 {
+  background-color: var(--rasd-card-subtle-dark) !important;
+}
+
+/* Borders */
+html:not(.dark) .border-slate-200,
+html:not(.dark) .border-slate-200\/90,
+html:not(.dark) .border-slate-200\/80,
+html:not(.dark) .border-slate-100 {
+  border-color: var(--rasd-border-light) !important;
+}
+
+html.dark .dark\:border-slate-800,
+html.dark .dark\:border-slate-800\/90,
+html.dark .dark\:border-slate-800\/80,
+html.dark .dark\:border-slate-700 {
+  border-color: var(--rasd-border-dark) !important;
 }
 
 /* 2. Primary Brand Buttons & Badges */
@@ -81,7 +126,8 @@ html.dark .dark\:bg-\[\#0B192C\]\/95 {
   background-color: var(--rasd-primary) !important;
 }
 
-.hover\:bg-\[\#132A46\]:hover {
+.hover\:bg-\[\#132A46\]:hover,
+.hover\:bg-\[\#102A46\]:hover {
   background-color: var(--rasd-primary-hover) !important;
 }
 
@@ -91,12 +137,20 @@ html.dark .dark\:bg-\[\#0B192C\]\/95 {
 }
 
 .hover\:bg-\[\#0F766E\]:hover,
-.hover\:bg-teal-600:hover {
+.hover\:bg-teal-600:hover,
+.hover\:bg-teal-700:hover {
   background-color: var(--rasd-accent-hover) !important;
 }
 
-.text-\[\#0D9488\] {
+.text-\[\#0D9488\],
+html:not(.dark) .text-teal-600,
+html:not(.dark) .text-teal-700 {
   color: var(--rasd-accent) !important;
+}
+
+html.dark .dark\:text-teal-300,
+html.dark .dark\:text-teal-400 {
+  color: #E5B9C0 !important;
 }
 
 .border-\[\#0D9488\] {
@@ -105,15 +159,72 @@ html.dark .dark\:bg-\[\#0B192C\]\/95 {
 
 /* 4. Secondary Accent */
 .bg-\[\#0284C7\] {
-  background-color: var(--rasd-secondary) !important;
+  background-color: var(--rasd-primary) !important;
 }
 
-.text-\[\#0284C7\] {
-  color: var(--rasd-secondary) !important;
+.hover\:bg-\[\#0369A1\]:hover {
+  background-color: var(--rasd-primary-hover) !important;
 }
 
-.border-\[\#0284C7\] {
-  border-color: var(--rasd-secondary) !important;
+.text-\[\#0284C7\],
+html:not(.dark) .text-sky-600,
+html:not(.dark) .text-sky-700 {
+  color: var(--rasd-primary) !important;
+}
+
+html.dark .dark\:text-sky-300,
+html.dark .dark\:text-sky-400 {
+  color: #E5B9C0 !important;
+}
+
+.border-\[\#0284C7\],
+.focus\:border-\[\#0284C7\]:focus {
+  border-color: var(--rasd-primary) !important;
+}
+
+/* Typography & Semantic Tints */
+html:not(.dark) .text-\[\#0B192C\],
+html:not(.dark) .text-slate-900,
+html:not(.dark) .text-slate-800 {
+  color: var(--rasd-text-primary) !important;
+}
+
+html.dark .dark\:text-white,
+html.dark .dark\:text-slate-100 {
+  color: #F4F1EA !important;
+}
+
+html:not(.dark) .text-slate-500,
+html:not(.dark) .text-slate-600 {
+  color: var(--rasd-text-secondary) !important;
+}
+
+html:not(.dark) .bg-teal-50,
+html:not(.dark) .bg-teal-50\/80,
+html:not(.dark) .bg-teal-50\/70,
+html:not(.dark) .bg-teal-50\/60,
+html:not(.dark) .bg-teal-50\/50 {
+  background-color: var(--rasd-success-bg) !important;
+}
+
+html:not(.dark) .bg-sky-50,
+html:not(.dark) .bg-sky-50\/80 {
+  background-color: var(--rasd-card-subtle-light) !important;
+}
+
+html:not(.dark) .bg-amber-50,
+html:not(.dark) .bg-amber-50\/80,
+html:not(.dark) .bg-amber-50\/70 {
+  background-color: var(--rasd-warning-bg) !important;
+}
+
+html:not(.dark) .bg-rose-50,
+html:not(.dark) .bg-rose-50\/80 {
+  background-color: var(--rasd-danger-bg) !important;
+}
+
+.bg-rose-600 {
+  background-color: var(--rasd-danger) !important;
 }
 
 /* 5. Dynamic Hero & Banner Gradients */
@@ -128,7 +239,8 @@ html.dark .dark\:bg-\[\#0B192C\]\/95 {
 
 .to-\[\#0B4F6C\],
 .to-\[\#0369A1\],
-.to-\[\#132A46\] {
+.to-\[\#132A46\],
+.to-\[\#0D9488\] {
   --tw-gradient-to: var(--rasd-hero-to) !important;
 }
 
@@ -140,29 +252,33 @@ html.dark .dark\:bg-\[\#0B192C\]\/95 {
 
 /* 6. Professional Card Template Styles (Elevated / Glass / Architectural Bordered) */
 html[data-rasd-card-style="elevated"]:not(.dark) main section.rounded-3xl,
-html[data-rasd-card-style="elevated"]:not(.dark) main div.rounded-3xl.bg-white {
-  box-shadow: 0 10px 30px -10px rgba(15, 23, 42, 0.06), 0 4px 12px -2px rgba(15, 23, 42, 0.03);
+html[data-rasd-card-style="elevated"]:not(.dark) main div.rounded-3xl.bg-white,
+html[data-rasd-card-style="elevated"]:not(.dark) main section.rounded-2xl,
+html[data-rasd-card-style="elevated"]:not(.dark) main div.rounded-2xl.bg-white {
+  box-shadow: 0 4px 16px -4px rgba(41, 39, 37, 0.05), 0 2px 6px -1px rgba(41, 39, 37, 0.025);
   border-color: var(--rasd-border-light);
 }
 
 html[data-rasd-card-style="elevated"].dark main section.rounded-3xl,
-html[data-rasd-card-style="elevated"].dark main div.rounded-3xl {
-  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.45);
+html[data-rasd-card-style="elevated"].dark main div.rounded-3xl,
+html[data-rasd-card-style="elevated"].dark main section.rounded-2xl,
+html[data-rasd-card-style="elevated"].dark main div.rounded-2xl {
+  box-shadow: 0 10px 28px -8px rgba(0, 0, 0, 0.45);
   border-color: var(--rasd-border-dark);
 }
 
 html[data-rasd-card-style="glass"]:not(.dark) main section.rounded-3xl:not(.text-white),
 html[data-rasd-card-style="glass"]:not(.dark) main div.rounded-3xl.bg-white {
-  background: rgba(255, 255, 255, 0.82) !important;
+  background: rgba(255, 254, 252, 0.86) !important;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.9) !important;
-  box-shadow: 0 12px 32px -8px rgba(15, 23, 42, 0.07);
+  border: 1px solid var(--rasd-border-light) !important;
+  box-shadow: 0 8px 24px -6px rgba(41, 39, 37, 0.05);
 }
 
 html[data-rasd-card-style="glass"].dark main section.rounded-3xl:not(.text-white),
 html[data-rasd-card-style="glass"].dark main div.rounded-3xl {
-  background: color-mix(in srgb, var(--rasd-card-dark) 82%, transparent) !important;
+  background: color-mix(in srgb, var(--rasd-card-dark) 86%, transparent) !important;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--rasd-border-dark) !important;
@@ -177,7 +293,7 @@ html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
 
 /* Safe area utilities for mobile devices & Capacitor Android wrapper */
 .pb-safe-nav {
-  padding-bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
 }
 
 .bottom-nav-safe {
@@ -195,7 +311,7 @@ html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba(119, 113, 107, 0.35);
   border-radius: 9999px;
 }
 
@@ -211,3 +327,4 @@ html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
 .animate-voice-bar {
   animation: voiceWavePulse 0.85s ease-in-out infinite;
 }
+

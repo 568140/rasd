@@ -39,6 +39,7 @@ export const MoreScreen: React.FC = () => {
     pendingSyncCount,
     darkMode,
     toggleDarkMode,
+    activeScreen,
     setActiveScreen,
     updateUserProfileInfo,
     updateWorkspaceSettings,
@@ -48,7 +49,9 @@ export const MoreScreen: React.FC = () => {
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
-  const [subPanel, setSubPanel] = useState<'none' | 'profile' | 'workspace' | 'sounds' | 'transparency' | 'vapid'>('none');
+  const [subPanel, setSubPanel] = useState<'none' | 'profile' | 'workspace' | 'sounds' | 'transparency' | 'vapid'>(
+    activeScreen === 'settings' || activeScreen === 'notifications' ? 'sounds' : 'none'
+  );
   const [isThemeOpen, setIsThemeOpen] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
 
@@ -295,51 +298,55 @@ export const MoreScreen: React.FC = () => {
           </p>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setSubPanel(subPanel === 'transparency' ? 'none' : 'transparency')}
-          className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
-            subPanel === 'transparency'
-              ? 'border-[#0284C7] ring-2 ring-sky-500/15'
-              : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0284C7]'
-          }`}
-        >
-          <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
-            <HelpCircle className="w-4 h-4 text-[#0284C7]" />
-            <span>الشفافية وتغليف Android APK</span>
-          </div>
-          <p className="text-xs text-slate-500">
-            تقرير التحقق الفعلي وخطوات البناء عبر Capacitor
-          </p>
-        </button>
+        {isOwner && (
+          <>
+            <button
+              type="button"
+              onClick={() => setSubPanel(subPanel === 'transparency' ? 'none' : 'transparency')}
+              className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
+                subPanel === 'transparency'
+                  ? 'border-[#0284C7] ring-2 ring-sky-500/15'
+                  : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0284C7]'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
+                <HelpCircle className="w-4 h-4 text-[#0284C7]" />
+                <span>الشفافية وتغليف Android APK</span>
+              </div>
+              <p className="text-xs text-slate-500">
+                تقرير التحقق الفعلي وخطوات البناء عبر Capacitor
+              </p>
+            </button>
 
-        {/* Temporary Local VAPID Key Pair Generator Card (Removable after setup) */}
-        <button
-          type="button"
-          onClick={() => setSubPanel(subPanel === 'vapid' ? 'none' : 'vapid')}
-          className={`p-4 rounded-3xl bg-teal-50/60 dark:bg-teal-950/30 border text-right transition-colors cursor-pointer sm:col-span-2 lg:col-span-4 ${
-            subPanel === 'vapid'
-              ? 'border-[#0D9488] ring-2 ring-teal-500/20'
-              : 'border-teal-300/80 dark:border-teal-800/80 hover:border-[#0D9488]'
-          }`}
-        >
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white">
-              <KeyRound className="w-4 h-4 text-[#0D9488]" />
-              <span>أداة توليد مفاتيح VAPID المحلية لـ Vercel (أداة مؤقتة)</span>
-            </div>
-            <span className="px-2.5 py-0.5 rounded-lg bg-teal-100 dark:bg-teal-900/70 text-[#0D9488] dark:text-teal-300 text-[11px] font-bold">
-              Web Crypto P-256 · محلي 100%
-            </span>
-          </div>
-          <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
-            توليد زوج مفاتيح (العام والخاص) متطابق ومتوافق مع مكتبة web-push داخل متصفح هاتفك دون إرسال المفتاح الخاص لأي خادم.
-          </p>
-        </button>
+            {/* Temporary Local VAPID Key Pair Generator Card (Admin/Owner only) */}
+            <button
+              type="button"
+              onClick={() => setSubPanel(subPanel === 'vapid' ? 'none' : 'vapid')}
+              className={`p-4 rounded-3xl bg-teal-50/60 dark:bg-teal-950/30 border text-right transition-colors cursor-pointer sm:col-span-2 lg:col-span-4 ${
+                subPanel === 'vapid'
+                  ? 'border-[#0D9488] ring-2 ring-teal-500/20'
+                  : 'border-teal-300/80 dark:border-teal-800/80 hover:border-[#0D9488]'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white">
+                  <KeyRound className="w-4 h-4 text-[#0D9488]" />
+                  <span>أداة توليد مفاتيح VAPID المحلية لـ Vercel (للإدارة فقط)</span>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-lg bg-teal-100 dark:bg-teal-900/70 text-[#0D9488] dark:text-teal-300 text-[11px] font-bold">
+                  Web Crypto P-256 · محلي 100%
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+                توليد زوج مفاتيح (العام والخاص) متطابق ومتوافق مع مكتبة web-push داخل متصفح هاتفك دون إرسال المفتاح الخاص لأي خادم.
+              </p>
+            </button>
+          </>
+        )}
       </div>
 
       {/* Sub-panel: Temporary Local VAPID Generator */}
-      {subPanel === 'vapid' && (
+      {isOwner && subPanel === 'vapid' && (
         <TempVapidGenerator
           onClose={() => setSubPanel('none')}
           onShowToast={showToast}

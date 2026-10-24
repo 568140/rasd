@@ -9,10 +9,9 @@ import {
   AlertCircle,
   WifiOff,
   CheckCircle2,
-  Info,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { FIREBASE_PROJECT_ID, translateFirebaseError } from '../services/firebase';
+import { translateFirebaseError } from '../services/firebase';
 
 export const AuthScreen: React.FC = () => {
   const {
@@ -30,7 +29,6 @@ export const AuthScreen: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [showSetupHint, setShowSetupHint] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -317,41 +315,12 @@ export const AuthScreen: React.FC = () => {
                 <ArrowLeft className="w-4 h-4" />
               </button>
             </form>
-
-            {/* Transparency & External Setup Notice */}
-            <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setShowSetupHint((p) => !p)}
-                className="w-full flex items-center justify-between text-xs text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 py-1 cursor-pointer"
-              >
-                <span className="flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5 text-[#0284C7]" />
-                  <span>معلومات تهيئة المصادقة ومشروع Firebase</span>
-                </span>
-                <span>{showSetupHint ? 'إخفاء' : 'عرض'}</span>
-              </button>
-
-              {showSetupHint && (
-                <div className="mt-2 p-3 rounded-2xl bg-slate-50 dark:bg-slate-900 text-xs text-slate-600 dark:text-slate-300 space-y-1.5 leading-relaxed">
-                  <p>
-                    • مشروع Firebase المرتبط فعليًا: <span className="font-mono font-bold">{FIREBASE_PROJECT_ID}</span>
-                  </p>
-                  <p>
-                    • <strong>الدخول عبر Google</strong> مفعّل تلقائيًا وجاهز للعمل الفوري.
-                  </p>
-                  <p>
-                    • لاستخدام <strong>البريد وكلمة المرور</strong> لأول مرة، يرجى تفعيل مزود <em>Email/Password</em> من لوحة تحكم Firebase Console (Authentication &rarr; Sign-in method).
-                  </p>
-                </div>
-              )}
-            </div>
           </div>
         </div>
       </div>
 
       <footer className="w-full max-w-5xl mx-auto py-3 text-center text-xs text-slate-400">
-        رَصْد — المساعد الميداني الذكي · متصل بقاعدة بيانات Cloud Firestore الحقيقية
+        رَصْد — المساعد الميداني الذكي
       </footer>
     </div>
   );
