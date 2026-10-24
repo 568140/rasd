@@ -11,6 +11,8 @@ import {
   Repeat,
   WifiOff,
   Sparkles,
+  Clock,
+  AlertCircle,
 } from 'lucide-react';
 import {
   alertSound,
@@ -18,11 +20,21 @@ import {
   BUILTIN_SOUND_TONES,
   SoundToneId,
 } from '../services/alertSound';
+import {
+  MIN_REMINDER_MINUTES,
+  MAX_REMINDER_MINUTES,
+  validateReminderMinutesInput,
+  buildAppointmentNotificationPayload,
+  getAdenTodayString,
+  getAdenTimeString,
+} from '../utils/dateUtils';
 
 interface SoundSettingsPanelProps {
   compact?: boolean;
   onShowToast?: (text: string, type?: 'success' | 'error' | 'warning' | 'info') => void;
 }
+
+const QUICK_REMINDER_PRESETS = [5, 15, 20, 30, 45, 60, 75, 120];
 
 export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
   compact = false,
@@ -31,13 +43,46 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
   const [settings, setSettings] = useState<AlertSoundSettings>(() => alertSound.getSettings());
   const [targetType, setTargetType] = useState<'notification' | 'urgent'>('notification');
   const [playingToneId, setPlayingToneId] = useState<string | null>(null);
+  const [reminderInputText, setReminderInputText] = useState<string>(() =>
+    String(alertSound.getDefaultReminderMinutes())
+  );
+  const [reminderError, setReminderError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return alertSound.subscribe((updated) => {
       setSettings({ ...updated });
+      setReminderInputText(String(updated.defaultReminderMinutes));
     });
   }, []);
+
+  const handleReminderInputChange = (rawVal: string) => {
+    setReminderInputText(rawVal);
+    const check = validateReminderMinutesInput(rawVal);
+    if (!check.isValid) {
+      setReminderError(check.error || 'قيمة غير صالحة');
+      return;
+    }
+    setReminderError(null);
+    alertSound.setDefaultReminderMinutes(check.minutes);
+  };
+
+  const handleReminderInputBlur = () => {
+    const check = validateReminderMinutesInput(reminderInputText);
+    if (!check.isValid) {
+      const fallback = alertSound.getDefaultReminderMinutes();
+      setReminderInputText(String(fallback));
+      setReminderError(null);
+      onShowToast?.(
+        check.error || `تم الإبقاء على القيمة المحفوظة (${fallback} دقيقة)`,
+        'warning'
+      );
+      return;
+    }
+    setReminderError(null);
+    alertSound.setDefaultReminderMinutes(check.minutes);
+    onShowToast?.(`تم حفظ وقت التنبيه المسبق: قبل الموعد بـ ${check.minutes} دقيقة`, 'info');
+  };
 
   const handlePreview = (toneId: SoundToneId) => {
     setPlayingToneId(`${targetType}_${toneId}`);
@@ -110,11 +155,26 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
       settings.volume,
       true
     );
-    await alertSound.triggerOfflineSystemNotification(
-      'تجربة تنبيه صوتي — رَصْد (بدون إنترنت)',
-      'النغمة المختارة تعمل محليًا على جهازك حتى في حال انقطاع الاتصال بالإنترنت.'
+    const configuredMins = alertSound.getDefaultReminderMinutes();
+    const samplePayload = buildAppointmentNotificationPayload(
+      {
+        id: 'sample_preview',
+        title: 'متابعة التزام ضريبي ومعاينة عقارية',
+        taxpayerName: 'أحمد صالح الحمادي',
+        propertyTitle: 'عمارة النور التجارية',
+        scheduledDate: getAdenTodayString(),
+        scheduledTime: getAdenTimeString(),
+      },
+      targetType === 'urgent' ? -15 : configuredMins
     );
-    onShowToast?.('تم تشغيل النغمة وإرسال إشعار تجريبي محلي بنجاح', 'success');
+
+    await alertSound.triggerOfflineSystemNotification(samplePayload.title, samplePayload.body, {
+      tag: 'rasd-preview-test',
+      url: '/?screen=appointments',
+      isOverdue: samplePayload.isOverdue,
+      renotify: true,
+    });
+    onShowToast?.('تم تشغيل النغمة وإرسال نموذج إشعار رسمي للهاتف بنجاح', 'success');
   };
 
   const activeToneId =
@@ -161,6 +221,86 @@ export const SoundSettingsPanel: React.FC<SoundSettingsPanelProps> = ({
         >
           {settings.enabled ? 'الصوت مفعّل' : 'الصوت مكتوم'}
         </button>
+      </div>
+
+      {/* Manual Numeric Input for Alert Lead Time: التنبيه قبل الموعد بـ ... دقيقة */}
+      <div className="p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-slate-900/90 border border-slate-200/90 dark:border-slate-800 space-y-2.5 shadow-2xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <label
+            htmlFor="rasd-default-reminder-minutes"
+            className="text-xs sm:text-sm font-bold text-[#0B192C] dark:text-white flex items-center gap-1.5"
+          >
+            <Clock className="w-4 h-4 text-[#0284C7]" />
+            <span>التنبيه قبل الموعد بـ</span>
+          </label>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="rasd-default-reminder-minutes"
+              type="number"
+              inputMode="numeric"
+              min={MIN_REMINDER_MINUTES}
+              max={MAX_REMINDER_MINUTES}
+              step={1}
+              value={reminderInputText}
+              onChange={(e) => handleReminderInputChange(e.target.value)}
+              onBlur={handleReminderInputBlur}
+              placeholder="مثال: 30"
+              className={`w-24 min-h-[38px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-950 border text-xs sm:text-sm font-mono font-extrabold text-center focus:outline-none transition-colors ${
+                reminderError
+                  ? 'border-rose-500 text-rose-600 dark:text-rose-400'
+                  : 'border-slate-300 dark:border-slate-700 text-[#0B192C] dark:text-white focus:border-[#0284C7]'
+              }`}
+            />
+            <span className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-300">
+              دقيقة
+            </span>
+          </div>
+        </div>
+
+        {reminderError ? (
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+            <span>{reminderError}</span>
+          </div>
+        ) : (
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            أدخل أي عدد صحيح موجب من <strong>{MIN_REMINDER_MINUTES}</strong> إلى{' '}
+            <strong>{MAX_REMINDER_MINUTES}</strong> دقيقة (حتى 24 ساعة). القيمة المحفوظة حاليًا:{' '}
+            <strong className="font-mono text-[#0D9488] dark:text-teal-400">
+              {settings.defaultReminderMinutes} دقيقة
+            </strong>{' '}
+            وتُطبّق تلقائيًا على فحص المواعيد والإشعارات المحلية وإشعارات الهاتف.
+          </p>
+        )}
+
+        {/* Quick-fill helper buttons alongside manual numeric entry */}
+        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+          <span className="text-[10px] font-semibold text-slate-400 ml-1">اختيار سريع:</span>
+          {QUICK_REMINDER_PRESETS.map((preset) => {
+            const isActivePreset =
+              !reminderError && settings.defaultReminderMinutes === preset;
+            return (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => {
+                  setReminderInputText(String(preset));
+                  setReminderError(null);
+                  alertSound.setDefaultReminderMinutes(preset);
+                  onShowToast?.(`تم ضبط التنبيه قبل الموعد بـ ${preset} دقيقة`, 'info');
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
+                  isActivePreset
+                    ? 'bg-[#0284C7] text-white'
+                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                {preset} د
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Volume Slider & Quick Switches */}

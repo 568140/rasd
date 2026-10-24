@@ -109,7 +109,7 @@ export const TempVapidGenerator: React.FC<{
       // 5. Re-import exported keys and perform real ECDSA P-256 SHA-256 Sign + Verify roundtrip
       const reimportedPub = await window.crypto.subtle.importKey(
         'raw',
-        base64UrlToBytes(publicKey),
+        base64UrlToBytes(publicKey) as unknown as BufferSource,
         { name: 'ECDSA', namedCurve: 'P-256' },
         false,
         ['verify']

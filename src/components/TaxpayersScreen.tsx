@@ -43,6 +43,12 @@ import {
   VisitPurpose,
   VisitStatus,
 } from '../types/rasd';
+import {
+  MIN_REMINDER_MINUTES,
+  MAX_REMINDER_MINUTES,
+  validateReminderMinutesInput,
+} from '../utils/dateUtils';
+import { alertSound } from '../services/alertSound';
 
 const STATUS_LABELS: Record<TaxpayerStatus, string> = {
   active: 'نشط',
@@ -307,6 +313,10 @@ export const TaxpayersScreen: React.FC = () => {
     return d.toISOString().slice(0, 10);
   });
   const [apptTime, setApptTime] = useState('10:00');
+  const [apptReminderInput, setApptReminderInput] = useState<string>(() =>
+    String(alertSound.getDefaultReminderMinutes())
+  );
+  const [apptReminderError, setApptReminderError] = useState<string | null>(null);
   const [apptLocation, setApptLocation] = useState('');
   const [apptNotes, setApptNotes] = useState('');
 
@@ -933,6 +943,8 @@ export const TaxpayersScreen: React.FC = () => {
     tomorrow.setDate(tomorrow.getDate() + 1);
     setApptDate(tomorrow.toISOString().slice(0, 10));
     setApptTime('10:00');
+    setApptReminderInput(String(alertSound.getDefaultReminderMinutes()));
+    setApptReminderError(null);
     setApptLocation(chosenProp?.address || selectedTaxpayer.address || '');
     setApptNotes('');
     setIsAppointmentModalOpen(true);
@@ -941,6 +953,16 @@ export const TaxpayersScreen: React.FC = () => {
   const handleSaveAppointmentInDossier = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedTaxpayer || submitting) return;
+
+    const remCheck = validateReminderMinutesInput(apptReminderInput);
+    if (!remCheck.isValid) {
+      setApptReminderError(remCheck.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
+      showToast(remCheck.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
+      return;
+    }
+
+    alertSound.setDefaultReminderMinutes(remCheck.minutes);
+
     const tpProps = properties.filter((p) => p.taxpayerId === selectedTaxpayer.id);
     const chosenProp = tpProps.find((p) => p.id === apptPropertyId);
 
@@ -954,6 +976,7 @@ export const TaxpayersScreen: React.FC = () => {
         taxpayerName: selectedTaxpayer.fullName,
         scheduledDate: apptDate,
         scheduledTime: apptTime,
+        reminderMinutesBefore: remCheck.minutes,
         locationText: apptLocation || chosenProp?.address || selectedTaxpayer.address || 'غير محدد',
         status: 'upcoming',
         notes: apptNotes,
@@ -2724,6 +2747,47 @@ export const TaxpayersScreen: React.FC = () => {
                       className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold mb-1">
+                    التنبيه قبل الموعد بـ
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      required
+                      min={MIN_REMINDER_MINUTES}
+                      max={MAX_REMINDER_MINUTES}
+                      step={1}
+                      value={apptReminderInput}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setApptReminderInput(raw);
+                        const check = validateReminderMinutesInput(raw);
+                        setApptReminderError(check.isValid ? null : check.error || null);
+                      }}
+                      placeholder="مثال: 30 أو 75"
+                      className={`w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border text-xs font-mono font-bold ${
+                        apptReminderError
+                          ? 'border-rose-500 text-rose-600'
+                          : 'border-slate-200 dark:border-slate-700'
+                      }`}
+                    />
+                    <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                      دقيقة
+                    </span>
+                  </div>
+                  {apptReminderError ? (
+                    <div className="text-[10px] font-semibold text-rose-600 mt-1">
+                      {apptReminderError}
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-slate-500 mt-1">
+                      عدد صحيح موجب من {MIN_REMINDER_MINUTES} إلى {MAX_REMINDER_MINUTES} دقيقة
+                    </div>
+                  )}
                 </div>
 
                 <div>

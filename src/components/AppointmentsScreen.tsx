@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   CalendarClock,
   Plus,
@@ -10,20 +10,23 @@ import {
   MapPin,
   Building2,
   Clock,
-  User,
   X,
-  ExternalLink,
   ClipboardCheck,
   Volume2,
+  AlertCircle,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { Appointment } from '../types/rasd';
 import {
   evaluateAppointmentStatus,
-  formatAdenDateTimeDisplay,
   getMinutesUntilAden,
   getAdenTodayString,
   getAdenTimeString,
+  MIN_REMINDER_MINUTES,
+  MAX_REMINDER_MINUTES,
+  sanitizeReminderMinutes,
+  validateReminderMinutesInput,
+  buildAppointmentNotificationPayload,
 } from '../utils/dateUtils';
 import { pushService } from '../services/pushService';
 import { alertSound } from '../services/alertSound';
@@ -43,11 +46,16 @@ export const AppointmentsScreen: React.FC = () => {
     setActiveScreen,
     setSelectedTaxpayerId,
     setSelectedPropertyId,
+    selectedAppointmentId,
+    setSelectedAppointmentId,
     showToast,
   } = useRasd();
 
   const [tab, setTab] = useState<'today' | 'upcoming' | 'overdue' | 'completed' | 'history'>('today');
   const [showSoundSettings, setShowSoundSettings] = useState(false);
+  const [defaultReminderMins, setDefaultReminderMins] = useState<number>(() =>
+    alertSound.getDefaultReminderMinutes()
+  );
 
   // Create Modal State
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -56,7 +64,10 @@ export const AppointmentsScreen: React.FC = () => {
   const [scheduledDate, setScheduledDate] = useState(() => getAdenTodayString());
   const [scheduledTime, setScheduledTime] = useState(() => getAdenTimeString());
   const [durationMinutes, setDurationMinutes] = useState(30);
-  const [reminderMinutesBefore, setReminderMinutesBefore] = useState(15);
+  const [reminderMinutesInput, setReminderMinutesInput] = useState<string>(() =>
+    String(alertSound.getDefaultReminderMinutes())
+  );
+  const [reminderError, setReminderError] = useState<string | null>(null);
   const [assignedOfficerId, setAssignedOfficerId] = useState('');
   const [locationText, setLocationText] = useState('');
   const [notes, setNotes] = useState('');
@@ -75,6 +86,50 @@ export const AppointmentsScreen: React.FC = () => {
 
   const todayStr = useMemo(() => getAdenTodayString(), []);
 
+  useEffect(() => {
+    return alertSound.subscribe((updated) => {
+      setDefaultReminderMins(updated.defaultReminderMinutes);
+    });
+  }, []);
+
+  // Automatically focus the correct tab and scroll when deep-linked from a notification
+  const focusedAppointment = useMemo(
+    () => appointments.find((a) => a.id === selectedAppointmentId) || null,
+    [appointments, selectedAppointmentId]
+  );
+
+  useEffect(() => {
+    if (!focusedAppointment) return;
+    const remMins = sanitizeReminderMinutes(
+      focusedAppointment.reminderMinutesBefore ?? defaultReminderMins,
+      defaultReminderMins
+    );
+    const dyn = evaluateAppointmentStatus(
+      focusedAppointment.status,
+      focusedAppointment.scheduledDate,
+      focusedAppointment.scheduledTime,
+      remMins
+    );
+
+    if (focusedAppointment.status === 'completed' || focusedAppointment.status === 'cancelled') {
+      setTab('completed');
+    } else if (dyn === 'due' || dyn === 'missed' || focusedAppointment.scheduledDate < todayStr) {
+      setTab('overdue');
+    } else if (focusedAppointment.scheduledDate === todayStr) {
+      setTab('today');
+    } else {
+      setTab('upcoming');
+    }
+
+    const timer = setTimeout(() => {
+      const el = document.getElementById(`rasd-appt-card-${focusedAppointment.id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [focusedAppointment, defaultReminderMins, todayStr]);
+
   // Conflict Detection
   const conflictingAppointments = useMemo(() => {
     if (!scheduledDate) return [];
@@ -89,13 +144,17 @@ export const AppointmentsScreen: React.FC = () => {
   const filteredList = useMemo(() => {
     return appointments
       .map((a) => {
+        const remMins = sanitizeReminderMinutes(
+          a.reminderMinutesBefore ?? defaultReminderMins,
+          defaultReminderMins
+        );
         const dynamicState = evaluateAppointmentStatus(
           a.status,
           a.scheduledDate,
           a.scheduledTime,
-          a.reminderMinutesBefore || 15
+          remMins
         );
-        return { ...a, dynamicState };
+        return { ...a, dynamicState, resolvedReminderMinutes: remMins };
       })
       .filter((a) => {
         if (tab === 'today') {
@@ -118,19 +177,21 @@ export const AppointmentsScreen: React.FC = () => {
         return true;
       })
       .sort((a, b) => `${a.scheduledDate} ${a.scheduledTime}`.localeCompare(`${b.scheduledDate} ${b.scheduledTime}`));
-  }, [appointments, tab, todayStr]);
+  }, [appointments, tab, todayStr, defaultReminderMins]);
 
   const openCreateModal = () => {
     if (properties.length === 0 && taxpayers.length === 0) {
       showToast('يرجى إضافة مكلف أو عقار أولًا لربط الموعد به.', 'warning');
       return;
     }
+    const savedMins = alertSound.getDefaultReminderMinutes();
     setTitle('');
     setPropertyId(properties[0]?.id || '');
     setScheduledDate(todayStr);
     setScheduledTime('10:00');
     setDurationMinutes(30);
-    setReminderMinutesBefore(15);
+    setReminderMinutesInput(String(savedMins));
+    setReminderError(null);
     setAssignedOfficerId('');
     setLocationText(properties[0]?.address || '');
     setNotes('');
@@ -156,9 +217,20 @@ export const AppointmentsScreen: React.FC = () => {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
+
+    const validation = validateReminderMinutesInput(reminderMinutesInput);
+    if (!validation.isValid) {
+      setReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
+      showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
+      return;
+    }
+
     if (conflictingAppointments.length > 0 && !ignoreConflict) {
       return;
     }
+
+    // Persist the user's chosen reminder minutes as their default preference
+    alertSound.setDefaultReminderMinutes(validation.minutes);
 
     const prop = properties.find((p) => p.id === propertyId);
     const tp = taxpayers.find((t) => t.id === prop?.taxpayerId) || taxpayers[0];
@@ -176,7 +248,7 @@ export const AppointmentsScreen: React.FC = () => {
         scheduledTime,
         locationText: locationText || prop?.address || '',
         status: 'upcoming',
-        reminderMinutesBefore,
+        reminderMinutesBefore: validation.minutes,
         durationMinutes,
         assignedOfficerId: assignedOfficerId || undefined,
         assignedOfficerName: assignedMem?.displayName || undefined,
@@ -285,6 +357,65 @@ export const AppointmentsScreen: React.FC = () => {
         </div>
       )}
 
+      {/* Deep-linked / Focused Appointment Highlight Card */}
+      {focusedAppointment && (
+        <div className="p-4 sm:p-5 rounded-3xl bg-gradient-to-l from-[#0B192C] via-[#132A46] to-[#0B4F6C] text-white border border-teal-400/40 shadow-md space-y-3 animate-in fade-in duration-200">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-teal-400/20 border border-teal-300/30 text-[11px] font-bold text-teal-200">
+                <Bell className="w-3.5 h-3.5" />
+                <span>الموعد المفتوح من الإشعار</span>
+              </div>
+              <h2 className="text-base font-extrabold font-display">
+                {focusedAppointment.title}
+              </h2>
+              <p className="text-xs text-sky-100 leading-relaxed">
+                {
+                  buildAppointmentNotificationPayload({
+                    id: focusedAppointment.id,
+                    title: focusedAppointment.title,
+                    taxpayerName: focusedAppointment.taxpayerName,
+                    propertyTitle: focusedAppointment.propertyTitle,
+                    scheduledDate: focusedAppointment.scheduledDate,
+                    scheduledTime: focusedAppointment.scheduledTime,
+                  }).body
+                }
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedAppointmentId(null)}
+              className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white cursor-pointer shrink-0"
+              title="إغلاق بطاقة التركيز"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-white/15">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedTaxpayerId(focusedAppointment.taxpayerId);
+                setSelectedPropertyId(focusedAppointment.propertyId);
+                setActiveScreen('taxpayers');
+              }}
+              className="min-h-[36px] px-3.5 rounded-xl bg-[#0D9488] hover:bg-teal-600 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>فتح ملف المكلف والعقار ({focusedAppointment.taxpayerName})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStartLinkedVisit(focusedAppointment)}
+              className="min-h-[36px] px-3.5 rounded-xl bg-white/15 hover:bg-white/25 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            >
+              <ClipboardCheck className="w-3.5 h-3.5" />
+              <span>توثيق زيارة للموعد</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Segmented Filter Tabs */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 p-1.5 bg-slate-200/75 dark:bg-[#0D1829] rounded-2xl border border-slate-200/60 dark:border-slate-800">
         {[
@@ -355,12 +486,16 @@ export const AppointmentsScreen: React.FC = () => {
             const diffMin = getMinutesUntilAden(appt.scheduledDate, appt.scheduledTime);
             const isDue = appt.dynamicState === 'due';
             const isOverdue = diffMin < 0 && appt.status !== 'completed' && appt.status !== 'cancelled';
+            const isFocused = selectedAppointmentId === appt.id;
 
             return (
               <div
+                id={`rasd-appt-card-${appt.id}`}
                 key={appt.id}
                 className={`bg-white dark:bg-[#0D1829] border rounded-3xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs transition-all ${
-                  isDue
+                  isFocused
+                    ? 'border-[#0284C7] dark:border-sky-400 ring-2 ring-[#0284C7]/30 bg-sky-50/30 dark:bg-sky-950/25'
+                    : isDue
                     ? 'border-amber-400 dark:border-amber-600 bg-amber-50/20'
                     : isOverdue
                     ? 'border-rose-300 dark:border-rose-800/80 bg-rose-50/20'
@@ -414,7 +549,7 @@ export const AppointmentsScreen: React.FC = () => {
                         </span>
                       )}
                       <span>·</span>
-                      <span>تنبيه قبل {appt.reminderMinutesBefore || 15} دقيقة</span>
+                      <span>التنبيه قبل الموعد بـ {appt.resolvedReminderMinutes} دقيقة</span>
                       {appt.durationMinutes && (
                         <>
                           <span>·</span>
@@ -586,21 +721,51 @@ export const AppointmentsScreen: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  <label
+                    htmlFor="rasd-create-appt-reminder-mins"
+                    className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1"
+                  >
                     التنبيه قبل الموعد بـ
                   </label>
-                  <select
-                    value={reminderMinutesBefore}
-                    onChange={(e) => setReminderMinutesBefore(Number(e.target.value))}
-                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                  >
-                    <option value={5}>5 دقائق</option>
-                    <option value={15}>15 دقيقة (موصى به)</option>
-                    <option value={30}>30 دقيقة</option>
-                    <option value={60}>ساعة واحدة</option>
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <input
+                      id="rasd-create-appt-reminder-mins"
+                      type="number"
+                      inputMode="numeric"
+                      required
+                      min={MIN_REMINDER_MINUTES}
+                      max={MAX_REMINDER_MINUTES}
+                      step={1}
+                      value={reminderMinutesInput}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        setReminderMinutesInput(raw);
+                        const check = validateReminderMinutesInput(raw);
+                        setReminderError(check.isValid ? null : check.error || null);
+                      }}
+                      placeholder="مثال: 30 أو 75"
+                      className={`w-full min-h-[42px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
+                        reminderError
+                          ? 'border-rose-500 text-rose-600 dark:text-rose-400'
+                          : 'border-slate-200 dark:border-slate-700 focus:border-[#0284C7]'
+                      }`}
+                    />
+                    <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                      دقيقة
+                    </span>
+                  </div>
+                  {reminderError ? (
+                    <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 mt-1">
+                      <AlertCircle className="w-3 h-3 shrink-0" />
+                      <span>{reminderError}</span>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-slate-500 mt-1">
+                      أي عدد صحيح موجب (من {MIN_REMINDER_MINUTES} إلى {MAX_REMINDER_MINUTES} دقيقة)
+                    </div>
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">

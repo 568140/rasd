@@ -42,7 +42,8 @@ import { NotificationCenterModal } from './components/NotificationCenterModal';
 import { ThemeSelectorModal } from './components/ThemeSelectorModal';
 import { TempVapidGenerator } from './components/TempVapidGenerator';
 import { themeEngine } from './services/themeEngine';
-import { evaluateAppointmentStatus } from './utils/dateUtils';
+import { alertSound } from './services/alertSound';
+import { evaluateAppointmentStatus, sanitizeReminderMinutes } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { ScreenId } from './types/rasd';
 
@@ -85,6 +86,7 @@ const RasdShell: React.FC = () => {
     setSelectedPropertyId,
     selectedTaxpayerId,
     setSelectedTaxpayerId,
+    setSelectedAppointmentId,
     appointments,
     notifications,
     darkMode,
@@ -96,6 +98,9 @@ const RasdShell: React.FC = () => {
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = React.useState(false);
+  const [defaultReminderMins, setDefaultReminderMins] = React.useState<number>(() =>
+    alertSound.getDefaultReminderMinutes()
+  );
   const [isVapidToolOpen, setIsVapidToolOpen] = React.useState(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -106,16 +111,135 @@ const RasdShell: React.FC = () => {
 
   React.useEffect(() => {
     themeEngine.applyToDOM();
+    return alertSound.subscribe((updated) => {
+      setDefaultReminderMins(updated.defaultReminderMinutes);
+    });
   }, []);
+
+  // Deep-link handling for Notification clicks (URL query params + Service Worker postMessage + local Notification click)
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const applyDeepLink = (payload: {
+      screen?: string | null;
+      appointmentId?: string | null;
+      taxpayerId?: string | null;
+      propertyId?: string | null;
+      url?: string | null;
+    }) => {
+      let screen = payload.screen;
+      let appointmentId = payload.appointmentId;
+      let taxpayerId = payload.taxpayerId;
+      let propertyId = payload.propertyId;
+
+      if (payload.url) {
+        try {
+          const parsedUrl = new URL(payload.url, window.location.origin);
+          screen = screen || parsedUrl.searchParams.get('screen');
+          appointmentId =
+            appointmentId ||
+            parsedUrl.searchParams.get('appointmentId') ||
+            parsedUrl.searchParams.get('id');
+          taxpayerId = taxpayerId || parsedUrl.searchParams.get('taxpayerId');
+          propertyId = propertyId || parsedUrl.searchParams.get('propertyId');
+        } catch {
+          // ignore invalid URL
+        }
+      }
+
+      if (appointmentId) {
+        setSelectedAppointmentId(appointmentId);
+        setActiveScreen('appointments');
+        return;
+      }
+
+      if (taxpayerId && taxpayerId !== 'general_tp') {
+        setSelectedTaxpayerId(taxpayerId);
+        if (propertyId && propertyId !== 'general_prop') {
+          setSelectedPropertyId(propertyId);
+        }
+        setActiveScreen('taxpayers');
+        return;
+      }
+
+      if (screen && screen in SCREEN_TITLES) {
+        setActiveScreen(screen as ScreenId);
+      }
+    };
+
+    // 1. Check initial URL query parameters on load
+    const params = new URLSearchParams(window.location.search);
+    const urlScreen = params.get('screen');
+    const urlApptId = params.get('appointmentId') || params.get('id');
+    const urlTpId = params.get('taxpayerId');
+    const urlPropId = params.get('propertyId');
+
+    if (urlScreen || urlApptId || urlTpId) {
+      applyDeepLink({
+        screen: urlScreen,
+        appointmentId: urlApptId,
+        taxpayerId: urlTpId,
+        propertyId: urlPropId,
+      });
+      // Clean URL query params without reloading
+      if (!params.get('vapid')) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+
+    // 2. Listen for Service Worker RASD_NOTIFICATION_CLICK message
+    const handleSwMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'RASD_NOTIFICATION_CLICK' && msg.data) {
+        applyDeepLink({
+          url: msg.data.url,
+          appointmentId: msg.data.appointmentId,
+          taxpayerId: msg.data.taxpayerId,
+          propertyId: msg.data.propertyId,
+        });
+      }
+    };
+
+    // 3. Listen for local Notification click event
+    const handleLocalNotifClick = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      if (detail && typeof detail === 'object') {
+        applyDeepLink({
+          url: detail.url,
+          appointmentId: detail.appointmentId,
+          taxpayerId: detail.taxpayerId,
+          propertyId: detail.propertyId,
+        });
+      }
+    };
+
+    navigator.serviceWorker?.addEventListener('message', handleSwMessage);
+    window.addEventListener('rasd:notification-click', handleLocalNotifClick);
+
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleSwMessage);
+      window.removeEventListener('rasd:notification-click', handleLocalNotifClick);
+    };
+  }, [setActiveScreen, setSelectedAppointmentId, setSelectedPropertyId, setSelectedTaxpayerId]);
 
   const dueCount = React.useMemo(() => {
     return (
       appointments.filter((a) => {
-        const s = evaluateAppointmentStatus(a.status, a.scheduledDate, a.scheduledTime, 15);
+        const remMins = sanitizeReminderMinutes(
+          a.reminderMinutesBefore ?? defaultReminderMins,
+          defaultReminderMins
+        );
+        const s = evaluateAppointmentStatus(
+          a.status,
+          a.scheduledDate,
+          a.scheduledTime,
+          remMins
+        );
         return s === 'due';
       }).length + notifications.filter((n) => !n.isRead).length
     );
-  }, [appointments, notifications]);
+  }, [appointments, notifications, defaultReminderMins]);
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 

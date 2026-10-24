@@ -6,6 +6,11 @@
  * 3. Optional user-uploaded custom audio file stored locally in localStorage
  */
 
+import {
+  DEFAULT_REMINDER_MINUTES,
+  sanitizeReminderMinutes,
+} from '../utils/dateUtils';
+
 export type SoundToneId =
   | 'rasd_chime'
   | 'crystal_bell'
@@ -40,11 +45,25 @@ export interface AlertSoundSettings {
   volume: number; // 0.1 to 1.0
   vibrate: boolean;
   repeatUrgentAlarm: boolean;
+  defaultReminderMinutes: number; // Manual numeric lead time in minutes (1..1440)
   customAudioDataUrl?: string;
   customAudioName?: string;
 }
 
+export interface SystemNotificationOptions {
+  tag?: string;
+  url?: string;
+  appointmentId?: string;
+  taxpayerId?: string;
+  propertyId?: string;
+  isOverdue?: boolean;
+  renotify?: boolean;
+  requireInteraction?: boolean;
+  data?: Record<string, unknown>;
+}
+
 const STORAGE_KEY = 'rasd_alert_sound_settings_v1';
+const USER_REMINDER_PREFIX = 'rasd_user_reminder_mins_';
 
 export const BUILTIN_SOUND_TONES: SoundToneDefinition[] = [
   {
@@ -131,6 +150,7 @@ const DEFAULT_SETTINGS: AlertSoundSettings = {
   volume: 0.85,
   vibrate: true,
   repeatUrgentAlarm: true,
+  defaultReminderMinutes: DEFAULT_REMINDER_MINUTES,
 };
 
 /**
@@ -226,10 +246,12 @@ class AlertSoundService {
   private settings: AlertSoundSettings = DEFAULT_SETTINGS;
   private listeners: Set<(settings: AlertSoundSettings) => void> = new Set();
   private unlocked = false;
+  private activeUserId: string | null = null;
 
   constructor() {
     this.loadSettings();
     this.setupAutoUnlock();
+    this.setupServiceWorkerSoundBridge();
   }
 
   private loadSettings() {
@@ -237,11 +259,16 @@ class AlertSoundService {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<AlertSoundSettings>;
+        const parsed = JSON.parse(raw) as Partial<AlertSoundSettings> & { reminderMinutesBefore?: number };
+        const migratedMinutes = sanitizeReminderMinutes(
+          parsed.defaultReminderMinutes ?? parsed.reminderMinutesBefore,
+          DEFAULT_REMINDER_MINUTES
+        );
         this.settings = {
           ...DEFAULT_SETTINGS,
           ...parsed,
           volume: typeof parsed.volume === 'number' ? Math.max(0.05, Math.min(1, parsed.volume)) : DEFAULT_SETTINGS.volume,
+          defaultReminderMinutes: migratedMinutes,
         };
       }
     } catch {
@@ -253,6 +280,12 @@ class AlertSoundService {
     if (typeof window === 'undefined') return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
+      if (this.activeUserId) {
+        localStorage.setItem(
+          `${USER_REMINDER_PREFIX}${this.activeUserId}`,
+          String(this.settings.defaultReminderMinutes)
+        );
+      }
     } catch (e) {
       console.warn('Could not persist sound settings in localStorage:', e);
     }
@@ -263,10 +296,60 @@ class AlertSoundService {
     return { ...this.settings };
   }
 
+  public getDefaultReminderMinutes(): number {
+    return sanitizeReminderMinutes(this.settings.defaultReminderMinutes, DEFAULT_REMINDER_MINUTES);
+  }
+
+  public setDefaultReminderMinutes(minutes: number, userId?: string): number {
+    const clean = sanitizeReminderMinutes(minutes, this.getDefaultReminderMinutes());
+    if (userId) {
+      this.activeUserId = userId;
+    }
+    this.updateSettings({ defaultReminderMinutes: clean });
+    return clean;
+  }
+
+  /**
+   * Restores or syncs user-specific reminder preference upon login so it persists across sessions.
+   */
+  public syncUserReminderPreference(userId: string | null | undefined) {
+    if (typeof window === 'undefined' || !userId) {
+      this.activeUserId = null;
+      return;
+    }
+    this.activeUserId = userId;
+    try {
+      const userStored = localStorage.getItem(`${USER_REMINDER_PREFIX}${userId}`);
+      if (userStored) {
+        const clean = sanitizeReminderMinutes(userStored, this.settings.defaultReminderMinutes);
+        if (clean !== this.settings.defaultReminderMinutes) {
+          this.settings = {
+            ...this.settings,
+            defaultReminderMinutes: clean,
+          };
+          this.saveSettings();
+        }
+      } else {
+        localStorage.setItem(
+          `${USER_REMINDER_PREFIX}${userId}`,
+          String(this.settings.defaultReminderMinutes)
+        );
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   public updateSettings(partial: Partial<AlertSoundSettings>): AlertSoundSettings {
+    const nextReminder =
+      partial.defaultReminderMinutes !== undefined
+        ? sanitizeReminderMinutes(partial.defaultReminderMinutes, this.settings.defaultReminderMinutes)
+        : this.settings.defaultReminderMinutes;
+
     this.settings = {
       ...this.settings,
       ...partial,
+      defaultReminderMinutes: nextReminder,
     };
     this.saveSettings();
     return this.getSettings();
@@ -277,6 +360,25 @@ class AlertSoundService {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  /**
+   * Listens for Service Worker push messages so the user's chosen sound plays when a push notification arrives.
+   */
+  private setupServiceWorkerSoundBridge() {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'RASD_PUSH_RECEIVED') {
+        const isOverdue = Boolean(msg.payload?.data?.isOverdue || msg.payload?.isOverdue);
+        if (isOverdue) {
+          this.playOverdueWarning();
+        } else {
+          this.playAppointmentChime();
+        }
+      }
+    });
   }
 
   /**
@@ -438,9 +540,40 @@ class AlertSoundService {
   /**
    * Triggers a local OS / Service Worker notification that works 100% offline when the app is open or backgrounded.
    */
-  public async triggerOfflineSystemNotification(title: string, body: string, tag = 'rasd-local-alert') {
+  public async triggerOfflineSystemNotification(
+    title: string,
+    body: string,
+    tagOrOptions?: string | SystemNotificationOptions
+  ) {
     if (typeof window === 'undefined' || !('Notification' in window)) return;
     if (Notification.permission !== 'granted') return;
+
+    const opts: SystemNotificationOptions =
+      typeof tagOrOptions === 'string'
+        ? { tag: tagOrOptions }
+        : tagOrOptions || {};
+
+    const tag = opts.tag || 'rasd-local-alert';
+    const targetUrl =
+      opts.url ||
+      (opts.appointmentId
+        ? `/?screen=appointments&appointmentId=${encodeURIComponent(opts.appointmentId)}`
+        : '/?screen=appointments');
+
+    const notificationData = {
+      url: targetUrl,
+      appointmentId: opts.appointmentId,
+      taxpayerId: opts.taxpayerId,
+      propertyId: opts.propertyId,
+      isOverdue: Boolean(opts.isOverdue),
+      ...(opts.data || {}),
+    };
+
+    const vibratePattern = this.settings.vibrate
+      ? opts.isOverdue
+        ? [240, 100, 240, 100, 320]
+        : [180, 90, 180]
+      : undefined;
 
     try {
       if ('serviceWorker' in navigator) {
@@ -448,22 +581,43 @@ class AlertSoundService {
         if (reg && 'showNotification' in reg) {
           await reg.showNotification(title, {
             body,
+            dir: 'rtl',
+            lang: 'ar',
             icon: '/pwa-192x192.png',
             badge: '/icon.svg',
             tag,
-            renotify: true,
-            vibrate: [200, 100, 200, 100, 250],
-            requireInteraction: true,
-            data: { url: '/?screen=appointments' },
+            renotify: opts.renotify ?? false,
+            vibrate: vibratePattern,
+            requireInteraction: opts.requireInteraction ?? true,
+            data: notificationData,
+            actions: [
+              { action: 'open', title: 'فتح الموعد والسجل' },
+              { action: 'dismiss', title: 'إغلاق' },
+            ],
           } as NotificationOptions);
           return;
         }
       }
-      new Notification(title, {
+      const n = new Notification(title, {
         body,
+        dir: 'rtl',
+        lang: 'ar',
         icon: '/pwa-192x192.png',
+        badge: '/icon.svg',
         tag,
+        data: notificationData,
       });
+      n.onclick = () => {
+        try {
+          window.focus();
+          window.dispatchEvent(
+            new CustomEvent('rasd:notification-click', { detail: notificationData })
+          );
+        } catch {
+          // ignore
+        }
+        n.close();
+      };
     } catch {
       // Ignore if notification creation fails in restricted webviews
     }

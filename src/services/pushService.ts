@@ -4,6 +4,10 @@
  */
 
 import { alertSound } from './alertSound';
+import {
+  AppointmentNotificationInput,
+  buildAppointmentNotificationPayload,
+} from '../utils/dateUtils';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -185,9 +189,83 @@ class PushService {
 
     // Trigger direct Service Worker / System Notification if serverless push did not deliver
     await alertSound.triggerOfflineSystemNotification(
-      'رَصْد — اختبار التنبيهات المباشرة',
-      'تم تفعيل إشعارات النظام والصوت بنجاح على هذا الجهاز.'
+      'تنبيه موعد مستحق — رَصْد (اختبار)',
+      'تبقّى 30 دقيقة على موعد المكلف التجريبي بشأن «معاينة عقارية ومتابعة التزام». نظام التنبيهات والصوت يعمل بنجاح.',
+      {
+        tag: 'rasd-push-test',
+        url: '/?screen=appointments',
+        renotify: false,
+      }
     );
+    return true;
+  }
+
+  /**
+   * Dispatches a structured appointment alert via Web Push (with active PushSubscription)
+   * and falls back seamlessly to local Service Worker notification so only one clean notification appears.
+   */
+  public async sendAppointmentAlert(
+    appt: AppointmentNotificationInput,
+    minutesRemaining?: number,
+    workspaceId?: string
+  ): Promise<boolean> {
+    const formatted = buildAppointmentNotificationPayload(appt, minutesRemaining);
+    const idempotencyKey = `alert_${appt.id}_${appt.scheduledDate || ''}_${appt.scheduledTime}_${formatted.isOverdue ? 'overdue' : 'upcoming'}`;
+
+    try {
+      const reg =
+        this.registration ||
+        (await navigator.serviceWorker?.getRegistration('/sw.js')) ||
+        (await navigator.serviceWorker?.getRegistration()) ||
+        null;
+      if (reg) this.registration = reg;
+      const sub = reg && 'pushManager' in reg ? await reg.pushManager.getSubscription() : null;
+
+      if (sub) {
+        const res = await fetch('/api/push/send-alert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subscription: sub,
+            appointmentId: appt.id,
+            title: appt.title,
+            notificationTitle: formatted.title,
+            notificationBody: formatted.body,
+            taxpayerName: appt.taxpayerName,
+            taxpayerId: appt.taxpayerId,
+            propertyId: appt.propertyId,
+            scheduledDate: appt.scheduledDate,
+            scheduledTime: appt.scheduledTime,
+            propertyTitle: appt.propertyTitle,
+            minutesRemaining: formatted.minutesRemaining,
+            isOverdue: formatted.isOverdue,
+            tag: formatted.tag,
+            idempotencyKey,
+            workspaceId: workspaceId || 'default',
+          }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data?.sentCount > 0 || data?.skippedDuplicate) {
+            return true;
+          }
+        }
+      }
+    } catch {
+      // Fall back to local Service Worker / System Notification below
+    }
+
+    await alertSound.triggerOfflineSystemNotification(formatted.title, formatted.body, {
+      tag: formatted.tag,
+      url: formatted.url,
+      appointmentId: appt.id,
+      taxpayerId: appt.taxpayerId,
+      propertyId: appt.propertyId,
+      isOverdue: formatted.isOverdue,
+      renotify: formatted.renotify,
+      data: formatted.data,
+    });
     return true;
   }
 }

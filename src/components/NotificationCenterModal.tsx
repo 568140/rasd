@@ -1,27 +1,25 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Bell,
   X,
-  CalendarClock,
-  MapPin,
   CheckCircle2,
   Clock,
-  ArrowRight,
-  ShieldAlert,
   Volume2,
   Smartphone,
   ExternalLink,
   RotateCcw,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { Appointment, NotificationItem } from '../types/rasd';
+import { Appointment } from '../types/rasd';
 import {
   evaluateAppointmentStatus,
-  formatAdenDateTimeDisplay,
   getMinutesUntilAden,
   getAdenTodayString,
+  sanitizeReminderMinutes,
+  buildAppointmentNotificationPayload,
 } from '../utils/dateUtils';
 import { pushService } from '../services/pushService';
+import { alertSound } from '../services/alertSound';
 import { SoundSettingsPanel } from './SoundSettingsPanel';
 
 interface NotificationCenterModalProps {
@@ -40,22 +38,41 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     appointments,
     markNotificationRead,
     setActiveScreen,
+    setSelectedAppointmentId,
     postponeAppointment,
     showToast,
   } = useRasd();
 
   const [activeTab, setActiveTab] = useState<'all' | 'due' | 'appointments' | 'sounds'>('all');
   const [enablingPush, setEnablingPush] = useState(false);
+  const [defaultReminderMins, setDefaultReminderMins] = useState<number>(() =>
+    alertSound.getDefaultReminderMinutes()
+  );
+
+  useEffect(() => {
+    return alertSound.subscribe((updated) => {
+      setDefaultReminderMins(updated.defaultReminderMinutes);
+    });
+  }, []);
 
   const todayStr = useMemo(() => getAdenTodayString(), []);
 
-  // Compute live due appointments
+  // Compute live due appointments using each appointment's reminderMinutesBefore or the user's saved defaultReminderMinutes
   const dueAppointments = useMemo(() => {
     return appointments.filter((a) => {
-      const state = evaluateAppointmentStatus(a.status, a.scheduledDate, a.scheduledTime, 30);
-      return state === 'due' || (a.scheduledDate === todayStr && a.status === 'upcoming');
+      const reminderMins = sanitizeReminderMinutes(
+        a.reminderMinutesBefore ?? defaultReminderMins,
+        defaultReminderMins
+      );
+      const state = evaluateAppointmentStatus(
+        a.status,
+        a.scheduledDate,
+        a.scheduledTime,
+        reminderMins
+      );
+      return state === 'due';
     });
-  }, [appointments, todayStr]);
+  }, [appointments, defaultReminderMins]);
 
   const filteredNotifications = useMemo(() => {
     if (activeTab === 'due') {
@@ -87,6 +104,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
 
   const handleOpenAppointment = (apptId: string) => {
     onClose();
+    setSelectedAppointmentId(apptId);
     if (onSelectAppointment) {
       onSelectAppointment(apptId);
     }
@@ -242,45 +260,76 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
               </div>
               {dueAppointments.map((appt) => {
                 const diffMin = getMinutesUntilAden(appt.scheduledDate, appt.scheduledTime);
-                const isOverdue = diffMin < 0;
+                const formatted = buildAppointmentNotificationPayload(
+                  {
+                    id: appt.id,
+                    title: appt.title,
+                    taxpayerName: appt.taxpayerName,
+                    taxpayerId: appt.taxpayerId,
+                    propertyTitle: appt.propertyTitle,
+                    propertyId: appt.propertyId,
+                    scheduledDate: appt.scheduledDate,
+                    scheduledTime: appt.scheduledTime,
+                    locationText: appt.locationText,
+                  },
+                  diffMin
+                );
+                const isOverdue = formatted.isOverdue;
                 return (
                   <div
                     key={appt.id}
-                    className="p-3.5 rounded-2xl bg-rose-50/80 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/50 space-y-2.5 transition-all"
+                    className={`p-3.5 rounded-2xl border space-y-2.5 transition-all ${
+                      isOverdue
+                        ? 'bg-rose-50/80 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50'
+                        : 'bg-amber-50/80 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50'
+                    }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <div className="text-xs font-bold text-rose-900 dark:text-rose-200">
-                          {appt.title}
+                        <div
+                          className={`text-xs font-extrabold ${
+                            isOverdue
+                              ? 'text-rose-900 dark:text-rose-200'
+                              : 'text-amber-900 dark:text-amber-200'
+                          }`}
+                        >
+                          {formatted.title}
                         </div>
-                        <div className="text-[11px] text-rose-700 dark:text-rose-400 mt-0.5">
-                          {appt.propertyTitle} — {appt.taxpayerName}
+                        <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 mt-0.5">
+                          المكلف: {appt.taxpayerName} · {appt.title}
                         </div>
                       </div>
-                      <span className="px-2 py-0.5 rounded-lg text-[10px] font-bold bg-rose-200 dark:bg-rose-900 text-rose-900 dark:text-rose-100 whitespace-nowrap">
-                        {isOverdue ? `متأخر ${Math.abs(diffMin)} دقيقة` : `متبقي ${diffMin} دقيقة`}
+                      <span
+                        className={`px-2 py-0.5 rounded-lg text-[10px] font-bold whitespace-nowrap ${
+                          isOverdue
+                            ? 'bg-rose-200 dark:bg-rose-900 text-rose-900 dark:text-rose-100'
+                            : 'bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100'
+                        }`}
+                      >
+                        {isOverdue
+                          ? `متأخر ${Math.abs(diffMin)} دقيقة`
+                          : diffMin === 0
+                          ? 'مستحق الآن'
+                          : `متبقي ${diffMin} دقيقة`}
                       </span>
                     </div>
 
-                    <div className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
-                      <Clock className="w-3 h-3 text-slate-400" />
-                      <span>{appt.scheduledTime} (بتوقيت عدن)</span>
-                      {appt.locationText && (
-                        <>
-                          <span>·</span>
-                          <span className="truncate">{appt.locationText}</span>
-                        </>
-                      )}
-                    </div>
+                    <p className="text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed">
+                      {formatted.body}
+                    </p>
 
                     <div className="flex items-center gap-2 pt-1 border-t border-rose-100 dark:border-rose-900/40">
                       <button
                         type="button"
                         onClick={() => handleOpenAppointment(appt.id)}
-                        className="flex-1 min-h-[32px] px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        className={`flex-1 min-h-[32px] px-3 rounded-xl text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                          isOverdue
+                            ? 'bg-rose-600 hover:bg-rose-700'
+                            : 'bg-[#0D9488] hover:bg-teal-700'
+                        }`}
                       >
                         <ExternalLink className="w-3 h-3" />
-                        <span>فتح الموعد</span>
+                        <span>فتح الموعد والسجل</span>
                       </button>
                       <button
                         type="button"

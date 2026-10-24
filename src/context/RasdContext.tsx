@@ -55,7 +55,14 @@ import {
   WorkspaceRole,
 } from '../types/rasd';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
-import { getAdenDateString, getAdenTimeString } from '../utils/dateUtils';
+import {
+  getAdenDateString,
+  getAdenTimeString,
+  getMinutesUntilAden,
+  sanitizeReminderMinutes,
+} from '../utils/dateUtils';
+import { alertSound } from '../services/alertSound';
+import { pushService } from '../services/pushService';
 
 export function encodeMetaIntoNotes(notes: string, meta: Record<string, unknown>): string {
   const cleanNotes = (notes || '').replace(/\[META:\{.*?\}\]/g, '').trim();
@@ -96,6 +103,8 @@ interface RasdContextValue {
   setSelectedPropertyId: (id: string | null) => void;
   selectedTaxpayerId: string | null;
   setSelectedTaxpayerId: (id: string | null) => void;
+  selectedAppointmentId: string | null;
+  setSelectedAppointmentId: (id: string | null) => void;
   toasts: ToastMessage[];
   showToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
@@ -210,6 +219,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeScreen, setActiveScreen] = useState<ScreenId>('home');
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [selectedTaxpayerId, setSelectedTaxpayerId] = useState<string | null>(null);
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -457,12 +467,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       setFirebaseUser(user);
       if (user) {
+        alertSound.syncUserReminderPreference(user.uid);
         applyOptimisticSession(user);
         setAuthReady(true);
         ensureUserAndWorkspace(user).catch((e) => {
           console.error(e);
         });
       } else {
+        alertSound.syncUserReminderPreference(null);
         clearAllUserState();
         setAuthReady(true);
       }
@@ -1542,8 +1554,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const apptRef = doc(db, 'appointments', id);
 
+        const defaultUserMins = alertSound.getDefaultReminderMinutes();
+        const resolvedReminderMinutes = sanitizeReminderMinutes(
+          input.reminderMinutesBefore ?? defaultUserMins,
+          defaultUserMins
+        );
+
         const metaToStore: Record<string, unknown> = {
-          reminderMinutesBefore: input.reminderMinutesBefore || 15,
+          reminderMinutesBefore: resolvedReminderMinutes,
           linkedVisitId: input.linkedVisitId || '',
           durationMinutes: input.durationMinutes || 30,
           assignedOfficerId: input.assignedOfficerId || firebaseUser.uid,
@@ -1554,18 +1572,24 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const scheduledDateStr = sanitizeText(input.scheduledDate, 40, 8, getAdenDateString());
         const scheduledTimeStr = sanitizeText(input.scheduledTime, 20, 3, getAdenTimeString());
+        const cleanTitle = sanitizeText(input.title, 150, 2, 'موعد ميداني');
+        const cleanPropId = sanitizeText(input.propertyId || 'general_prop', 128, 1, 'general_prop');
+        const cleanPropTitle = sanitizeText(input.propertyTitle, 150, 1, 'عقار');
+        const cleanTpId = sanitizeText(input.taxpayerId || 'general_tp', 128, 1, 'general_tp');
+        const cleanTpName = sanitizeText(input.taxpayerName, 150, 1, 'مكلف');
+        const cleanLocation = sanitizeText(input.locationText, 250);
 
         await setDoc(apptRef, {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
-          title: sanitizeText(input.title, 150, 2, 'موعد ميداني'),
-          propertyId: sanitizeText(input.propertyId || 'general_prop', 128, 1, 'general_prop'),
-          propertyTitle: sanitizeText(input.propertyTitle, 150, 1, 'عقار'),
-          taxpayerId: sanitizeText(input.taxpayerId || 'general_tp', 128, 1, 'general_tp'),
-          taxpayerName: sanitizeText(input.taxpayerName, 150, 1, 'مكلف'),
+          title: cleanTitle,
+          propertyId: cleanPropId,
+          propertyTitle: cleanPropTitle,
+          taxpayerId: cleanTpId,
+          taxpayerName: cleanTpName,
           scheduledDate: scheduledDateStr,
           scheduledTime: scheduledTimeStr,
-          locationText: sanitizeText(input.locationText, 250),
+          locationText: cleanLocation,
           status: 'upcoming',
           postponeCount: 0,
           lastPostponeReason: '',
@@ -1587,9 +1611,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await setDoc(doc(db, 'notifications', notifId), {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
-          title: sanitizeText(`موعد جديد: ${input.title}`, 150, 1, 'موعد جديد'),
+          title: sanitizeText(`موعد مجدول: ${cleanTitle}`, 150, 1, 'موعد جديد'),
           message: sanitizeText(
-            `بتاريخ ${scheduledDateStr} الساعة ${scheduledTimeStr} — ${input.propertyTitle}`,
+            `المكلف: ${cleanTpName} — ${cleanPropTitle} | التاريخ: ${scheduledDateStr} الساعة ${scheduledTimeStr} (التنبيه قبل الموعد بـ ${resolvedReminderMinutes} دقيقة)`,
             500,
             1,
             'موعد مجدول'
@@ -1602,25 +1626,35 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
-        // Register background Web Push alert
-        try {
-          fetch('/api/push/send-alert', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              appointmentId: id,
-              title: input.title,
-              scheduledTime: scheduledTimeStr,
-              propertyTitle: input.propertyTitle,
-              workspaceId: workspace.id,
-            }),
-          }).catch(() => {});
-        } catch {
-          // ignore background push failure
+        // If the newly created appointment is already within its configured reminder window right now, trigger Web Push / local alert
+        const diffUntilNow = getMinutesUntilAden(scheduledDateStr, scheduledTimeStr);
+        if (diffUntilNow <= resolvedReminderMinutes && diffUntilNow >= -90) {
+          pushService
+            .sendAppointmentAlert(
+              {
+                id,
+                title: cleanTitle,
+                taxpayerName: cleanTpName,
+                taxpayerId: cleanTpId,
+                propertyTitle: cleanPropTitle,
+                propertyId: cleanPropId,
+                scheduledDate: scheduledDateStr,
+                scheduledTime: scheduledTimeStr,
+                locationText: cleanLocation,
+              },
+              diffUntilNow,
+              workspace.id
+            )
+            .catch(() => {});
         }
 
-        await writeAuditLog('create', 'appointment', id, `جدولة موعد: ${input.title} (${scheduledDateStr} ${scheduledTimeStr})`);
-        showToast('تمت جدولة الموعد وإضافة تذكير بنجاح', 'success');
+        await writeAuditLog(
+          'create',
+          'appointment',
+          id,
+          `جدولة موعد: ${cleanTitle} (${scheduledDateStr} ${scheduledTimeStr}) — تنبيه قبل ${resolvedReminderMinutes} د`
+        );
+        showToast(`تمت جدولة الموعد بنجاح (التنبيه قبل الموعد بـ ${resolvedReminderMinutes} دقيقة)`, 'success');
         return id;
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -1652,8 +1686,12 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         // 2. Update Appointment
+        const defaultUserMins = alertSound.getDefaultReminderMinutes();
         const existingMeta = {
-          reminderMinutesBefore: appointment.reminderMinutesBefore || 15,
+          reminderMinutesBefore: sanitizeReminderMinutes(
+            appointment.reminderMinutesBefore ?? defaultUserMins,
+            defaultUserMins
+          ),
           linkedVisitId: appointment.linkedVisitId || '',
           durationMinutes: appointment.durationMinutes || 30,
           assignedOfficerId: appointment.assignedOfficerId || firebaseUser.uid,
@@ -2209,6 +2247,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSelectedPropertyId,
     selectedTaxpayerId,
     setSelectedTaxpayerId,
+    selectedAppointmentId,
+    setSelectedAppointmentId,
     toasts,
     showToast,
     dismissToast,

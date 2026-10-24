@@ -555,9 +555,12 @@ async function startServer() {
     }
 
     const payload = JSON.stringify({
-      title: 'رَصْد — اختبار التنبيهات المباشرة',
-      body: 'تم استلام إشعار الفحص بنجاح. نظام التنبيهات في الخلفية يعمل بصورة مثالية.',
+      title: 'تنبيه موعد مستحق — رَصْد (اختبار)',
+      body: 'تبقّى 30 دقيقة على موعد المكلف التجريبي بشأن «معاينة عقارية ومتابعة التزام». نظام التنبيهات يعمل بصورة مثالية.',
       icon: '/pwa-192x192.png',
+      badge: '/icon.svg',
+      tag: 'rasd-push-test',
+      renotify: false,
       data: { url: '/?screen=appointments' },
     });
 
@@ -588,8 +591,17 @@ async function startServer() {
       subscription: directSub,
       appointmentId,
       title,
+      notificationTitle,
+      notificationBody,
+      taxpayerName,
+      taxpayerId,
+      propertyId,
+      scheduledDate,
       scheduledTime,
       propertyTitle,
+      minutesRemaining,
+      isOverdue: explicitOverdue,
+      tag: customTag,
       idempotencyKey,
       workspaceId,
     } = req.body || {};
@@ -604,7 +616,11 @@ async function startServer() {
       });
     }
 
-    const key = idempotencyKey || `alert_${appointmentId}_${scheduledTime}`;
+    const mins = typeof minutesRemaining === 'number' && Number.isFinite(minutesRemaining) ? Math.round(minutesRemaining) : null;
+    const isOverdue = typeof explicitOverdue === 'boolean' ? explicitOverdue : mins !== null && mins < 0;
+    const stageKey = isOverdue ? 'overdue' : 'upcoming';
+
+    const key = idempotencyKey || `alert_${appointmentId}_${scheduledDate || ''}_${scheduledTime}_${stageKey}`;
     if (sentAlertsIdempotency.has(key)) {
       res.json({ success: true, skippedDuplicate: true, key });
       return;
@@ -612,14 +628,69 @@ async function startServer() {
 
     sentAlertsIdempotency.add(key);
 
+    const clientName = (taxpayerName || '').trim() || 'المكلف المعني';
+    const transactionType = (title || '').trim() || 'متابعة التزام ميداني';
+    const propLabel = (propertyTitle || '').trim();
+    const scheduleInfo = [
+      propLabel && propLabel !== 'عقار عام' ? `العقار: ${propLabel}` : '',
+      scheduledDate ? `التاريخ: ${scheduledDate}` : '',
+      scheduledTime ? `الساعة: ${scheduledTime}` : '',
+    ]
+      .filter(Boolean)
+      .join(' — ');
+
+    let computedTitle = notificationTitle || 'اقترب موعد الالتزام — رَصْد';
+    let computedBody = notificationBody || '';
+
+    if (!computedBody) {
+      if (isOverdue) {
+        const overdueMins = mins !== null ? Math.abs(mins) : 0;
+        computedTitle = 'تأخر موعد الالتزام — يتطلب إجراءً';
+        computedBody =
+          overdueMins > 0
+            ? `تأخر موعد ${clientName} بشأن «${transactionType}» بمقدار ${overdueMins} دقيقة${
+                scheduleInfo ? ` (كان مقررًا: ${scheduleInfo})` : ''
+              }. يرجى المتابعة الفورية أو إعادة الجدولة.`
+            : `تأخر موعد ${clientName} بشأن «${transactionType}»${
+                scheduleInfo ? ` (كان مقررًا: ${scheduleInfo})` : ''
+              }. يرجى المتابعة الفورية أو إعادة الجدولة.`;
+      } else if (mins !== null && mins > 0) {
+        computedTitle = mins <= 10 ? 'تنبيه موعد مستحق قريبًا — رَصْد' : 'اقترب موعد الالتزام — رَصْد';
+        computedBody = `تبقّى ${mins} دقيقة على موعد ${clientName} بشأن «${transactionType}»${
+          scheduleInfo ? ` (${scheduleInfo})` : ''
+        }. يرجى الاستعداد لاتخاذ الإجراء اللازم.`;
+      } else {
+        computedTitle = 'تنبيه موعد مستحق الآن — رَصْد';
+        computedBody = `حان الآن موعد ${clientName} بشأن «${transactionType}»${
+          scheduleInfo ? ` (${scheduleInfo})` : ''
+        }. يرجى مباشرة الإجراء اللازم.`;
+      }
+    }
+
+    const params = new URLSearchParams();
+    params.set('screen', 'appointments');
+    if (appointmentId) params.set('appointmentId', String(appointmentId));
+    if (taxpayerId) params.set('taxpayerId', String(taxpayerId));
+    if (propertyId) params.set('propertyId', String(propertyId));
+    const deepLinkUrl = `/?${params.toString()}`;
+
+    const tag = customTag || `rasd-appt-${appointmentId || 'general'}-${stageKey}`;
+
     const payload = JSON.stringify({
-      title: title || 'تنبيه موعد ميداني مستحق — رَصْد',
-      body: `حان موعد: ${title} الساعة ${scheduledTime} (${propertyTitle || 'العقار الميداني'})`,
+      title: computedTitle,
+      body: computedBody,
       icon: '/pwa-192x192.png',
       badge: '/icon.svg',
+      tag,
+      renotify: isOverdue,
       data: {
-        url: `/?screen=appointments&id=${appointmentId}`,
+        url: deepLinkUrl,
         appointmentId,
+        taxpayerId,
+        propertyId,
+        scheduledDate,
+        scheduledTime,
+        isOverdue,
       },
     });
 
