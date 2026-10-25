@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import {
   Home,
   Building2,
@@ -26,29 +26,87 @@ import {
   User,
 } from 'lucide-react';
 import { RasdProvider, useRasd } from './context/RasdContext';
-import { AuthScreen } from './components/AuthScreen';
-import { HomeScreen } from './components/HomeScreen';
-import { PropertiesScreen } from './components/PropertiesScreen';
-import { TaxpayersScreen } from './components/TaxpayersScreen';
-import { VoiceAssistantScreen } from './components/VoiceAssistantScreen';
-import { AppointmentsScreen } from './components/AppointmentsScreen';
-import { FieldVisitsScreen } from './components/FieldVisitsScreen';
-import { MapScreen } from './components/MapScreen';
-import { FinancialsScreen } from './components/FinancialsScreen';
-import { ReportsScreen } from './components/ReportsScreen';
-import { TeamScreen } from './components/TeamScreen';
-import { AuditLogScreen } from './components/AuditLogScreen';
-import { MoreScreen } from './components/MoreScreen';
 import { ActiveAlertBanner } from './components/ActiveAlertBanner';
-import { NotificationCenterModal } from './components/NotificationCenterModal';
-import { ThemeSelectorModal } from './components/ThemeSelectorModal';
-import { TempVapidGenerator } from './components/TempVapidGenerator';
 import { themeEngine } from './services/themeEngine';
 import { alertSound } from './services/alertSound';
 import { evaluateAppointmentStatus, sanitizeReminderMinutes } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useLiveAdenClock } from './hooks/useLiveAdenClock';
 import { ScreenId } from './types/rasd';
+
+// Dynamic Code-Splitting (React.lazy) for all screens and heavy modals
+const AuthScreen = lazy(() =>
+  import('./components/AuthScreen').then((m) => ({ default: m.AuthScreen }))
+);
+const HomeScreen = lazy(() =>
+  import('./components/HomeScreen').then((m) => ({ default: m.HomeScreen }))
+);
+const PropertiesScreen = lazy(() =>
+  import('./components/PropertiesScreen').then((m) => ({ default: m.PropertiesScreen }))
+);
+const TaxpayersScreen = lazy(() =>
+  import('./components/TaxpayersScreen').then((m) => ({ default: m.TaxpayersScreen }))
+);
+const VoiceAssistantScreen = lazy(() =>
+  import('./components/VoiceAssistantScreen').then((m) => ({ default: m.VoiceAssistantScreen }))
+);
+const AppointmentsScreen = lazy(() =>
+  import('./components/AppointmentsScreen').then((m) => ({ default: m.AppointmentsScreen }))
+);
+const FieldVisitsScreen = lazy(() =>
+  import('./components/FieldVisitsScreen').then((m) => ({ default: m.FieldVisitsScreen }))
+);
+const MapScreen = lazy(() =>
+  import('./components/MapScreen').then((m) => ({ default: m.MapScreen }))
+);
+const FinancialsScreen = lazy(() =>
+  import('./components/FinancialsScreen').then((m) => ({ default: m.FinancialsScreen }))
+);
+const ReportsScreen = lazy(() =>
+  import('./components/ReportsScreen').then((m) => ({ default: m.ReportsScreen }))
+);
+const TeamScreen = lazy(() =>
+  import('./components/TeamScreen').then((m) => ({ default: m.TeamScreen }))
+);
+const AuditLogScreen = lazy(() =>
+  import('./components/AuditLogScreen').then((m) => ({ default: m.AuditLogScreen }))
+);
+const MoreScreen = lazy(() =>
+  import('./components/MoreScreen').then((m) => ({ default: m.MoreScreen }))
+);
+const NotificationCenterModal = lazy(() =>
+  import('./components/NotificationCenterModal').then((m) => ({ default: m.NotificationCenterModal }))
+);
+const ThemeSelectorModal = lazy(() =>
+  import('./components/ThemeSelectorModal').then((m) => ({ default: m.ThemeSelectorModal }))
+);
+const TempVapidGenerator = lazy(() =>
+  import('./components/TempVapidGenerator').then((m) => ({ default: m.TempVapidGenerator }))
+);
+
+// Isolated memoized clock badge so 1-second ticks only update this tiny span, not the whole app shell
+const HeaderClockBadge: React.FC = React.memo(() => {
+  const liveClock = useLiveAdenClock(1000);
+  return (
+    <span className="font-mono text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0] inline-flex items-center gap-1">
+      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+      <span>{liveClock.timeStr}</span>
+    </span>
+  );
+});
+HeaderClockBadge.displayName = 'HeaderClockBadge';
+
+// Lightweight skeleton fallback during dynamic screen chunk loading
+const ScreenFallback: React.FC = () => (
+  <div className="py-12 flex flex-col items-center justify-center gap-3 text-center" dir="rtl">
+    <div className="w-10 h-10 rounded-2xl bg-[#743B46]/10 dark:bg-[#743B46]/25 text-[#743B46] dark:text-[#E5B9C0] flex items-center justify-center">
+      <RefreshCw className="w-5 h-5 animate-spin" />
+    </div>
+    <div className="text-xs font-bold text-[#77716B] dark:text-[#ACA59C]">
+      جاري تحميل الشاشة...
+    </div>
+  </div>
+);
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
   home: 'رَصْد — المساعد الميداني',
@@ -228,7 +286,8 @@ const RasdShell: React.FC = () => {
     };
   }, [setActiveScreen, setSelectedAppointmentId, setSelectedPropertyId, setSelectedTaxpayerId]);
 
-  const liveClock = useLiveAdenClock(1000);
+  // Evaluate due badge on a 30-second cadence instead of every 1 second to avoid full-shell re-renders
+  const dueClock = useLiveAdenClock(30000);
 
   const dueCount = React.useMemo(() => {
     return (
@@ -245,12 +304,12 @@ const RasdShell: React.FC = () => {
           a.scheduledDate,
           a.scheduledTime,
           remMins,
-          liveClock.now
+          dueClock.now
         );
         return s === 'due';
       }).length + notifications.filter((n) => !n.isRead).length
     );
-  }, [appointments, notifications, defaultReminderMins, liveClock.now]);
+  }, [appointments, notifications, defaultReminderMins, dueClock.now]);
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 
@@ -302,7 +361,9 @@ const RasdShell: React.FC = () => {
             ))}
           </div>
         )}
-        <AuthScreen />
+        <Suspense fallback={<ScreenFallback />}>
+          <AuthScreen />
+        </Suspense>
       </>
     );
   }
@@ -376,10 +437,7 @@ const RasdShell: React.FC = () => {
                       </span>
                     )}
                     <span aria-hidden="true">·</span>
-                    <span className="font-mono text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0] inline-flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
-                      <span>{liveClock.timeStr}</span>
-                    </span>
+                    <HeaderClockBadge />
                   </div>
                 </div>
               </>
@@ -419,10 +477,7 @@ const RasdShell: React.FC = () => {
                       </span>
                     )}
                     <span aria-hidden="true">·</span>
-                    <span className="font-mono text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0] inline-flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
-                      <span>{liveClock.timeStr}</span>
-                    </span>
+                    <HeaderClockBadge />
                   </div>
                 </div>
               </>
@@ -591,17 +646,25 @@ const RasdShell: React.FC = () => {
       {/* Real-time In-App Due Appointment Alert Banner */}
       <ActiveAlertBanner />
 
-      {/* Notification Center Modal */}
-      <NotificationCenterModal
-        isOpen={isNotifOpen}
-        onClose={() => setIsNotifOpen(false)}
-      />
+      {/* Notification Center Modal (loaded on demand when opened) */}
+      {isNotifOpen && (
+        <Suspense fallback={null}>
+          <NotificationCenterModal
+            isOpen={isNotifOpen}
+            onClose={() => setIsNotifOpen(false)}
+          />
+        </Suspense>
+      )}
 
-      {/* Theme & Template Studio Modal */}
-      <ThemeSelectorModal
-        isOpen={isThemeModalOpen}
-        onClose={() => setIsThemeModalOpen(false)}
-      />
+      {/* Theme & Template Studio Modal (loaded on demand when opened) */}
+      {isThemeModalOpen && (
+        <Suspense fallback={null}>
+          <ThemeSelectorModal
+            isOpen={isThemeModalOpen}
+            onClose={() => setIsThemeModalOpen(false)}
+          />
+        </Suspense>
+      )}
 
       {/* Temporary Local VAPID Key Generator Modal (Primary Platform Admin Only) */}
       {isPlatformAdmin && isVapidToolOpen && (
@@ -610,10 +673,12 @@ const RasdShell: React.FC = () => {
           dir="rtl"
         >
           <div className="w-full max-w-2xl my-auto">
-            <TempVapidGenerator
-              onClose={() => setIsVapidToolOpen(false)}
-              onShowToast={showToast}
-            />
+            <Suspense fallback={<ScreenFallback />}>
+              <TempVapidGenerator
+                onClose={() => setIsVapidToolOpen(false)}
+                onShowToast={showToast}
+              />
+            </Suspense>
           </div>
         </div>
       )}
@@ -648,23 +713,25 @@ const RasdShell: React.FC = () => {
         </div>
       )}
 
-      {/* Main Mobile-First Viewport Area with Safe Area Bottom Clearance */}
+      {/* Main Mobile-First Viewport Area with Safe Area Bottom Clearance & Dynamic Screen Suspense */}
       <main className="flex-1 w-full max-w-5xl mx-auto px-3.5 sm:px-5 pt-4 pb-safe-nav">
-        {activeScreen === 'home' && <HomeScreen />}
-        {activeScreen === 'properties' && <PropertiesScreen />}
-        {activeScreen === 'taxpayers' && <TaxpayersScreen />}
-        {activeScreen === 'voice' && <VoiceAssistantScreen />}
-        {activeScreen === 'appointments' && <AppointmentsScreen />}
-        {activeScreen === 'visits' && <FieldVisitsScreen />}
-        {activeScreen === 'map' && <MapScreen />}
-        {activeScreen === 'assessments' && <FinancialsScreen initialTab="assessments" />}
-        {activeScreen === 'transactions' && <FinancialsScreen initialTab="transactions" />}
-        {activeScreen === 'reports' && <ReportsScreen />}
-        {activeScreen === 'team' && <TeamScreen />}
-        {activeScreen === 'audit' && <AuditLogScreen />}
-        {(activeScreen === 'more' || activeScreen === 'notifications' || activeScreen === 'settings') && (
-          <MoreScreen />
-        )}
+        <Suspense fallback={<ScreenFallback />}>
+          {activeScreen === 'home' && <HomeScreen />}
+          {activeScreen === 'properties' && <PropertiesScreen />}
+          {activeScreen === 'taxpayers' && <TaxpayersScreen />}
+          {activeScreen === 'voice' && <VoiceAssistantScreen />}
+          {activeScreen === 'appointments' && <AppointmentsScreen />}
+          {activeScreen === 'visits' && <FieldVisitsScreen />}
+          {activeScreen === 'map' && <MapScreen />}
+          {activeScreen === 'assessments' && <FinancialsScreen initialTab="assessments" />}
+          {activeScreen === 'transactions' && <FinancialsScreen initialTab="transactions" />}
+          {activeScreen === 'reports' && <ReportsScreen />}
+          {activeScreen === 'team' && <TeamScreen />}
+          {activeScreen === 'audit' && <AuditLogScreen />}
+          {(activeScreen === 'more' || activeScreen === 'notifications' || activeScreen === 'settings') && (
+            <MoreScreen />
+          )}
+        </Suspense>
       </main>
 
       {/* Fixed 5-Item Reference Bottom Navigation Bar */}

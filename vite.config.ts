@@ -63,6 +63,31 @@ export default defineConfig(() => {
         '@': path.resolve(import.meta.dirname || '.'),
       },
     },
+    build: {
+      target: 'es2020',
+      chunkSizeWarningLimit: 800,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('firebase') || id.includes('@firebase')) {
+                return 'vendor-firebase';
+              }
+              if (id.includes('leaflet')) {
+                return 'vendor-leaflet';
+              }
+              if (id.includes('lucide-react')) {
+                return 'vendor-icons';
+              }
+              if (id.includes('react') || id.includes('scheduler')) {
+                return 'vendor-react';
+              }
+            }
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       // HMR and WebSocket are disabled in AI Studio environment.
       hmr: false as const,

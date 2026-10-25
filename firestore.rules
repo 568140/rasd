@@ -32,7 +32,10 @@ service cloud.firestore {
     function isAdmin() {
       return isVerifiedUser() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'ahah26h@gmail.com'
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'ahah26h@gmail.com' ||
+          request.auth.token.email == 'am1075022@gmail.com'
+        ))
       );
     }
 
@@ -64,7 +67,6 @@ service cloud.firestore {
       return data.keys().hasAll(['uid', 'displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt']) &&
         data.keys().hasOnly(['uid', 'displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt']) &&
         isValidId(data.uid) &&
-        data.uid == request.auth.uid &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
         data.phone is string && data.phone.size() <= 40 &&
@@ -336,21 +338,25 @@ service cloud.firestore {
 
     // 4. Collection Match Blocks
 
-    // Collection 1: /users/{userId} (PII strictly isolated to owner or admin)
+    // Collection 1: /users/{userId} (PII strictly isolated to owner, workspace owner binding, or admin)
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isSignedIn() && (existing().uid == request.auth.uid || isAdmin());
       allow create: if isVerifiedUser() &&
         isValidId(userId) &&
-        userId == request.auth.uid &&
         isValidUser(incoming()) &&
+        incoming().uid == userId &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().updatedAt == request.time && (
+          userId == request.auth.uid ||
+          isWorkspaceOwner(incoming().activeWorkspaceId) ||
+          isAdmin()
+        );
       allow update: if isVerifiedUser() &&
         isValidId(userId) &&
         isValidUser(incoming()) && (
           isAdmin() || (
-            request.auth.uid == userId &&
+            (request.auth.uid == userId || isWorkspaceOwner(incoming().activeWorkspaceId)) &&
             incoming().uid == existing().uid &&
             (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
@@ -386,6 +392,19 @@ service cloud.firestore {
             incoming().updatedAt == request.time &&
             request.auth.uid in incoming().memberUids &&
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'ownerName', 'defaultCurrency', 'taxRatePercent', 'regionName', 'inviteCode', 'memberUids', 'memberCount', 'createdAt', 'updatedAt'])
+          ) || (
+            // Action 2: Invited member links their UID into workspace memberUids
+            incoming().ownerId == existing().ownerId &&
+            incoming().name == existing().name &&
+            incoming().ownerName == existing().ownerName &&
+            incoming().defaultCurrency == existing().defaultCurrency &&
+            incoming().taxRatePercent == existing().taxRatePercent &&
+            incoming().regionName == existing().regionName &&
+            incoming().inviteCode == existing().inviteCode &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().updatedAt == request.time &&
+            request.auth.uid in incoming().memberUids &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt'])
           )
         );
       allow delete: if isAdmin();
@@ -396,10 +415,21 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(memberId) && (
         resource == null ||
         memberId == 'ws_' + request.auth.uid + '_' + request.auth.uid ||
-        (resource != null && (request.auth.uid in existing().memberUids || existing().userId == request.auth.uid)) ||
+        (resource != null && (
+          request.auth.uid in existing().memberUids ||
+          existing().userId == request.auth.uid ||
+          existing().ownerId == request.auth.uid ||
+          existing().email == request.auth.token.email
+        )) ||
         isAdmin()
       );
-      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (
+        request.auth.uid in existing().memberUids ||
+        existing().userId == request.auth.uid ||
+        existing().ownerId == request.auth.uid ||
+        existing().email == request.auth.token.email ||
+        isAdmin()
+      );
       allow create: if isVerifiedUser() &&
         isValidId(memberId) &&
         isValidWorkspaceMember(incoming()) &&
@@ -407,22 +437,40 @@ service cloud.firestore {
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time && (
           (incoming().ownerId == request.auth.uid && incoming().userId == request.auth.uid && incoming().role == 'owner' && request.auth.uid in incoming().memberUids) ||
-          isWorkspaceOwner(incoming().workspaceId)
+          isWorkspaceOwner(incoming().workspaceId) ||
+          isAdmin() ||
+          (incoming().userId == request.auth.uid && incoming().role != 'owner' && isWorkspaceMember(incoming().workspaceId))
         );
       allow update: if isVerifiedUser() &&
         isValidId(memberId) &&
         isValidWorkspaceMember(incoming()) && (
           isAdmin() || (
             // Action 1: Owner updates member role, permissions, status, or memberUids
-            existing().ownerId == request.auth.uid &&
+            (existing().ownerId == request.auth.uid || isWorkspaceOwner(existing().workspaceId)) &&
             incoming().workspaceId == existing().workspaceId &&
             incoming().ownerId == existing().ownerId &&
             (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdAt', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdAt', 'updatedAt'])
+          ) || (
+            // Action 2: Invited member activates their own membership record
+            existing().email == request.auth.token.email &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().role == existing().role &&
+            incoming().canApproveFinancials == existing().canApproveFinancials &&
+            incoming().canDeleteRecords == existing().canDeleteRecords &&
+            incoming().userId == request.auth.uid &&
+            incoming().status == 'active' &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'displayName', 'status', 'memberUids', 'updatedAt'])
           )
         );
-      allow delete: if isVerifiedUser() && isValidId(memberId) && (isWorkspaceOwner(existing().workspaceId) || isAdmin());
+      allow delete: if isVerifiedUser() && isValidId(memberId) && (
+        isWorkspaceOwner(existing().workspaceId) ||
+        isAdmin() ||
+        (existing().email == request.auth.token.email && existing().status == 'invited')
+      );
     }
 
     // Collection 4: /taxpayers/{taxpayerId}

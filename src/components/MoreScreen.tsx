@@ -34,6 +34,7 @@ export const MoreScreen: React.FC = () => {
   const {
     userProfile,
     workspace,
+    isOwner,
     isPlatformAdmin,
     isOnline,
     pendingSyncCount,
@@ -278,32 +279,34 @@ export const MoreScreen: React.FC = () => {
           </p>
         </button>
 
+        {(isOwner || isPlatformAdmin) && (
+          <button
+            type="button"
+            onClick={() => {
+              setWsName(workspace?.name || '');
+              setWsCurrency(workspace?.defaultCurrency || 'YER');
+              setWsTaxRate(String(workspace?.taxRatePercent ?? 0));
+              setWsRegion(workspace?.regionName || 'عدن');
+              setSubPanel(subPanel === 'workspace' ? 'none' : 'workspace');
+            }}
+            className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
+              subPanel === 'workspace'
+                ? 'border-[#0D9488] ring-2 ring-teal-500/15'
+                : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0D9488]'
+            }`}
+          >
+            <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
+              <RefreshCw className="w-4 h-4 text-[#0D9488]" />
+              <span>إعدادات مساحة العمل والمزامنة</span>
+            </div>
+            <p className="text-xs text-slate-500">
+              العملة، نسبة التقييم، وحالة المزامنة ({pendingSyncCount} محلي)
+            </p>
+          </button>
+        )}
+
         {isPlatformAdmin && (
           <>
-            <button
-              type="button"
-              onClick={() => {
-                setWsName(workspace?.name || '');
-                setWsCurrency(workspace?.defaultCurrency || 'YER');
-                setWsTaxRate(String(workspace?.taxRatePercent ?? 0));
-                setWsRegion(workspace?.regionName || 'عدن');
-                setSubPanel(subPanel === 'workspace' ? 'none' : 'workspace');
-              }}
-              className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
-                subPanel === 'workspace'
-                  ? 'border-[#0D9488] ring-2 ring-teal-500/15'
-                  : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0D9488]'
-              }`}
-            >
-              <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
-                <RefreshCw className="w-4 h-4 text-[#0D9488]" />
-                <span>إعدادات مساحة العمل والمزامنة</span>
-              </div>
-              <p className="text-xs text-slate-500">
-                العملة، نسبة التقييم، وحالة المزامنة ({pendingSyncCount} محلي)
-              </p>
-            </button>
-
             <button
               type="button"
               onClick={() => setSubPanel(subPanel === 'transparency' ? 'none' : 'transparency')}
@@ -434,7 +437,7 @@ export const MoreScreen: React.FC = () => {
       )}
 
       {/* Sub-panel: Workspace Settings */}
-      {isPlatformAdmin && subPanel === 'workspace' && (
+      {(isOwner || isPlatformAdmin) && subPanel === 'workspace' && (
         <form
           onSubmit={handleSaveWorkspace}
           className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-5 space-y-3.5 shadow-xs"

@@ -1,5 +1,13 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { initializeApp, getApps } from 'firebase/app';
+import {
+  getAuth,
+  initializeAuth,
+  inMemoryPersistence,
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  updateProfile,
+  signOut as firebaseSignOut,
+} from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -50,6 +58,45 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
 export const FIRESTORE_DATABASE_ID = firebaseConfig.firestoreDatabaseId;
 
+/**
+ * Creates a Firebase Auth account for a new team member using an isolated secondary
+ * FirebaseApp with in-memory persistence so the Primary Manager's session is never affected.
+ */
+export async function createTeamUserAuthAccount(
+  email: string,
+  password: string,
+  displayName: string
+): Promise<{ uid: string; email: string }> {
+  const secondaryAppName = 'RasdTeamMemberCreatorApp';
+  const existingSecondary = getApps().find((a) => a.name === secondaryAppName);
+  const secondaryApp = existingSecondary || initializeApp(firebaseConfig, secondaryAppName);
+
+  let secondaryAuth;
+  try {
+    secondaryAuth = initializeAuth(secondaryApp, {
+      persistence: inMemoryPersistence,
+    });
+  } catch {
+    secondaryAuth = getAuth(secondaryApp);
+  }
+
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, email.trim(), password);
+    if (displayName.trim()) {
+      await updateProfile(cred.user, { displayName: displayName.trim() });
+    }
+    const uid = cred.user.uid;
+    const createdEmail = cred.user.email || email.trim();
+    return { uid, email: createdEmail };
+  } finally {
+    try {
+      await firebaseSignOut(secondaryAuth);
+    } catch {
+      // Ignore signout error on secondary instance
+    }
+  }
+}
+
 export async function testConnection(): Promise<boolean> {
   if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
     console.warn('Firebase configuration is incomplete.');
@@ -71,8 +118,12 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
-// Run non-blocking connection check on boot
-void testConnection();
+// Run non-blocking connection check after initial app boot
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    void testConnection();
+  }, 3500);
+}
 
 export function handleFirestoreError(
   error: unknown,

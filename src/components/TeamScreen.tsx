@@ -7,12 +7,17 @@ import {
   Lock,
   ShieldCheck,
   AlertTriangle,
+  KeyRound,
+  Mail,
+  Eye,
+  EyeOff,
+  CheckCircle2,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { WorkspaceMember, WorkspaceRole } from '../types/rasd';
 
 const ROLE_LABELS: Record<WorkspaceRole, string> = {
-  owner: 'مالك مساحة العمل',
+  owner: 'المدير الأساسي (المالك)',
   field_assistant: 'مساعد ميداني',
   finance_assistant: 'مساعد مالي',
   viewer: 'مشاهد فقط',
@@ -23,6 +28,7 @@ export const TeamScreen: React.FC = () => {
     workspace,
     members,
     auditLogs,
+    isOwner,
     isPlatformAdmin,
     addTeamMember,
     updateTeamMember,
@@ -30,9 +36,14 @@ export const TeamScreen: React.FC = () => {
     showToast,
   } = useRasd();
 
+  const canManageTeam = isOwner || isPlatformAdmin;
+
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [addMethod, setAddMethod] = useState<'direct_account' | 'email_invite'>('direct_account');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [userIdInput, setUserIdInput] = useState('');
   const [role, setRole] = useState<WorkspaceRole>('field_assistant');
   const [canApprove, setCanApprove] = useState(false);
@@ -49,18 +60,37 @@ export const TeamScreen: React.FC = () => {
     showToast('تم نسخ رمز دعوة مساحة العمل', 'success');
   };
 
+  const resetAddForm = () => {
+    setDisplayName('');
+    setEmail('');
+    setInitialPassword('');
+    setShowPassword(false);
+    setUserIdInput('');
+    setRole('field_assistant');
+    setCanApprove(false);
+    setCanDelete(false);
+  };
+
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
+    if (addMethod === 'direct_account' && initialPassword.trim().length < 6) {
+      showToast('يرجى إدخال كلمة مرور مبدئية لا تقل عن 6 أحرف للمستخدم الجديد.', 'error');
+      return;
+    }
     setSubmitting(true);
     try {
-      await addTeamMember(displayName, email, userIdInput, role, canApprove, canDelete);
+      await addTeamMember(
+        displayName,
+        email,
+        userIdInput,
+        role,
+        canApprove,
+        canDelete,
+        addMethod === 'direct_account' ? initialPassword : undefined
+      );
       setIsAddOpen(false);
-      setDisplayName('');
-      setEmail('');
-      setUserIdInput('');
-      setCanApprove(false);
-      setCanDelete(false);
+      resetAddForm();
     } finally {
       setSubmitting(false);
     }
@@ -73,23 +103,23 @@ export const TeamScreen: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5 pb-6">
+    <div className="space-y-5 pb-6" dir="rtl">
       {/* Deep Navy Team & Isolation Header */}
       <div className="rounded-3xl bg-gradient-to-l from-[#0B192C] via-[#102A46] to-[#0369A1] text-white p-5 sm:p-6 shadow-md">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-xs text-teal-300 font-bold">
               <ShieldCheck className="w-4 h-4" />
-              <span>مساحة العمل المعزولة: {workspace?.name}</span>
+              <span>مساحة العمل المعزولة: {workspace?.name || 'مساحة رَصْد'}</span>
             </div>
-            <h1 className="text-xl font-extrabold">إدارة الفريق وصلاحيات المساعدين</h1>
+            <h1 className="text-xl font-extrabold">إدارة الفريق وإضافة المستخدمين</h1>
             <p className="text-xs text-slate-300 max-w-xl leading-relaxed">
-              الحد الأقصى لمساحة العمل: 10 أعضاء (المالك + 9 مساعدين) · المسجلون حاليًا:{' '}
+              الحد الأقصى لمساحة العمل: 10 أعضاء (المدير الأساسي + 9 مستخدمين) · المسجلون حاليًا:{' '}
               <span className="font-mono font-bold text-teal-300">{totalMembersCount}/10</span>
             </p>
           </div>
 
-          {isPlatformAdmin && (
+          {canManageTeam && (
             <div className="flex flex-wrap items-center gap-2.5">
               {workspace?.inviteCode && (
                 <div className="flex items-center gap-2 bg-white/10 border border-white/15 px-3.5 py-2 rounded-2xl">
@@ -117,7 +147,7 @@ export const TeamScreen: React.FC = () => {
                   className="min-h-[46px] px-4 rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-2 shadow-sm cursor-pointer transition-colors"
                 >
                   <UserPlus className="w-4 h-4" />
-                  <span>إضافة مساعد ({remainingSlots} متاح)</span>
+                  <span>إضافة مستخدم للفريق ({remainingSlots} متاح)</span>
                 </button>
               )}
             </div>
@@ -127,16 +157,26 @@ export const TeamScreen: React.FC = () => {
 
       {/* Team Members Directory */}
       <div className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-5 space-y-4 shadow-xs">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Users className="w-5 h-5 text-[#0284C7]" />
             <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
               أعضاء الفريق ({members.length})
             </h2>
           </div>
-          <span className="text-xs text-slate-500">
-            عزلة صارمة عبر قواعد أمان Firestore
-          </span>
+
+          <div className="flex items-center gap-2">
+            {canManageTeam && remainingSlots > 0 && (
+              <button
+                type="button"
+                onClick={() => setIsAddOpen(true)}
+                className="min-h-[38px] px-3.5 rounded-xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>+ إضافة مستخدم جديد</span>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-3">
@@ -177,31 +217,85 @@ export const TeamScreen: React.FC = () => {
                             : 'bg-rose-50 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
                         }`}
                       >
-                        {m.status === 'active' ? 'نشط' : m.status === 'invited' ? 'مدعو' : 'موقوف'}
+                        {m.status === 'active'
+                          ? 'نشط'
+                          : m.status === 'invited'
+                          ? 'مدعو (يرتبط تلقائيًا عند دخوله)'
+                          : 'موقوف'}
                       </span>
                     </div>
 
                     <div className="text-xs text-slate-500 flex flex-wrap items-center gap-2">
                       <span className="font-mono">{m.email}</span>
                       <span aria-hidden="true">·</span>
-                      <span>معرف: <span className="font-mono">{m.userId}</span></span>
+                      <span>
+                        معرف: <span className="font-mono">{m.userId}</span>
+                      </span>
                       <span aria-hidden="true">·</span>
-                      <span>عمليات موثقة: <strong>{memberActionsCount}</strong></span>
+                      <span>
+                        عمليات موثقة: <strong>{memberActionsCount}</strong>
+                      </span>
                     </div>
 
-                    <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-3 pt-1">
-                      <span>
-                        اعتماد التقييمات: <strong>{m.canApproveFinancials ? 'مسموح' : 'غير مسموح'}</strong>
-                      </span>
-                      <span>·</span>
-                      <span>
-                        حذف السجلات: <strong>{m.canDeleteRecords ? 'مسموح' : 'غير مسموح'}</strong>
-                      </span>
+                    <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2 pt-1">
+                      {canManageTeam && !isMemberOwner ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateTeamMember(
+                                m,
+                                m.role,
+                                m.status,
+                                !m.canApproveFinancials,
+                                m.canDeleteRecords
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold cursor-pointer transition-colors ${
+                              m.canApproveFinancials
+                                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                            }`}
+                          >
+                            اعتماد التقييمات: {m.canApproveFinancials ? 'مسموح ✓' : 'غير مسموح'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateTeamMember(
+                                m,
+                                m.role,
+                                m.status,
+                                m.canApproveFinancials,
+                                !m.canDeleteRecords
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-bold cursor-pointer transition-colors ${
+                              m.canDeleteRecords
+                                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+                                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                            }`}
+                          >
+                            حذف السجلات: {m.canDeleteRecords ? 'مسموح ✓' : 'غير مسموح'}
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span>
+                            اعتماد التقييمات:{' '}
+                            <strong>{m.canApproveFinancials ? 'مسموح' : 'غير مسموح'}</strong>
+                          </span>
+                          <span>·</span>
+                          <span>
+                            حذف السجلات: <strong>{m.canDeleteRecords ? 'مسموح' : 'غير مسموح'}</strong>
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {isPlatformAdmin && !isMemberOwner ? (
+                {canManageTeam && !isMemberOwner ? (
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <select
                       value={m.role}
@@ -249,7 +343,7 @@ export const TeamScreen: React.FC = () => {
                 ) : (
                   <span className="text-xs text-slate-400 flex items-center gap-1 shrink-0 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700">
                     <Lock className="w-3.5 h-3.5" />
-                    <span>{isMemberOwner ? 'المالك الأساسي' : 'محمي'}</span>
+                    <span>{isMemberOwner ? 'المدير الأساسي' : 'محمي'}</span>
                   </span>
                 )}
               </div>
@@ -260,7 +354,7 @@ export const TeamScreen: React.FC = () => {
 
       {/* Confirmation Modal Before Removing Member */}
       {memberPendingRemoval && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
           <div className="w-full max-w-md bg-white dark:bg-[#0D1829] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xl space-y-4">
             <div className="flex items-center gap-3 text-rose-600 dark:text-rose-400">
               <div className="w-11 h-11 rounded-2xl bg-rose-50 dark:bg-rose-950/60 flex items-center justify-center shrink-0">
@@ -268,14 +362,16 @@ export const TeamScreen: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                  تأكيد إزالة عضو من الفريق
+                  تأكيد إزالة مستخدم من الفريق
                 </h3>
                 <p className="text-xs text-slate-500">إجراء حساس في صلاحيات مساحة العمل</p>
               </div>
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              هل أنت متأكد من إزالة <strong>{memberPendingRemoval.displayName}</strong> ({memberPendingRemoval.email}) من مساحة العمل؟ سيفقد صلاحية الوصول فورًا مع بقاء العمليات السابقة التي نفذها موثقة في سجل التدقيق.
+              هل أنت متأكد من إزالة <strong>{memberPendingRemoval.displayName}</strong> (
+              {memberPendingRemoval.email}) من مساحة العمل؟ سيفقد صلاحية الوصول فورًا مع بقاء العمليات
+              السابقة التي نفذها موثقة في سجل التدقيق.
             </p>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -298,20 +394,51 @@ export const TeamScreen: React.FC = () => {
         </div>
       )}
 
-      {/* Add Assistant Modal */}
+      {/* Add User / Assistant Modal */}
       {isAddOpen && (
-        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="w-full max-w-lg bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xl">
+        <div
+          className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-y-auto"
+          dir="rtl"
+        >
+          <div className="w-full max-w-lg bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-xl my-auto">
             <h2 className="text-lg font-extrabold text-slate-900 dark:text-white mb-1">
-              إضافة أو دعوة مساعد للفريق
+              إضافة مستخدم جديد للفريق
             </h2>
             <p className="text-xs text-slate-500 mb-4">
-              المقاعد المتبقية في مساحة العمل: {remainingSlots} من أصل 9 مساعدين
+              المقاعد المتاحة في مساحة العمل: {remainingSlots} من أصل 9 مستخدمين
             </p>
+
+            {/* Method Selector Tabs */}
+            <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-slate-100 dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 mb-4">
+              <button
+                type="button"
+                onClick={() => setAddMethod('direct_account')}
+                className={`min-h-[40px] px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  addMethod === 'direct_account'
+                    ? 'bg-[#0B192C] dark:bg-[#0284C7] text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>إنشاء حساب مباشر بكلمة مرور</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMethod('email_invite')}
+                className={`min-h-[40px] px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  addMethod === 'email_invite'
+                    ? 'bg-[#0B192C] dark:bg-[#0284C7] text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Mail className="w-3.5 h-3.5" />
+                <span>إضافة بالبريد (Google / حساب حالي)</span>
+              </button>
+            </div>
 
             <form onSubmit={handleAddMember} className="space-y-3.5">
               <div>
-                <label className="block text-xs font-bold mb-1">اسم المساعد الكامل *</label>
+                <label className="block text-xs font-bold mb-1">اسم المستخدم الكامل *</label>
                 <input
                   type="text"
                   required
@@ -323,41 +450,78 @@ export const TeamScreen: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold mb-1">البريد الإلكتروني للمساعد *</label>
+                <label className="block text-xs font-bold mb-1">البريد الإلكتروني للمستخدم *</label>
                 <input
                   type="email"
                   required
                   dir="ltr"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="assistant@example.com"
+                  placeholder="user@example.com"
                   className="w-full min-h-[44px] px-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-left font-mono"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-bold mb-1">
-                  معرف Firebase UID للمساعد (اختياري لربطه الفوري)
-                </label>
-                <input
-                  type="text"
-                  dir="ltr"
-                  value={userIdInput}
-                  onChange={(e) => setUserIdInput(e.target.value)}
-                  placeholder="اتركه فارغًا لإنشاء سجل دعوة"
-                  className="w-full min-h-[44px] px-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-left font-mono"
-                />
-              </div>
+              {addMethod === 'direct_account' ? (
+                <div>
+                  <label className="block text-xs font-bold mb-1">
+                    كلمة المرور المبدئية للمستخدم (6 أحرف فأكثر) *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      minLength={6}
+                      dir="ltr"
+                      value={initialPassword}
+                      onChange={(e) => setInitialPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full min-h-[44px] px-3.5 pl-10 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-left font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                      aria-label="إظهار أو إخفاء كلمة المرور"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      سيتم إنشاء حساب الدخول للمستخدم وتفعيله في فريقك فورًا دون الخروج من حسابك.
+                    </span>
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <label className="block text-xs font-bold mb-1">
+                    معرف Firebase UID للمستخدم (اختياري)
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={userIdInput}
+                    onChange={(e) => setUserIdInput(e.target.value)}
+                    placeholder="اتركه فارغًا ليتم الربط التلقائي بمجرد دخول المستخدم ببريده"
+                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-left font-mono"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    بمجرد تسجيل المستخدم الدخول بهذا البريد الإلكتروني (عبر Google أو البريد)، سينضم تلقائيًا إلى فريق مساحة العمل.
+                  </p>
+                </div>
+              )}
 
               <div>
-                <label className="block text-xs font-bold mb-1">الدور الوظيفي</label>
+                <label className="block text-xs font-bold mb-1">الدور الوظيفي في الفريق</label>
                 <select
                   value={role}
                   onChange={(e) => setRole(e.target.value as WorkspaceRole)}
                   className="w-full min-h-[44px] px-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold"
                 >
-                  <option value="field_assistant">مساعد ميداني (عقارات، زيارات، مواعيد)</option>
-                  <option value="finance_assistant">مساعد مالي (تقييمات ومعاملات)</option>
+                  <option value="field_assistant">مساعد ميداني (مكلفون، عقارات، زيارات، مواعيد)</option>
+                  <option value="finance_assistant">مساعد مالي (تقييمات ومعاملات مالية)</option>
                   <option value="viewer">مشاهد فقط (اطلاع وتقارير)</option>
                 </select>
               </div>
@@ -379,14 +543,17 @@ export const TeamScreen: React.FC = () => {
                     onChange={(e) => setCanDelete(e.target.checked)}
                     className="w-4 h-4 accent-[#0D9488]"
                   />
-                  <span>منح صلاحية طلب حذف السجلات غير المرتبطة</span>
+                  <span>منح صلاحية حذف السجلات غير المرتبطة</span>
                 </label>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsAddOpen(false)}
+                  onClick={() => {
+                    setIsAddOpen(false);
+                    resetAddForm();
+                  }}
                   className="min-h-[44px] px-5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
                 >
                   إلغاء
@@ -394,9 +561,9 @@ export const TeamScreen: React.FC = () => {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="min-h-[44px] px-6 rounded-2xl bg-[#0B192C] hover:bg-[#102A46] dark:bg-[#0284C7] text-white text-xs font-bold cursor-pointer"
+                  className="min-h-[44px] px-6 rounded-2xl bg-[#0B192C] hover:bg-[#102A46] dark:bg-[#0284C7] text-white text-xs font-bold cursor-pointer disabled:opacity-60"
                 >
-                  إضافة المساعد
+                  {submitting ? 'جاري الإضافة...' : 'إضافة المستخدم للفريق'}
                 </button>
               </div>
             </form>
@@ -406,3 +573,4 @@ export const TeamScreen: React.FC = () => {
     </div>
   );
 };
+

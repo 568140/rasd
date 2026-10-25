@@ -14,6 +14,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -28,6 +29,7 @@ import {
   auth,
   db,
   googleProvider,
+  createTeamUserAuthAccount,
   handleFirestoreError,
   generateSafeId,
   sanitizeText,
@@ -198,7 +200,15 @@ interface RasdContextValue {
   approveFinancialTransaction: (tx: FinancialTransaction) => Promise<void>;
   reverseFinancialTransaction: (tx: FinancialTransaction, reasonNote: string) => Promise<void>;
 
-  addTeamMember: (displayName: string, email: string, userIdInput: string, role: WorkspaceRole, canApprove: boolean, canDelete: boolean) => Promise<void>;
+  addTeamMember: (
+    displayName: string,
+    email: string,
+    userIdInput: string,
+    role: WorkspaceRole,
+    canApprove: boolean,
+    canDelete: boolean,
+    initialPassword?: string
+  ) => Promise<void>;
   updateTeamMember: (member: WorkspaceMember, role: WorkspaceRole, status: WorkspaceMember['status'], canApprove: boolean, canDelete: boolean) => Promise<void>;
   removeTeamMember: (member: WorkspaceMember) => Promise<void>;
 
@@ -320,9 +330,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
             ownerId: uid,
             ownerName: displayName,
-            defaultCurrency: 'SAR',
+            defaultCurrency: 'YER',
             taxRatePercent: 0,
-            regionName: 'الرياض',
+            regionName: 'عدن',
             inviteCode,
             memberUids: [uid],
             memberCount: 1,
@@ -347,9 +357,82 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         try {
           const userSnap = await getDoc(userDocRef);
-          const activeWsId = userSnap.exists()
+          let activeWsId = userSnap.exists()
             ? userSnap.data().activeWorkspaceId || defaultWsId
             : defaultWsId;
+
+          // Check if this user was invited to a team workspace by email
+          const normalizedUserEmail = (user.email || '').trim().toLowerCase();
+          if (normalizedUserEmail && activeWsId === defaultWsId) {
+            try {
+              const inviteQuery = query(
+                collection(db, 'workspace_members'),
+                where('email', '==', normalizedUserEmail)
+              );
+              const inviteSnap = await getDocs(inviteQuery);
+              const validInviteDoc = inviteSnap.docs.find((d) => {
+                const data = d.data();
+                return data.status !== 'suspended' && data.workspaceId && data.workspaceId !== defaultWsId;
+              });
+
+              if (validInviteDoc) {
+                const invData = validInviteDoc.data();
+                const targetWsId = invData.workspaceId as string;
+                const targetWsRef = doc(db, 'workspaces', targetWsId);
+                const targetWsSnap = await getDoc(targetWsRef);
+
+                if (targetWsSnap.exists()) {
+                  const targetWsData = targetWsSnap.data();
+                  const existingUids: string[] = Array.isArray(targetWsData.memberUids)
+                    ? targetWsData.memberUids
+                    : [targetWsData.ownerId];
+                  const filteredUids = existingUids.filter(
+                    (id) => id !== invData.userId || id === uid
+                  );
+                  const updatedMemberUids = Array.from(new Set([...filteredUids, uid])).slice(0, 10);
+
+                  activeWsId = targetWsId;
+
+                  await updateDoc(targetWsRef, {
+                    memberUids: updatedMemberUids,
+                    memberCount: updatedMemberUids.length,
+                    updatedAt: serverTimestamp(),
+                  }).catch(() => {});
+
+                  const realMemberDocId = `${targetWsId}_${uid}`
+                    .replace(/[^a-zA-Z0-9_-]/g, '')
+                    .slice(0, 120);
+
+                  await setDoc(doc(db, 'workspace_members', realMemberDocId), {
+                    workspaceId: targetWsId,
+                    ownerId: invData.ownerId,
+                    userId: uid,
+                    displayName: sanitizeText(
+                      customDisplayName || user.displayName || invData.displayName || 'مساعد ميداني',
+                      120,
+                      1,
+                      'مساعد ميداني'
+                    ),
+                    email: normalizedUserEmail,
+                    role: invData.role || 'field_assistant',
+                    status: 'active',
+                    canApproveFinancials: Boolean(invData.canApproveFinancials),
+                    canDeleteRecords: Boolean(invData.canDeleteRecords),
+                    memberUids: updatedMemberUids,
+                    createdBy: uid,
+                    createdAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                  }).catch(() => {});
+
+                  if (validInviteDoc.id !== realMemberDocId) {
+                    await deleteDoc(validInviteDoc.ref).catch(() => {});
+                  }
+                }
+              }
+            } catch {
+              // Ignore if query is not permitted or offline
+            }
+          }
 
           const wsRef = doc(db, 'workspaces', activeWsId);
           const memberId = `${activeWsId}_${uid}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
@@ -360,7 +443,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             ? await Promise.all([getDoc(wsRef), getDoc(memberRef)])
             : [null, null];
 
-          const needsUserDoc = !userSnap.exists();
+          const needsUserDoc =
+            !userSnap.exists() ||
+            (userSnap.exists() && userSnap.data().activeWorkspaceId !== activeWsId);
           const needsWsDoc = isOwnDefaultWs && wsSnap !== null && !wsSnap.exists();
           const needsMemberDoc = isOwnDefaultWs && memberSnap !== null && !memberSnap.exists();
 
@@ -466,9 +551,27 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [applyOptimisticSession]
   );
 
-  // Auth State Listener
+  // Auth State Listener with immediate hydration & safety timeout so welcome screen never hangs
   useEffect(() => {
+    let resolved = false;
+
+    if (auth.currentUser) {
+      resolved = true;
+      setFirebaseUser(auth.currentUser);
+      alertSound.syncUserReminderPreference(auth.currentUser.uid);
+      applyOptimisticSession(auth.currentUser);
+      setAuthReady(true);
+    }
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (!resolved) {
+        setAuthReady(true);
+      }
+    }, 2000);
+
     const unsubAuth = onAuthStateChanged(auth, (user) => {
+      resolved = true;
+      window.clearTimeout(fallbackTimer);
       setFirebaseUser(user);
       if (user) {
         alertSound.syncUserReminderPreference(user.uid);
@@ -484,7 +587,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
-    return () => unsubAuth();
+    return () => {
+      window.clearTimeout(fallbackTimer);
+      unsubAuth();
+    };
   }, [applyOptimisticSession, ensureUserAndWorkspace, clearAllUserState]);
 
   // Attach Real-time Listeners once user is authenticated
@@ -610,12 +716,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Computed Permissions
   const isPlatformAdmin = useMemo(() => {
     const email = (firebaseUser?.email || userProfile?.email || '').trim().toLowerCase();
-    return email === 'am1075022@gmail.com';
+    return email === 'ahah26h@gmail.com' || email === 'am1075022@gmail.com';
   }, [firebaseUser?.email, userProfile?.email]);
 
   const isOwner = useMemo(() => {
-    if (!firebaseUser || !workspace) return false;
-    return workspace.ownerId === firebaseUser.uid || isPlatformAdmin;
+    if (!firebaseUser) return false;
+    if (isPlatformAdmin) return true;
+    if (!workspace) return false;
+    return workspace.ownerId === firebaseUser.uid;
   }, [firebaseUser, workspace, isPlatformAdmin]);
 
   const currentMemberRecord = useMemo(() => {
@@ -807,8 +915,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateWorkspaceSettings = useCallback(
     async (name: string, defaultCurrency: CurrencyCode, taxRatePercent: number, regionName: string) => {
-      if (!firebaseUser || !workspace || !isPlatformAdmin) {
-        showToast('فقط المدير الأساسي للمنصة يمكنه تعديل إعدادات المنصة ومساحة العمل.', 'error');
+      if (!firebaseUser || !workspace || (!isOwner && !isPlatformAdmin)) {
+        showToast('فقط المدير الأساسي أو مالك مساحة العمل يمكنه تعديل إعدادات مساحة العمل.', 'error');
         return;
       }
       const path = `workspaces/${workspace.id}`;
@@ -831,7 +939,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
     },
-    [firebaseUser, workspace, isPlatformAdmin, writeAuditLog, showToast]
+    [firebaseUser, workspace, isOwner, isPlatformAdmin, writeAuditLog, showToast]
   );
 
   // Taxpayer Mutations
@@ -2109,6 +2217,105 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [isOwner, workspace, firebaseUser, userProfile, writeAuditLog, showToast]
   );
 
+  // Helper to propagate updated memberUids to existing workspace documents so all team members have immediate access
+  const syncMemberUidsAcrossWorkspace = useCallback(
+    async (updatedMemberUids: string[]) => {
+      if (!workspace) return;
+      try {
+        const batch = writeBatch(db);
+        let ops = 0;
+        const commitIfFull = async () => {
+          if (ops >= 400) {
+            await batch.commit();
+            ops = 0;
+          }
+        };
+
+        for (const m of members) {
+          batch.update(doc(db, 'workspace_members', m.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const tp of taxpayers) {
+          batch.update(doc(db, 'taxpayers', tp.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const p of properties) {
+          batch.update(doc(db, 'properties', p.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const u of propertyUnits) {
+          batch.update(doc(db, 'property_units', u.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const v of fieldVisits) {
+          batch.update(doc(db, 'field_visits', v.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const a of appointments) {
+          batch.update(doc(db, 'appointments', a.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const asmt of assessments) {
+          batch.update(doc(db, 'financial_assessments', asmt.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+        for (const n of notifications) {
+          batch.update(doc(db, 'notifications', n.id), {
+            memberUids: updatedMemberUids,
+            updatedAt: serverTimestamp(),
+          });
+          ops++;
+          await commitIfFull();
+        }
+
+        if (ops > 0) {
+          await batch.commit();
+        }
+      } catch (err) {
+        console.warn('Non-critical memberUids propagation notice:', err);
+      }
+    },
+    [
+      workspace,
+      members,
+      taxpayers,
+      properties,
+      propertyUnits,
+      fieldVisits,
+      appointments,
+      assessments,
+      notifications,
+    ]
+  );
+
   // Team Management (Max 10 members including owner: owner + up to 9 assistants)
   const addTeamMember = useCallback(
     async (
@@ -2117,14 +2324,15 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       userIdInput: string,
       role: WorkspaceRole,
       canApprove: boolean,
-      canDelete: boolean
+      canDelete: boolean,
+      initialPassword?: string
     ) => {
-      if (!isOwner || !workspace || !firebaseUser) {
-        showToast('فقط مالك مساحة العمل يستطيع إضافة أو دعوة المساعدين.', 'error');
+      if ((!isOwner && !isPlatformAdmin) || !workspace || !firebaseUser) {
+        showToast('فقط المدير الأساسي أو مالك مساحة العمل يستطيع إضافة مستخدمين للفريق.', 'error');
         return;
       }
       if (members.length >= 10 || workspace.memberUids.length >= 10) {
-        showToast('تم الوصول للحد الأقصى للفريق (10 أعضاء: المالك + 9 مساعدين).', 'error');
+        showToast('تم الوصول للحد الأقصى للفريق (10 أعضاء: المدير الأساسي + 9 مساعدين).', 'error');
         return;
       }
       if (role === 'owner') {
@@ -2132,14 +2340,55 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      const cleanUid =
-        userIdInput.trim().replace(/[^a-zA-Z0-9_-]/g, '') ||
-        generateSafeId('assist');
+      const cleanName = sanitizeText(displayName, 120, 1, 'مساعد ميداني');
+      const cleanEmail = sanitizeText(email.trim().toLowerCase(), 200, 3, 'assistant@rasd.app');
+      const trimmedUidInput = userIdInput.trim().replace(/[^a-zA-Z0-9_-]/g, '');
+
+      // Check for duplicate email or UID in current workspace members
+      const alreadyExists = members.some(
+        (m) =>
+          m.email.trim().toLowerCase() === cleanEmail ||
+          (trimmedUidInput && m.userId === trimmedUidInput)
+      );
+      if (alreadyExists) {
+        showToast('هذا المستخدم مضاف بالفعل ضمن أعضاء الفريق الحاليين.', 'warning');
+        return;
+      }
+
+      let createdUid = '';
+      let accountAlreadyExistedInAuth = false;
+
+      // If the Primary Manager entered an initial password, create the Firebase Auth account directly
+      if (initialPassword && initialPassword.trim().length > 0) {
+        if (initialPassword.trim().length < 6) {
+          showToast('يجب أن تتكون كلمة المرور المبدئية للمستخدم من 6 أحرف على الأقل.', 'error');
+          return;
+        }
+        try {
+          const created = await createTeamUserAuthAccount(
+            cleanEmail,
+            initialPassword.trim(),
+            cleanName
+          );
+          createdUid = created.uid;
+        } catch (authErr) {
+          const rawMsg = authErr instanceof Error ? authErr.message : String(authErr);
+          if (rawMsg.includes('auth/email-already-in-use')) {
+            accountAlreadyExistedInAuth = true;
+          } else {
+            showToast(translateFirebaseError(authErr), 'error');
+            throw authErr;
+          }
+        }
+      }
+
+      const cleanUid = createdUid || trimmedUidInput || generateSafeId('assist');
+      const isRealUid = Boolean(createdUid || trimmedUidInput);
       const memberDocId = `${workspace.id}_${cleanUid}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
       const updatedMemberUids = Array.from(new Set([...workspace.memberUids, cleanUid])).slice(0, 10);
 
       try {
-        // 1. Update Workspace memberUids if a real UID was linked
+        // 1. Update Workspace memberUids
         if (updatedMemberUids.length !== workspace.memberUids.length) {
           await updateDoc(doc(db, 'workspaces', workspace.id), {
             name: workspace.name,
@@ -2159,10 +2408,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
           userId: cleanUid,
-          displayName: sanitizeText(displayName, 120, 1, 'مساعد ميداني'),
-          email: sanitizeText(email, 200, 3, 'assistant@rasd.app'),
+          displayName: cleanName,
+          email: cleanEmail,
           role,
-          status: userIdInput.trim() ? 'active' : 'invited',
+          status: isRealUid ? 'active' : 'invited',
           canApproveFinancials: canApprove,
           canDeleteRecords: canDelete,
           memberUids: updatedMemberUids,
@@ -2171,18 +2420,66 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
+        // 3. If we have the user's real UID, bind their /users/{uid} profile to this workspace
+        if (isRealUid) {
+          const roleLabel =
+            role === 'finance_assistant'
+              ? 'مساعد مالي'
+              : role === 'viewer'
+              ? 'مشاهد فقط'
+              : 'مساعد ميداني';
+          await setDoc(doc(db, 'users', cleanUid), {
+            uid: cleanUid,
+            displayName: cleanName,
+            email: cleanEmail,
+            phone: '',
+            jobTitle: roleLabel,
+            activeWorkspaceId: workspace.id,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+
+        // 4. Propagate updated memberUids across existing workspace documents
+        void syncMemberUidsAcrossWorkspace(updatedMemberUids);
+
         await writeAuditLog(
           'team_change',
           'member',
           memberDocId,
-          `إضافة عضو للفريق: ${displayName} (${email}) بدور ${role}`
+          `إضافة عضو للفريق بواسطة المدير: ${cleanName} (${cleanEmail}) بدور ${role}`
         );
-        showToast('تمت إضافة المساعد إلى فريق مساحة العمل بنجاح', 'success');
+
+        if (createdUid) {
+          showToast(
+            `تم إنشاء حساب المستخدم (${cleanName}) وإضافته كعضو نشط في الفريق بنجاح!`,
+            'success'
+          );
+        } else if (accountAlreadyExistedInAuth) {
+          showToast(
+            `تمت إضافة (${cleanName}) للفريق بنجاح! بريد المستخدم مسجل مسبقًا وسيرتبط تلقائيًا فور دخوله.`,
+            'success'
+          );
+        } else {
+          showToast(
+            `تمت إضافة (${cleanName}) إلى فريق مساحة العمل بنجاح!`,
+            'success'
+          );
+        }
       } catch (error) {
         handleFirestoreError(error, OperationType.CREATE, `workspace_members/${memberDocId}`);
       }
     },
-    [isOwner, workspace, firebaseUser, members.length, writeAuditLog, showToast]
+    [
+      isOwner,
+      isPlatformAdmin,
+      workspace,
+      firebaseUser,
+      members,
+      syncMemberUidsAcrossWorkspace,
+      writeAuditLog,
+      showToast,
+    ]
   );
 
   const updateTeamMember = useCallback(
@@ -2193,12 +2490,12 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       canApprove: boolean,
       canDelete: boolean
     ) => {
-      if (!isOwner || !workspace) {
-        showToast('فقط المالك يستطيع تعديل صلاحيات أعضاء الفريق.', 'error');
+      if ((!isOwner && !isPlatformAdmin) || !workspace) {
+        showToast('فقط المدير الأساسي أو مالك مساحة العمل يستطيع تعديل صلاحيات أعضاء الفريق.', 'error');
         return;
       }
       if (member.userId === workspace.ownerId) {
-        showToast('لا يمكن تخفيض أو تعطيل صلاحيات مالك مساحة العمل.', 'warning');
+        showToast('لا يمكن تخفيض أو تعطيل صلاحيات المالك الأساسي لمساحة العمل.', 'warning');
         return;
       }
       const path = `workspace_members/${member.id}`;
@@ -2219,19 +2516,19 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           member.id,
           `تحديث صلاحيات العضو (${member.displayName}): الدور=${role}، الحالة=${status}`
         );
-        showToast('تم تحديث صلاحيات عضو الفريق', 'success');
+        showToast('تم تحديث صلاحيات عضو الفريق بنجاح', 'success');
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
     },
-    [isOwner, workspace, writeAuditLog, showToast]
+    [isOwner, isPlatformAdmin, workspace, writeAuditLog, showToast]
   );
 
   const removeTeamMember = useCallback(
     async (member: WorkspaceMember) => {
-      if (!isOwner || !workspace) return;
+      if ((!isOwner && !isPlatformAdmin) || !workspace) return;
       if (member.userId === workspace.ownerId) {
-        showToast('لا يمكن إزالة مالك مساحة العمل.', 'error');
+        showToast('لا يمكن إزالة المالك الأساسي لمساحة العمل.', 'error');
         return;
       }
       const path = `workspace_members/${member.id}`;
@@ -2250,6 +2547,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             memberCount: updatedUids.length,
             updatedAt: serverTimestamp(),
           });
+          void syncMemberUidsAcrossWorkspace(updatedUids);
         }
         await writeAuditLog('team_change', 'member', member.id, `إزالة العضو (${member.displayName}) من الفريق`);
         showToast('تم إزالة العضو من مساحة العمل', 'info');
@@ -2257,7 +2555,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(error, OperationType.DELETE, path);
       }
     },
-    [isOwner, workspace, writeAuditLog, showToast]
+    [isOwner, isPlatformAdmin, workspace, syncMemberUidsAcrossWorkspace, writeAuditLog, showToast]
   );
 
   const markNotificationRead = useCallback(
