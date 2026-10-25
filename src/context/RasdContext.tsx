@@ -185,7 +185,7 @@ interface RasdContextValue {
   updateFieldVisitStatus: (visit: FieldVisit, status: FieldVisit['status'], impedimentReason?: string, additionalNotes?: string) => Promise<void>;
 
   addAppointment: (input: Omit<Appointment, 'id' | 'workspaceId' | 'ownerId' | 'memberUids' | 'postponeCount' | 'lastPostponeReason' | 'createdBy' | 'createdByName' | 'createdAt' | 'updatedAt'>) => Promise<string>;
-  postponeAppointment: (appointment: Appointment, newDate: string, newTime: string, reason: string) => Promise<void>;
+  postponeAppointment: (appointment: Appointment, newDate: string, newTime: string, reason: string, newReminderMinutesBefore?: number) => Promise<void>;
   updateAppointmentStatus: (appointment: Appointment, status: Appointment['status']) => Promise<void>;
   cancelAppointment: (appointment: Appointment, reason: string) => Promise<void>;
 
@@ -1671,7 +1671,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const postponeAppointment = useCallback(
-    async (appointment: Appointment, newDate: string, newTime: string, reason: string) => {
+    async (
+      appointment: Appointment,
+      newDate: string,
+      newTime: string,
+      reason: string,
+      newReminderMinutesBefore?: number
+    ) => {
       if (!firebaseUser || !workspace || !userProfile) return;
       const postId = generateSafeId('post');
       try {
@@ -1691,13 +1697,16 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           createdAt: serverTimestamp(),
         });
 
-        // 2. Update Appointment
+        // 2. Update Appointment metadata (preserves durationMinutes, updates reminderMinutesBefore)
         const defaultUserMins = alertSound.getDefaultReminderMinutes();
+        const resolvedReminderMins = sanitizeReminderMinutes(
+          newReminderMinutesBefore !== undefined
+            ? newReminderMinutesBefore
+            : appointment.reminderMinutesBefore ?? defaultUserMins,
+          defaultUserMins
+        );
         const existingMeta = {
-          reminderMinutesBefore: sanitizeReminderMinutes(
-            appointment.reminderMinutesBefore ?? defaultUserMins,
-            defaultUserMins
-          ),
+          reminderMinutesBefore: resolvedReminderMins,
           linkedVisitId: appointment.linkedVisitId || '',
           durationMinutes: appointment.durationMinutes || 30,
           assignedOfficerId: appointment.assignedOfficerId || firebaseUser.uid,
@@ -1723,9 +1732,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'postpone',
           'appointment',
           appointment.id,
-          `تأجيل الموعد (${appointment.title}) إلى ${newDate} — السبب: ${reason}`
+          `تأجيل الموعد (${appointment.title}) إلى ${newDate} — السبب: ${reason} — تنبيه قبل الموعد بـ ${resolvedReminderMins} د`
         );
-        showToast('تمت إعادة جدولة الموعد وتوثيق سبب التأجيل في السجل', 'success');
+        showToast(`تمت إعادة جدولة الموعد بنجاح (التنبيه قبل الموعد بـ ${resolvedReminderMins} دقيقة)`, 'success');
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, `appointments/${appointment.id}`);

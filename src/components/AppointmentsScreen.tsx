@@ -79,6 +79,8 @@ export const AppointmentsScreen: React.FC = () => {
   const [newDate, setNewDate] = useState('');
   const [newTime, setNewTime] = useState('');
   const [postponeReason, setPostponeReason] = useState('');
+  const [postponeReminderMinutesInput, setPostponeReminderMinutesInput] = useState<string>('');
+  const [postponeReminderError, setPostponeReminderError] = useState<string | null>(null);
 
   // Cancel Modal State
   const [cancellingAppt, setCancellingAppt] = useState<Appointment | null>(null);
@@ -100,20 +102,11 @@ export const AppointmentsScreen: React.FC = () => {
 
   useEffect(() => {
     if (!focusedAppointment) return;
-    const remMins = sanitizeReminderMinutes(
-      focusedAppointment.reminderMinutesBefore ?? defaultReminderMins,
-      defaultReminderMins
-    );
-    const dyn = evaluateAppointmentStatus(
-      focusedAppointment.status,
-      focusedAppointment.scheduledDate,
-      focusedAppointment.scheduledTime,
-      remMins
-    );
+    const diffMins = getMinutesUntilAden(focusedAppointment.scheduledDate, focusedAppointment.scheduledTime);
 
     if (focusedAppointment.status === 'completed' || focusedAppointment.status === 'cancelled') {
       setTab('completed');
-    } else if (dyn === 'due' || dyn === 'missed' || focusedAppointment.scheduledDate < todayStr) {
+    } else if (diffMins < 0 || focusedAppointment.scheduledDate < todayStr) {
       setTab('overdue');
     } else if (focusedAppointment.scheduledDate === todayStr) {
       setTab('today');
@@ -154,25 +147,32 @@ export const AppointmentsScreen: React.FC = () => {
           a.scheduledTime,
           remMins
         );
-        return { ...a, dynamicState, resolvedReminderMinutes: remMins };
+        const diffMinutes = getMinutesUntilAden(a.scheduledDate, a.scheduledTime);
+        return {
+          ...a,
+          dynamicState,
+          resolvedReminderMinutes: remMins,
+          diffMinutes,
+        };
       })
       .filter((a) => {
+        const isCompletedOrCancelled = a.status === 'completed' || a.status === 'cancelled';
+        const isPastScheduledTime = a.diffMinutes < 0;
+
         if (tab === 'today') {
-          return a.scheduledDate === todayStr && a.status !== 'completed' && a.status !== 'cancelled';
+          return a.scheduledDate === todayStr && !isCompletedOrCancelled;
         }
         if (tab === 'upcoming') {
-          return (
-            a.scheduledDate >= todayStr &&
-            (a.dynamicState === 'upcoming' || a.dynamicState === 'postponed') &&
-            a.status !== 'completed' &&
-            a.status !== 'cancelled'
-          );
+          // Stays visible in upcoming as long as scheduled date/time has not passed!
+          // Stays in upcoming even during reminder alert window (dynamicState === 'due').
+          return !isCompletedOrCancelled && a.scheduledDate >= todayStr && !isPastScheduledTime;
         }
         if (tab === 'overdue') {
-          return a.dynamicState === 'due' || a.dynamicState === 'missed' || (a.scheduledDate < todayStr && a.status !== 'completed' && a.status !== 'cancelled');
+          // Transitions to overdue ONLY after actual scheduled time has passed without completion
+          return !isCompletedOrCancelled && (a.scheduledDate < todayStr || isPastScheduledTime);
         }
         if (tab === 'completed') {
-          return a.status === 'completed' || a.status === 'cancelled';
+          return isCompletedOrCancelled;
         }
         return true;
       })
@@ -264,9 +264,23 @@ export const AppointmentsScreen: React.FC = () => {
   const handlePostponeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!postponingAppt || submitting || !postponeReason.trim()) return;
+
+    const validation = validateReminderMinutesInput(postponeReminderMinutesInput);
+    if (!validation.isValid) {
+      setPostponeReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
+      showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
+      return;
+    }
+
     setSubmitting(true);
     try {
-      await postponeAppointment(postponingAppt, newDate, newTime, postponeReason);
+      await postponeAppointment(
+        postponingAppt,
+        newDate,
+        newTime,
+        postponeReason,
+        validation.minutes
+      );
       setPostponingAppt(null);
     } finally {
       setSubmitting(false);
@@ -586,6 +600,8 @@ export const AppointmentsScreen: React.FC = () => {
                           setNewDate(appt.scheduledDate);
                           setNewTime(appt.scheduledTime);
                           setPostponeReason('');
+                          setPostponeReminderMinutesInput(String(appt.reminderMinutesBefore ?? defaultReminderMins));
+                          setPostponeReminderError(null);
                         }}
                         className="min-h-[36px] px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                       >
@@ -887,6 +903,52 @@ export const AppointmentsScreen: React.FC = () => {
                     className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="rasd-postpone-appt-reminder-mins"
+                  className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1"
+                >
+                  التنبيه قبل الموعد الجديد بـ
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="rasd-postpone-appt-reminder-mins"
+                    type="number"
+                    inputMode="numeric"
+                    required
+                    min={MIN_REMINDER_MINUTES}
+                    max={MAX_REMINDER_MINUTES}
+                    step={1}
+                    value={postponeReminderMinutesInput}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setPostponeReminderMinutesInput(raw);
+                      const check = validateReminderMinutesInput(raw);
+                      setPostponeReminderError(check.isValid ? null : check.error || null);
+                    }}
+                    placeholder="مثال: 7 أو 23 أو 90"
+                    className={`w-full min-h-[42px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
+                      postponeReminderError
+                        ? 'border-rose-500 text-rose-600 dark:text-rose-400'
+                        : 'border-slate-200 dark:border-slate-700 focus:border-[#0284C7]'
+                    }`}
+                  />
+                  <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                    دقيقة
+                  </span>
+                </div>
+                {postponeReminderError ? (
+                  <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 mt-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    <span>{postponeReminderError}</span>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    عدد الدقائق قبل الموعد لإرسال التنبيه (مثال: 7 أو 23 أو 90 دقيقة)
+                  </div>
+                )}
               </div>
 
               <div>
