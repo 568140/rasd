@@ -202,6 +202,8 @@ interface RasdContextValue {
   removeTeamMember: (member: WorkspaceMember) => Promise<void>;
 
   markNotificationRead: (id: string) => Promise<void>;
+  deleteNotification: (id: string) => Promise<void>;
+  clearAllNotifications: () => Promise<void>;
   recordVoiceAudit: (transcript: string, summary: string) => Promise<void>;
 }
 
@@ -1561,10 +1563,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const apptRef = doc(db, 'appointments', id);
 
         const defaultUserMins = alertSound.getDefaultReminderMinutes();
-        const resolvedReminderMinutes = sanitizeReminderMinutes(
-          input.reminderMinutesBefore ?? defaultUserMins,
-          defaultUserMins
-        );
+        const resolvedReminderMinutes =
+          input.reminderMinutesBefore === 0
+            ? 0
+            : sanitizeReminderMinutes(
+                input.reminderMinutesBefore ?? defaultUserMins,
+                defaultUserMins
+              );
 
         const metaToStore: Record<string, unknown> = {
           reminderMinutesBefore: resolvedReminderMinutes,
@@ -1614,12 +1619,17 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // Also create an in-app notification item
         const notifId = generateSafeId('notif');
+        const notifDesc =
+          resolvedReminderMinutes === 0
+            ? 'التنبيه معطل'
+            : `التنبيه قبل الموعد بـ ${resolvedReminderMinutes} دقيقة`;
+
         await setDoc(doc(db, 'notifications', notifId), {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
           title: sanitizeText(`موعد مجدول: ${cleanTitle}`, 150, 1, 'موعد جديد'),
           message: sanitizeText(
-            `المكلف: ${cleanTpName} — ${cleanPropTitle} | التاريخ: ${scheduledDateStr} الساعة ${scheduledTimeStr} (التنبيه قبل الموعد بـ ${resolvedReminderMinutes} دقيقة)`,
+            `المكلف: ${cleanTpName} — ${cleanPropTitle} | التاريخ: ${scheduledDateStr} الساعة ${scheduledTimeStr} (${notifDesc})`,
             500,
             1,
             'موعد مجدول'
@@ -1632,9 +1642,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
-        // If the newly created appointment is already within its configured reminder window right now, trigger Web Push / local alert
+        // If reminder is enabled and newly created appointment is already within reminder window, trigger alert
         const diffUntilNow = getMinutesUntilAden(scheduledDateStr, scheduledTimeStr);
-        if (diffUntilNow <= resolvedReminderMinutes && diffUntilNow >= -90) {
+        if (resolvedReminderMinutes > 0 && diffUntilNow <= resolvedReminderMinutes && diffUntilNow >= -90) {
           pushService
             .sendAppointmentAlert(
               {
@@ -1658,9 +1668,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'create',
           'appointment',
           id,
-          `جدولة موعد: ${cleanTitle} (${scheduledDateStr} ${scheduledTimeStr}) — تنبيه قبل ${resolvedReminderMinutes} د`
+          `جدولة موعد: ${cleanTitle} (${scheduledDateStr} ${scheduledTimeStr}) — ${notifDesc}`
         );
-        showToast(`تمت جدولة الموعد بنجاح (التنبيه قبل الموعد بـ ${resolvedReminderMinutes} دقيقة)`, 'success');
+        showToast(`تمت جدولة الموعد بنجاح (${notifDesc})`, 'success');
         return id;
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -1699,12 +1709,20 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // 2. Update Appointment metadata (preserves durationMinutes, updates reminderMinutesBefore)
         const defaultUserMins = alertSound.getDefaultReminderMinutes();
-        const resolvedReminderMins = sanitizeReminderMinutes(
-          newReminderMinutesBefore !== undefined
-            ? newReminderMinutesBefore
-            : appointment.reminderMinutesBefore ?? defaultUserMins,
-          defaultUserMins
-        );
+        let resolvedReminderMins: number;
+        if (newReminderMinutesBefore === 0) {
+          resolvedReminderMins = 0;
+        } else if (newReminderMinutesBefore !== undefined) {
+          resolvedReminderMins = sanitizeReminderMinutes(newReminderMinutesBefore, defaultUserMins);
+        } else if (appointment.reminderMinutesBefore === 0) {
+          resolvedReminderMins = 0;
+        } else {
+          resolvedReminderMins = sanitizeReminderMinutes(
+            appointment.reminderMinutesBefore ?? defaultUserMins,
+            defaultUserMins
+          );
+        }
+
         const existingMeta = {
           reminderMinutesBefore: resolvedReminderMins,
           linkedVisitId: appointment.linkedVisitId || '',
@@ -1728,13 +1746,23 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
+        const alertNote =
+          resolvedReminderMins === 0
+            ? 'التنبيه معطل'
+            : `تنبيه قبل الموعد بـ ${resolvedReminderMins} د`;
+
         await writeAuditLog(
           'postpone',
           'appointment',
           appointment.id,
-          `تأجيل الموعد (${appointment.title}) إلى ${newDate} — السبب: ${reason} — تنبيه قبل الموعد بـ ${resolvedReminderMins} د`
+          `تأجيل الموعد (${appointment.title}) إلى ${newDate} ${newTime} — السبب: ${reason} — ${alertNote}`
         );
-        showToast(`تمت إعادة جدولة الموعد بنجاح (التنبيه قبل الموعد بـ ${resolvedReminderMins} دقيقة)`, 'success');
+        showToast(
+          resolvedReminderMins === 0
+            ? 'تمت إعادة جدولة الموعد بنجاح (التنبيه معطل)'
+            : `تمت إعادة جدولة الموعد بنجاح (التنبيه قبل الموعد بـ ${resolvedReminderMins} دقيقة)`,
+          'success'
+        );
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, `appointments/${appointment.id}`);
@@ -2237,6 +2265,42 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [workspace]
   );
 
+  const deleteNotification = useCallback(
+    async (id: string) => {
+      if (!workspace) return;
+      const path = `notifications/${id}`;
+      try {
+        await deleteDoc(doc(db, 'notifications', id));
+        setNotifications((prev) => prev.filter((n) => n.id !== id));
+        showToast('تم حذف الإشعار', 'info');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, path);
+      }
+    },
+    [workspace, showToast]
+  );
+
+  const clearAllNotifications = useCallback(
+    async () => {
+      if (!workspace || notifications.length === 0) {
+        showToast('لا توجد إشعارات لتنظيفها', 'info');
+        return;
+      }
+      try {
+        const batch = writeBatch(db);
+        notifications.forEach((n) => {
+          batch.delete(doc(db, 'notifications', n.id));
+        });
+        await batch.commit();
+        setNotifications([]);
+        showToast('تم تنظيف وحذف كافة الإشعارات بنجاح', 'success');
+      } catch (error) {
+        showToast(translateFirebaseError(error), 'error');
+      }
+    },
+    [workspace, notifications, showToast]
+  );
+
   const recordVoiceAudit = useCallback(
     async (transcript: string, summary: string) => {
       await writeAuditLog(
@@ -2320,6 +2384,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     updateTeamMember,
     removeTeamMember,
     markNotificationRead,
+    deleteNotification,
+    clearAllNotifications,
     recordVoiceAudit,
   };
 

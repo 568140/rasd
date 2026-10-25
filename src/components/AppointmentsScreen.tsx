@@ -20,17 +20,17 @@ import { Appointment } from '../types/rasd';
 import {
   evaluateAppointmentStatus,
   getMinutesUntilAden,
-  getAdenTodayString,
-  getAdenTimeString,
   MIN_REMINDER_MINUTES,
   MAX_REMINDER_MINUTES,
   sanitizeReminderMinutes,
   validateReminderMinutesInput,
   buildAppointmentNotificationPayload,
+  calculateAlertTimeAden,
 } from '../utils/dateUtils';
 import { pushService } from '../services/pushService';
 import { alertSound } from '../services/alertSound';
 import { SoundSettingsPanel } from './SoundSettingsPanel';
+import { useLiveAdenClock } from '../hooks/useLiveAdenClock';
 
 export const AppointmentsScreen: React.FC = () => {
   const {
@@ -57,13 +57,17 @@ export const AppointmentsScreen: React.FC = () => {
     alertSound.getDefaultReminderMinutes()
   );
 
+  const liveClock = useLiveAdenClock(1000);
+  const todayStr = liveClock.todayStr;
+
   // Create Modal State
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [propertyId, setPropertyId] = useState('');
-  const [scheduledDate, setScheduledDate] = useState(() => getAdenTodayString());
-  const [scheduledTime, setScheduledTime] = useState(() => getAdenTimeString());
+  const [scheduledDate, setScheduledDate] = useState(() => liveClock.todayStr);
+  const [scheduledTime, setScheduledTime] = useState('10:00');
   const [durationMinutes, setDurationMinutes] = useState(30);
+  const [isReminderEnabled, setIsReminderEnabled] = useState(true);
   const [reminderMinutesInput, setReminderMinutesInput] = useState<string>(() =>
     String(alertSound.getDefaultReminderMinutes())
   );
@@ -79,6 +83,7 @@ export const AppointmentsScreen: React.FC = () => {
   const [newDate, setNewDate] = useState('');
   const [newTime, setNewTime] = useState('');
   const [postponeReason, setPostponeReason] = useState('');
+  const [isPostponeReminderEnabled, setIsPostponeReminderEnabled] = useState(true);
   const [postponeReminderMinutesInput, setPostponeReminderMinutesInput] = useState<string>('');
   const [postponeReminderError, setPostponeReminderError] = useState<string | null>(null);
 
@@ -86,7 +91,20 @@ export const AppointmentsScreen: React.FC = () => {
   const [cancellingAppt, setCancellingAppt] = useState<Appointment | null>(null);
   const [cancelReason, setCancelReason] = useState('');
 
-  const todayStr = useMemo(() => getAdenTodayString(), []);
+  // Live computed alert previews
+  const createAlertPreview = useMemo(() => {
+    if (!isReminderEnabled || !scheduledDate || !scheduledTime) return null;
+    const num = Number(reminderMinutesInput);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    return calculateAlertTimeAden(scheduledDate, scheduledTime, num);
+  }, [isReminderEnabled, scheduledDate, scheduledTime, reminderMinutesInput]);
+
+  const postponeAlertPreview = useMemo(() => {
+    if (!isPostponeReminderEnabled || !newDate || !newTime) return null;
+    const num = Number(postponeReminderMinutesInput);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    return calculateAlertTimeAden(newDate, newTime, num);
+  }, [isPostponeReminderEnabled, newDate, newTime, postponeReminderMinutesInput]);
 
   useEffect(() => {
     return alertSound.subscribe((updated) => {
@@ -102,7 +120,7 @@ export const AppointmentsScreen: React.FC = () => {
 
   useEffect(() => {
     if (!focusedAppointment) return;
-    const diffMins = getMinutesUntilAden(focusedAppointment.scheduledDate, focusedAppointment.scheduledTime);
+    const diffMins = getMinutesUntilAden(focusedAppointment.scheduledDate, focusedAppointment.scheduledTime, liveClock.now);
 
     if (focusedAppointment.status === 'completed' || focusedAppointment.status === 'cancelled') {
       setTab('completed');
@@ -137,17 +155,21 @@ export const AppointmentsScreen: React.FC = () => {
   const filteredList = useMemo(() => {
     return appointments
       .map((a) => {
-        const remMins = sanitizeReminderMinutes(
-          a.reminderMinutesBefore ?? defaultReminderMins,
-          defaultReminderMins
-        );
+        const isReminderOff = a.reminderMinutesBefore === 0;
+        const remMins = isReminderOff
+          ? 0
+          : sanitizeReminderMinutes(
+              a.reminderMinutesBefore ?? defaultReminderMins,
+              defaultReminderMins
+            );
         const dynamicState = evaluateAppointmentStatus(
           a.status,
           a.scheduledDate,
           a.scheduledTime,
-          remMins
+          remMins,
+          liveClock.now
         );
-        const diffMinutes = getMinutesUntilAden(a.scheduledDate, a.scheduledTime);
+        const diffMinutes = getMinutesUntilAden(a.scheduledDate, a.scheduledTime, liveClock.now);
         return {
           ...a,
           dynamicState,
@@ -177,7 +199,7 @@ export const AppointmentsScreen: React.FC = () => {
         return true;
       })
       .sort((a, b) => `${a.scheduledDate} ${a.scheduledTime}`.localeCompare(`${b.scheduledDate} ${b.scheduledTime}`));
-  }, [appointments, tab, todayStr, defaultReminderMins]);
+  }, [appointments, tab, todayStr, defaultReminderMins, liveClock.now]);
 
   const openCreateModal = () => {
     if (properties.length === 0 && taxpayers.length === 0) {
@@ -190,6 +212,7 @@ export const AppointmentsScreen: React.FC = () => {
     setScheduledDate(todayStr);
     setScheduledTime('10:00');
     setDurationMinutes(30);
+    setIsReminderEnabled(true);
     setReminderMinutesInput(String(savedMins));
     setReminderError(null);
     setAssignedOfficerId('');
@@ -218,19 +241,22 @@ export const AppointmentsScreen: React.FC = () => {
     e.preventDefault();
     if (submitting) return;
 
-    const validation = validateReminderMinutesInput(reminderMinutesInput);
-    if (!validation.isValid) {
-      setReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
-      showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
-      return;
+    let finalReminderMinutes = 0;
+    if (isReminderEnabled) {
+      const validation = validateReminderMinutesInput(reminderMinutesInput);
+      if (!validation.isValid) {
+        setReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
+        showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
+        return;
+      }
+      finalReminderMinutes = validation.minutes;
+      // Persist the user's chosen reminder minutes as their default preference
+      alertSound.setDefaultReminderMinutes(validation.minutes);
     }
 
     if (conflictingAppointments.length > 0 && !ignoreConflict) {
       return;
     }
-
-    // Persist the user's chosen reminder minutes as their default preference
-    alertSound.setDefaultReminderMinutes(validation.minutes);
 
     const prop = properties.find((p) => p.id === propertyId);
     const tp = taxpayers.find((t) => t.id === prop?.taxpayerId) || taxpayers[0];
@@ -248,7 +274,7 @@ export const AppointmentsScreen: React.FC = () => {
         scheduledTime,
         locationText: locationText || prop?.address || '',
         status: 'upcoming',
-        reminderMinutesBefore: validation.minutes,
+        reminderMinutesBefore: finalReminderMinutes,
         durationMinutes,
         assignedOfficerId: assignedOfficerId || undefined,
         assignedOfficerName: assignedMem?.displayName || undefined,
@@ -265,11 +291,15 @@ export const AppointmentsScreen: React.FC = () => {
     e.preventDefault();
     if (!postponingAppt || submitting || !postponeReason.trim()) return;
 
-    const validation = validateReminderMinutesInput(postponeReminderMinutesInput);
-    if (!validation.isValid) {
-      setPostponeReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
-      showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
-      return;
+    let finalReminderMinutes = 0;
+    if (isPostponeReminderEnabled) {
+      const validation = validateReminderMinutesInput(postponeReminderMinutesInput);
+      if (!validation.isValid) {
+        setPostponeReminderError(validation.error || 'يرجى إدخال عدد دقائق صحيح موجب.');
+        showToast(validation.error || 'يرجى التحقق من حقل وقت التنبيه قبل الموعد.', 'warning');
+        return;
+      }
+      finalReminderMinutes = validation.minutes;
     }
 
     setSubmitting(true);
@@ -279,7 +309,7 @@ export const AppointmentsScreen: React.FC = () => {
         newDate,
         newTime,
         postponeReason,
-        validation.minutes
+        finalReminderMinutes
       );
       setPostponingAppt(null);
     } finally {
@@ -348,6 +378,25 @@ export const AppointmentsScreen: React.FC = () => {
             <Plus className="w-4 h-4" />
             <span>موعد جديد</span>
           </button>
+        </div>
+      </div>
+
+      {/* Live Aden Clock Ticker */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800 shadow-2xs">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+            توقيت عدن المباشر:{' '}
+            <span className="font-mono font-extrabold text-[#0D9488]">
+              {liveClock.formattedTimeArabic}
+            </span>
+          </span>
+        </div>
+        <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+          {liveClock.formattedDateArabic}
         </div>
       </div>
 
@@ -600,7 +649,12 @@ export const AppointmentsScreen: React.FC = () => {
                           setNewDate(appt.scheduledDate);
                           setNewTime(appt.scheduledTime);
                           setPostponeReason('');
-                          setPostponeReminderMinutesInput(String(appt.reminderMinutesBefore ?? defaultReminderMins));
+                          const isOff = appt.reminderMinutesBefore === 0;
+                          setIsPostponeReminderEnabled(!isOff);
+                          const initialMins = isOff
+                            ? defaultReminderMins
+                            : (appt.reminderMinutesBefore ?? defaultReminderMins);
+                          setPostponeReminderMinutesInput(String(initialMins));
                           setPostponeReminderError(null);
                         }}
                         className="min-h-[36px] px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/60 text-amber-700 dark:text-amber-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
@@ -737,67 +791,111 @@ export const AppointmentsScreen: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label
-                    htmlFor="rasd-create-appt-reminder-mins"
-                    className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    التنبيه قبل الموعد بـ
-                  </label>
+              {/* Reminder Controls Section */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/80 dark:border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <input
-                      id="rasd-create-appt-reminder-mins"
-                      type="number"
-                      inputMode="numeric"
-                      required
-                      min={MIN_REMINDER_MINUTES}
-                      max={MAX_REMINDER_MINUTES}
-                      step={1}
-                      value={reminderMinutesInput}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        setReminderMinutesInput(raw);
-                        const check = validateReminderMinutesInput(raw);
-                        setReminderError(check.isValid ? null : check.error || null);
-                      }}
-                      placeholder="مثال: 30 أو 75"
-                      className={`w-full min-h-[42px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
-                        reminderError
-                          ? 'border-rose-500 text-rose-600 dark:text-rose-400'
-                          : 'border-slate-200 dark:border-slate-700 focus:border-[#0284C7]'
-                      }`}
-                    />
-                    <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                      دقيقة
+                    <Bell className={`w-4 h-4 ${isReminderEnabled ? 'text-[#0D9488]' : 'text-slate-400'}`} />
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                      التنبيه المسبق للموعد
                     </span>
                   </div>
-                  {reminderError ? (
-                    <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 mt-1">
-                      <AlertCircle className="w-3 h-3 shrink-0" />
-                      <span>{reminderError}</span>
-                    </div>
-                  ) : (
-                    <div className="text-[10px] text-slate-500 mt-1">
-                      أي عدد صحيح موجب (من {MIN_REMINDER_MINUTES} إلى {MAX_REMINDER_MINUTES} دقيقة)
-                    </div>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    المدة التقديرية
+                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
+                      {isReminderEnabled ? 'مفعّل' : 'معطّل'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={isReminderEnabled}
+                      onChange={(e) => setIsReminderEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="relative w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-[#0D9488]"></div>
                   </label>
-                  <select
-                    value={durationMinutes}
-                    onChange={(e) => setDurationMinutes(Number(e.target.value))}
-                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                  >
-                    <option value={15}>15 دقيقة</option>
-                    <option value={30}>30 دقيقة</option>
-                    <option value={45}>45 دقيقة</option>
-                    <option value={60}>ساعة واحدة</option>
-                  </select>
                 </div>
+
+                {isReminderEnabled ? (
+                  <div className="space-y-2 pt-1 border-t border-slate-200/60 dark:border-slate-800">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {[15, 30, 45, 60].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => {
+                            setReminderMinutesInput(String(mins));
+                            setReminderError(null);
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-colors cursor-pointer ${
+                            reminderMinutesInput === String(mins)
+                              ? 'bg-[#0D9488] text-white border-[#0D9488]'
+                              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-[#0D9488]'
+                          }`}
+                        >
+                          {mins} دقيقة
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="rasd-create-appt-reminder-mins"
+                        type="number"
+                        inputMode="numeric"
+                        required={isReminderEnabled}
+                        min={MIN_REMINDER_MINUTES}
+                        max={MAX_REMINDER_MINUTES}
+                        step={1}
+                        value={reminderMinutesInput}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setReminderMinutesInput(raw);
+                          const check = validateReminderMinutesInput(raw);
+                          setReminderError(check.isValid ? null : check.error || null);
+                        }}
+                        placeholder="أو اكتب عدد الدقائق..."
+                        className={`w-full min-h-[38px] px-3.5 rounded-xl bg-white dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
+                          reminderError
+                            ? 'border-rose-500 text-rose-600 dark:text-rose-400'
+                            : 'border-slate-200 dark:border-slate-700 focus:border-[#0284C7]'
+                        }`}
+                      />
+                      <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                        دقيقة قبل الموعد
+                      </span>
+                    </div>
+
+                    {reminderError ? (
+                      <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+                        <AlertCircle className="w-3 h-3 shrink-0" />
+                        <span>{reminderError}</span>
+                      </div>
+                    ) : createAlertPreview ? (
+                      <div className="text-[11px] font-semibold text-[#0D9488] dark:text-teal-400 bg-teal-50 dark:bg-teal-950/30 p-2 rounded-xl border border-teal-200/60 dark:border-teal-900/40">
+                        🔔 وقت التنبيه المحسوب: <span className="font-mono font-bold">{createAlertPreview.alertFormattedArabic}</span> بتوقيت عدن
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/60 p-2 rounded-xl">
+                    تم إيقاف التنبيه المسبق لهذا الموعد. لن يتم تشغيل نغمات أو إرسال إشعارات هاتف.
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  المدة التقديرية
+                </label>
+                <select
+                  value={durationMinutes}
+                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
+                  className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                >
+                  <option value={15}>15 دقيقة</option>
+                  <option value={30}>30 دقيقة</option>
+                  <option value={45}>45 دقيقة</option>
+                  <option value={60}>ساعة واحدة</option>
+                </select>
               </div>
 
               <div>
@@ -905,48 +1003,99 @@ export const AppointmentsScreen: React.FC = () => {
                 </div>
               </div>
 
-              <div>
-                <label
-                  htmlFor="rasd-postpone-appt-reminder-mins"
-                  className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1"
-                >
-                  التنبيه قبل الموعد الجديد بـ
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="rasd-postpone-appt-reminder-mins"
-                    type="number"
-                    inputMode="numeric"
-                    required
-                    min={MIN_REMINDER_MINUTES}
-                    max={MAX_REMINDER_MINUTES}
-                    step={1}
-                    value={postponeReminderMinutesInput}
-                    onChange={(e) => {
-                      const raw = e.target.value;
-                      setPostponeReminderMinutesInput(raw);
-                      const check = validateReminderMinutesInput(raw);
-                      setPostponeReminderError(check.isValid ? null : check.error || null);
-                    }}
-                    placeholder="مثال: 7 أو 23 أو 90"
-                    className={`w-full min-h-[42px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
-                      postponeReminderError
-                        ? 'border-rose-500 text-rose-600 dark:text-rose-400'
-                        : 'border-slate-200 dark:border-slate-700 focus:border-[#0284C7]'
-                    }`}
-                  />
-                  <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
-                    دقيقة
-                  </span>
+              {/* Postpone Reminder Controls Section */}
+              <div className="p-3.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/50 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Bell className={`w-4 h-4 ${isPostponeReminderEnabled ? 'text-amber-700 dark:text-amber-400' : 'text-slate-400'}`} />
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                      التنبيه قبل الموعد الجديد
+                    </span>
+                  </div>
+                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400">
+                      {isPostponeReminderEnabled ? 'مفعّل' : 'معطّل'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={isPostponeReminderEnabled}
+                      onChange={(e) => setIsPostponeReminderEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="relative w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-amber-600"></div>
+                  </label>
                 </div>
-                {postponeReminderError ? (
-                  <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 mt-1">
-                    <AlertCircle className="w-3 h-3 shrink-0" />
-                    <span>{postponeReminderError}</span>
+
+                <div className="text-[11px] text-amber-900/80 dark:text-amber-300 font-medium">
+                  {postponingAppt.reminderMinutesBefore === 0
+                    ? 'ℹ️ التنبيه الأصلي لهذا الموعد كان معطلاً.'
+                    : `ℹ️ التنبيه الأصلي كان مضبوطاً قبل الموعد بـ ${postponingAppt.reminderMinutesBefore ?? defaultReminderMins} دقيقة.`}
+                </div>
+
+                {isPostponeReminderEnabled ? (
+                  <div className="space-y-2 pt-1 border-t border-amber-200/60 dark:border-amber-900/40">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {[15, 30, 45, 60].map((mins) => (
+                        <button
+                          key={mins}
+                          type="button"
+                          onClick={() => {
+                            setPostponeReminderMinutesInput(String(mins));
+                            setPostponeReminderError(null);
+                          }}
+                          className={`px-2.5 py-1 rounded-xl text-[11px] font-bold border transition-colors cursor-pointer ${
+                            postponeReminderMinutesInput === String(mins)
+                              ? 'bg-amber-600 text-white border-amber-600'
+                              : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-amber-200 dark:border-amber-900/60 hover:border-amber-500'
+                          }`}
+                        >
+                          {mins} دقيقة
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        id="rasd-postpone-appt-reminder-mins"
+                        type="number"
+                        inputMode="numeric"
+                        required={isPostponeReminderEnabled}
+                        min={MIN_REMINDER_MINUTES}
+                        max={MAX_REMINDER_MINUTES}
+                        step={1}
+                        value={postponeReminderMinutesInput}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          setPostponeReminderMinutesInput(raw);
+                          const check = validateReminderMinutesInput(raw);
+                          setPostponeReminderError(check.isValid ? null : check.error || null);
+                        }}
+                        placeholder="مثال: 7 أو 23 أو 90"
+                        className={`w-full min-h-[38px] px-3.5 rounded-xl bg-white dark:bg-slate-900 border text-xs font-mono font-bold focus:outline-none ${
+                          postponeReminderError
+                            ? 'border-rose-500 text-rose-600 dark:text-rose-400'
+                            : 'border-slate-200 dark:border-slate-700 focus:border-amber-500'
+                        }`}
+                      />
+                      <span className="text-xs font-bold text-slate-600 dark:text-slate-300 shrink-0">
+                        دقيقة قبل الموعد
+                      </span>
+                    </div>
+
+                    {postponeReminderError ? (
+                      <div className="flex items-center gap-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+                        <AlertCircle className="w-3 h-3 shrink-0" />
+                        <span>{postponeReminderError}</span>
+                      </div>
+                    ) : postponeAlertPreview ? (
+                      <div className="text-[11px] font-semibold text-amber-900 dark:text-amber-200 bg-amber-100/70 dark:bg-amber-950/40 p-2 rounded-xl border border-amber-300/60 dark:border-amber-900/60">
+                        🔔 وقت التنبيه الجديد المحسوب: <span className="font-mono font-bold">{postponeAlertPreview.alertFormattedArabic}</span> بتوقيت عدن
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
-                  <div className="text-[10px] text-slate-500 mt-1">
-                    عدد الدقائق قبل الموعد لإرسال التنبيه (مثال: 7 أو 23 أو 90 دقيقة)
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800/60 p-2 rounded-xl">
+                    تم إيقاف التنبيه المسبق للموعد المؤجل. لن يتم تشغيل نغمات أو إرسال إشعارات.
                   </div>
                 )}
               </div>

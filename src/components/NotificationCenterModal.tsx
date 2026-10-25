@@ -10,9 +10,11 @@ import {
   RotateCcw,
   ArrowRight,
   AlertTriangle,
+  Trash2,
+  CheckCheck,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { Appointment } from '../types/rasd';
+import { Appointment, NotificationItem } from '../types/rasd';
 import {
   evaluateAppointmentStatus,
   getMinutesUntilAden,
@@ -37,15 +39,23 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   const {
     notifications,
     appointments,
+    taxpayers,
+    properties,
     markNotificationRead,
+    deleteNotification,
+    clearAllNotifications,
     setActiveScreen,
     setSelectedAppointmentId,
+    setSelectedTaxpayerId,
+    setSelectedPropertyId,
     postponeAppointment,
     showToast,
   } = useRasd();
 
   const [activeTab, setActiveTab] = useState<'all' | 'appointments' | 'alerts' | 'sounds'>('all');
   const [enablingPush, setEnablingPush] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
+  const [dismissedApptIds, setDismissedApptIds] = useState<Set<string>>(() => new Set());
   const [defaultReminderMins, setDefaultReminderMins] = useState<number>(() =>
     alertSound.getDefaultReminderMinutes()
   );
@@ -59,10 +69,14 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   // Compute live due appointments using each appointment's reminderMinutesBefore or the user's saved defaultReminderMinutes
   const dueAppointments = useMemo(() => {
     return appointments.filter((a) => {
-      const reminderMins = sanitizeReminderMinutes(
-        a.reminderMinutesBefore ?? defaultReminderMins,
-        defaultReminderMins
-      );
+      if (dismissedApptIds.has(a.id)) return false;
+      const reminderMins =
+        a.reminderMinutesBefore === 0
+          ? 0
+          : sanitizeReminderMinutes(
+              a.reminderMinutesBefore ?? defaultReminderMins,
+              defaultReminderMins
+            );
       const state = evaluateAppointmentStatus(
         a.status,
         a.scheduledDate,
@@ -71,7 +85,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
       );
       return state === 'due';
     });
-  }, [appointments, defaultReminderMins]);
+  }, [appointments, dismissedApptIds, defaultReminderMins]);
 
   const filteredNotifications = useMemo(() => {
     if (activeTab === 'appointments') {
@@ -86,6 +100,28 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   const unreadCount = useMemo(() => {
     return notifications.filter((n) => !n.isRead).length + dueAppointments.length;
   }, [notifications, dueAppointments]);
+
+  const handleDismissDueAppointment = (apptId: string) => {
+    setDismissedApptIds((prev) => new Set([...prev, apptId]));
+    showToast('تم استبعاد الموعد من قائمة التنبيهات المعلقة', 'info');
+  };
+
+  const handleCleanAll = async () => {
+    if (notifications.length === 0 && dueAppointments.length === 0) {
+      showToast('لا توجد إشعارات أو تنبيهات لتنظيفها', 'info');
+      return;
+    }
+    setIsCleaning(true);
+    try {
+      // Dismiss all current due appointment cards
+      const allApptIds = appointments.map((a) => a.id);
+      setDismissedApptIds(new Set(allApptIds));
+      // Delete all stored notifications from Firestore
+      await clearAllNotifications();
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   const handleEnablePush = async () => {
     setEnablingPush(true);
@@ -120,6 +156,99 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     const newTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     await postponeAppointment(appt, appt.scheduledDate, newTime, 'تأجيل مؤقت 15 دقيقة من مركز التنبيهات');
     showToast(`تم تأجيل الموعد إلى ${newTime}`, 'success');
+  };
+
+  const handleNotificationClick = (notif: NotificationItem) => {
+    if (!notif.isRead) {
+      markNotificationRead(notif.id);
+    }
+    onClose();
+
+    // 1. Check if it's an appointment notification or refers to an appointment
+    if (
+      notif.category === 'appointment' ||
+      notif.title.includes('موعد') ||
+      notif.message.includes('موعد')
+    ) {
+      const cleanTitle = notif.title.replace('موعد مجدول:', '').replace('تذكير بموعد:', '').trim();
+      const matchedAppt = appointments.find((a) => {
+        if (a.title && (notif.title.includes(a.title) || cleanTitle.includes(a.title))) return true;
+        if (a.taxpayerName && (notif.title.includes(a.taxpayerName) || notif.message.includes(a.taxpayerName))) return true;
+        return false;
+      });
+
+      if (matchedAppt) {
+        setSelectedAppointmentId(matchedAppt.id);
+        if (onSelectAppointment) {
+          onSelectAppointment(matchedAppt.id);
+        }
+      }
+      setActiveScreen('appointments');
+      return;
+    }
+
+    // 2. Field visit notification
+    if (
+      notif.category === 'visit' ||
+      notif.title.includes('زيارة') ||
+      notif.message.includes('زيارة')
+    ) {
+      setActiveScreen('visits');
+      return;
+    }
+
+    // 3. Financial assessment or transaction
+    if (
+      notif.category === 'finance' ||
+      notif.title.includes('مالي') ||
+      notif.message.includes('معاملة') ||
+      notif.message.includes('تقييم') ||
+      notif.message.includes('سداد') ||
+      notif.message.includes('ضريبة')
+    ) {
+      if (notif.title.includes('تقييم') || notif.message.includes('تقييم')) {
+        setActiveScreen('assessments');
+      } else {
+        setActiveScreen('transactions');
+      }
+      return;
+    }
+
+    // 4. Team notification
+    if (
+      notif.category === 'team' ||
+      notif.title.includes('فريق') ||
+      notif.title.includes('مساعد') ||
+      notif.title.includes('عضو')
+    ) {
+      setActiveScreen('team');
+      return;
+    }
+
+    // 5. Check if matches a Taxpayer
+    const matchedTaxpayer = taxpayers.find(
+      (t) =>
+        (t.fullName && (notif.title.includes(t.fullName) || notif.message.includes(t.fullName))) ||
+        (t.internalCode && notif.message.includes(t.internalCode))
+    );
+    if (matchedTaxpayer) {
+      setSelectedTaxpayerId(matchedTaxpayer.id);
+      setActiveScreen('taxpayers');
+      return;
+    }
+
+    // 6. Check if matches a Property
+    const matchedProp = properties.find(
+      (p) => notif.title.includes(p.title) || notif.message.includes(p.title)
+    );
+    if (matchedProp) {
+      setSelectedPropertyId(matchedProp.id);
+      setActiveScreen('properties');
+      return;
+    }
+
+    // Default fallback: appointments screen
+    setActiveScreen('appointments');
   };
 
   if (!isOpen) return null;
@@ -262,6 +391,25 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                 </button>
               </div>
 
+              {/* Cleanup Bar */}
+              {(filteredNotifications.length > 0 || dueAppointments.length > 0) && (
+                <div className="flex items-center justify-between gap-2 px-1 pb-1 text-xs">
+                  <span className="text-[11px] font-semibold text-[#77716B] dark:text-[#ACA59C]">
+                    {filteredNotifications.length + dueAppointments.length} إشعار وتنبيه
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleCleanAll}
+                    disabled={isCleaning}
+                    className="px-2.5 py-1 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 text-rose-700 dark:text-rose-400 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer border border-rose-200 dark:border-rose-900/60"
+                    title="حذف واستبعاد كافة الإشعارات وتنظيف القائمة"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>{isCleaning ? 'جاري التنظيف...' : 'تنظيف الإشعارات'}</span>
+                  </button>
+                </div>
+              )}
+
               {/* Active Due & Overdue Appointments Cards — Styled Like Reference Image Cards */}
               {dueAppointments.map((appt) => {
                 const diffMin = getMinutesUntilAden(appt.scheduledDate, appt.scheduledTime);
@@ -284,7 +432,9 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                 return (
                   <div
                     key={appt.id}
-                    className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-[0_2px_10px_rgba(41,39,37,0.03)] space-y-2.5"
+                    onClick={() => handleOpenAppointment(appt.id)}
+                    className="p-4 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] hover:border-[#743B46] dark:hover:border-[#E5B9C0] hover:shadow-xs space-y-2.5 cursor-pointer transition-all active:scale-[0.99]"
+                    title="انقر لفتح الموعد والانتقال المباشر للسجل"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="flex items-start gap-3">
@@ -333,7 +483,10 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                     <div className="flex items-center gap-2 pt-2 border-t border-[#EFECE6] dark:border-[#383431]">
                       <button
                         type="button"
-                        onClick={() => handleOpenAppointment(appt.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenAppointment(appt.id);
+                        }}
                         className="flex-1 min-h-[34px] px-3 rounded-xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <ExternalLink className="w-3 h-3" />
@@ -341,11 +494,26 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleSnooze(appt)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSnooze(appt);
+                        }}
                         className="min-h-[34px] px-3 rounded-xl bg-[#F0ECE5] hover:bg-[#E5DFD5] dark:bg-[#2B2826] text-[#292725] dark:text-[#F4F1EA] text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
                       >
                         <RotateCcw className="w-3 h-3" />
                         <span>تأجيل 15 د</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDismissDueAppointment(appt.id);
+                        }}
+                        className="min-h-[34px] px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#2B2826] dark:hover:bg-[#383431] text-slate-500 hover:text-rose-600 dark:text-[#ACA59C] text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                        title="إخفاء التنبيه من قائمة الإشعارات"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        <span>إخفاء</span>
                       </button>
                     </div>
                   </div>
@@ -383,14 +551,13 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   return (
                     <div
                       key={notif.id}
-                      onClick={() => {
-                        if (!notif.isRead) markNotificationRead(notif.id);
-                      }}
-                      className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                      onClick={() => handleNotificationClick(notif)}
+                      className={`p-4 rounded-2xl border transition-all cursor-pointer hover:border-[#743B46] dark:hover:border-[#E5B9C0] hover:shadow-xs active:scale-[0.99] ${
                         !notif.isRead
                           ? 'bg-[#FFFEFC] dark:bg-[#22201F] border-[#D5C7B8] dark:border-[#4A423D] shadow-2xs'
                           : 'bg-[#FFFEFC]/80 dark:bg-[#22201F]/80 border-[#E7E1D8] dark:border-[#383431]'
                       }`}
+                      title="انقر للانتقال المباشر إلى السجل المعروض"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-start gap-3">
@@ -425,14 +592,32 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                             <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-1 leading-relaxed">
                               {notif.message}
                             </p>
+                            <div className="flex items-center gap-1.5 mt-2 text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0]">
+                              <ExternalLink className="w-3 h-3" />
+                              <span>انقر للانتقال المباشر للسجل</span>
+                            </div>
                           </div>
                         </div>
 
-                        {timeLabel && (
-                          <span className="text-[11px] font-mono text-[#77716B] dark:text-[#ACA59C] shrink-0">
-                            {timeLabel}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {timeLabel && (
+                            <span className="text-[11px] font-mono text-[#77716B] dark:text-[#ACA59C]">
+                              {timeLabel}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteNotification(notif.id);
+                            }}
+                            className="w-7 h-7 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-400 hover:text-rose-600 flex items-center justify-center transition-colors cursor-pointer"
+                            title="حذف هذا الإشعار"
+                            aria-label="حذف هذا الإشعار"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );

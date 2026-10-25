@@ -21,12 +21,12 @@ import {
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import {
-  getAdenTodayString,
   getMinutesUntilAden,
   evaluateAppointmentStatus,
   sanitizeReminderMinutes,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
+import { useLiveAdenClock } from '../hooks/useLiveAdenClock';
 
 export const HomeScreen: React.FC = () => {
   const [isTasksCardCollapsed, setIsTasksCardCollapsed] = useState(false);
@@ -34,6 +34,8 @@ export const HomeScreen: React.FC = () => {
   const [defaultReminderMins, setDefaultReminderMins] = useState<number>(() =>
     alertSound.getDefaultReminderMinutes()
   );
+
+  const liveClock = useLiveAdenClock(1000);
 
   useEffect(() => {
     return alertSound.subscribe((updated) => {
@@ -56,21 +58,21 @@ export const HomeScreen: React.FC = () => {
     setSelectedAppointmentId,
   } = useRasd();
 
-  const todayStr = getAdenTodayString();
+  const todayStr = liveClock.todayStr;
 
-  // Compute appointment groups accurately using Aden time and configured reminder window
+  // Compute appointment groups accurately using live Aden time and configured reminder window
   const activeAppointments = appointments.filter(
     (a) => a.status === 'upcoming' || a.status === 'postponed'
   );
 
   const overdueAppointments = activeAppointments
-    .filter((a) => getMinutesUntilAden(a.scheduledDate, a.scheduledTime) < 0)
+    .filter((a) => getMinutesUntilAden(a.scheduledDate, a.scheduledTime, liveClock.now) < 0)
     .sort((a, b) =>
       `${a.scheduledDate} ${a.scheduledTime}`.localeCompare(`${b.scheduledDate} ${b.scheduledTime}`)
     );
 
   const upcomingAppointmentsAll = activeAppointments
-    .filter((a) => getMinutesUntilAden(a.scheduledDate, a.scheduledTime) >= 0)
+    .filter((a) => getMinutesUntilAden(a.scheduledDate, a.scheduledTime, liveClock.now) >= 0)
     .sort((a, b) =>
       `${a.scheduledDate} ${a.scheduledTime}`.localeCompare(`${b.scheduledDate} ${b.scheduledTime}`)
     );
@@ -86,7 +88,7 @@ export const HomeScreen: React.FC = () => {
     upcomingAppointmentsAll[0] || overdueAppointments[0] || null;
 
   const priorityDiffMin = priorityAppointment
-    ? getMinutesUntilAden(priorityAppointment.scheduledDate, priorityAppointment.scheduledTime)
+    ? getMinutesUntilAden(priorityAppointment.scheduledDate, priorityAppointment.scheduledTime, liveClock.now)
     : null;
 
   const priorityEvalState = priorityAppointment
@@ -94,10 +96,13 @@ export const HomeScreen: React.FC = () => {
         priorityAppointment.status,
         priorityAppointment.scheduledDate,
         priorityAppointment.scheduledTime,
-        sanitizeReminderMinutes(
-          priorityAppointment.reminderMinutesBefore ?? defaultReminderMins,
-          defaultReminderMins
-        )
+        priorityAppointment.reminderMinutesBefore === 0
+          ? 0
+          : sanitizeReminderMinutes(
+              priorityAppointment.reminderMinutesBefore ?? defaultReminderMins,
+              defaultReminderMins
+            ),
+        liveClock.now
       )
     : null;
 
@@ -111,6 +116,24 @@ export const HomeScreen: React.FC = () => {
 
   return (
     <div className="space-y-4 sm:space-y-5 pb-6" dir="rtl">
+      {/* Live Aden Clock Ticker Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] shadow-2xs">
+        <div className="flex items-center gap-2">
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <span className="text-xs font-bold text-[#292725] dark:text-[#F4F1EA]">
+            توقيت عدن المباشر:{' '}
+            <span className="font-mono font-extrabold text-[#743B46] dark:text-[#E5B9C0]">
+              {liveClock.formattedTimeArabic}
+            </span>
+          </span>
+        </div>
+        <div className="text-[11px] font-semibold text-[#77716B] dark:text-[#ACA59C]">
+          {liveClock.formattedDateArabic}
+        </div>
+      </div>
       {/* 1. Featured "الموعد القادم" (Next Appointment) Hero Card — Matching Reference Image */}
       <section
         aria-label="الموعد القادم"

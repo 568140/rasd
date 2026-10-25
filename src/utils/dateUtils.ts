@@ -157,13 +157,23 @@ export function evaluateAppointmentStatus(
   if (currentStatus === 'completed') return 'completed';
   if (currentStatus === 'cancelled') return 'cancelled';
 
-  const safeReminderMins = sanitizeReminderMinutes(reminderMinutesBefore, DEFAULT_REMINDER_MINUTES);
   const minutesUntil = getMinutesUntilAden(scheduledDate, scheduledTime, now);
 
   // If time has passed by more than 90 minutes without completion
   if (minutesUntil < -90) {
     return 'missed';
   }
+
+  // If reminder is explicitly disabled (0 minutes or negative)
+  if (reminderMinutesBefore <= 0) {
+    // Only marked due once the actual scheduled appointment time arrives and up to 90 mins after
+    if (minutesUntil <= 0 && minutesUntil >= -90) {
+      return 'due';
+    }
+    return currentStatus === 'postponed' ? 'postponed' : 'upcoming';
+  }
+
+  const safeReminderMins = sanitizeReminderMinutes(reminderMinutesBefore, DEFAULT_REMINDER_MINUTES);
 
   // If within the user's configured reminder window (e.g. 5 or 75 minutes before) or up to 90 minutes after scheduled time
   if (minutesUntil <= safeReminderMins && minutesUntil >= -90) {
@@ -175,6 +185,43 @@ export function evaluateAppointmentStatus(
   }
 
   return 'upcoming';
+}
+
+/**
+ * Calculates the exact target alert time in Asia/Aden timezone.
+ * Returns formatted 24h string, 12h Arabic string, date, and flag whether it triggers on same day.
+ */
+export function calculateAlertTimeAden(
+  scheduledDate: string,
+  scheduledTime: string,
+  reminderMinutes: number
+): {
+  alertTimeStr: string;
+  alertDateStr: string;
+  alertFormattedArabic: string;
+  isSameDay: boolean;
+} | null {
+  if (!scheduledDate || !scheduledTime || reminderMinutes <= 0) return null;
+  const targetTs = parseAdenDateTimeToTimestamp(scheduledDate, scheduledTime);
+  if (!targetTs) return null;
+  const alertTs = targetTs - reminderMinutes * 60 * 1000;
+  const alertDate = new Date(alertTs);
+  const alertDateStr = getAdenDateString(alertDate);
+  const alertTimeStr = getAdenTimeString(alertDate);
+
+  const formattedArabic = new Intl.DateTimeFormat('ar-YE', {
+    timeZone: ADEN_TIMEZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(alertDate);
+
+  return {
+    alertTimeStr,
+    alertDateStr,
+    alertFormattedArabic: formattedArabic,
+    isSameDay: alertDateStr === scheduledDate,
+  };
 }
 
 export interface AppointmentNotificationInput {

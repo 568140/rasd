@@ -47,6 +47,7 @@ import { themeEngine } from './services/themeEngine';
 import { alertSound } from './services/alertSound';
 import { evaluateAppointmentStatus, sanitizeReminderMinutes } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
+import { useLiveAdenClock } from './hooks/useLiveAdenClock';
 import { ScreenId } from './types/rasd';
 
 const SCREEN_TITLES: Record<ScreenId, string> = {
@@ -227,23 +228,29 @@ const RasdShell: React.FC = () => {
     };
   }, [setActiveScreen, setSelectedAppointmentId, setSelectedPropertyId, setSelectedTaxpayerId]);
 
+  const liveClock = useLiveAdenClock(1000);
+
   const dueCount = React.useMemo(() => {
     return (
       appointments.filter((a) => {
-        const remMins = sanitizeReminderMinutes(
-          a.reminderMinutesBefore ?? defaultReminderMins,
-          defaultReminderMins
-        );
+        const remMins =
+          a.reminderMinutesBefore === 0
+            ? 0
+            : sanitizeReminderMinutes(
+                a.reminderMinutesBefore ?? defaultReminderMins,
+                defaultReminderMins
+              );
         const s = evaluateAppointmentStatus(
           a.status,
           a.scheduledDate,
           a.scheduledTime,
-          remMins
+          remMins,
+          liveClock.now
         );
         return s === 'due';
       }).length + notifications.filter((n) => !n.isRead).length
     );
-  }, [appointments, notifications, defaultReminderMins]);
+  }, [appointments, notifications, defaultReminderMins, liveClock.now]);
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 
@@ -368,6 +375,11 @@ const RasdShell: React.FC = () => {
                         <span>متصل</span>
                       </span>
                     )}
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0] inline-flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+                      <span>{liveClock.timeStr}</span>
+                    </span>
                   </div>
                 </div>
               </>
@@ -406,6 +418,11 @@ const RasdShell: React.FC = () => {
                         <span>متصل</span>
                       </span>
                     )}
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono text-[10px] font-bold text-[#743B46] dark:text-[#E5B9C0] inline-flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+                      <span>{liveClock.timeStr}</span>
+                    </span>
                   </div>
                 </div>
               </>
