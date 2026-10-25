@@ -123,6 +123,7 @@ interface RasdContextValue {
   members: WorkspaceMember[];
   currentUserRole: WorkspaceRole;
   isOwner: boolean;
+  isPlatformAdmin: boolean;
   canApproveFinancials: boolean;
   canDeleteRecords: boolean;
   pendingSyncCount: number;
@@ -593,10 +594,15 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [authReady, firebaseUser, userProfile?.activeWorkspaceId]);
 
   // Computed Permissions
+  const isPlatformAdmin = useMemo(() => {
+    const email = (firebaseUser?.email || userProfile?.email || '').trim().toLowerCase();
+    return email === 'am1075022@gmail.com';
+  }, [firebaseUser?.email, userProfile?.email]);
+
   const isOwner = useMemo(() => {
     if (!firebaseUser || !workspace) return false;
-    return workspace.ownerId === firebaseUser.uid;
-  }, [firebaseUser, workspace]);
+    return workspace.ownerId === firebaseUser.uid || isPlatformAdmin;
+  }, [firebaseUser, workspace, isPlatformAdmin]);
 
   const currentMemberRecord = useMemo(() => {
     if (!firebaseUser) return null;
@@ -787,8 +793,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateWorkspaceSettings = useCallback(
     async (name: string, defaultCurrency: CurrencyCode, taxRatePercent: number, regionName: string) => {
-      if (!firebaseUser || !workspace || !isOwner) {
-        showToast('فقط مالك مساحة العمل يمكنه تعديل إعداداتها.', 'error');
+      if (!firebaseUser || !workspace || !isPlatformAdmin) {
+        showToast('فقط المدير الأساسي للمنصة يمكنه تعديل إعدادات المنصة ومساحة العمل.', 'error');
         return;
       }
       const path = `workspaces/${workspace.id}`;
@@ -811,7 +817,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
     },
-    [firebaseUser, workspace, isOwner, writeAuditLog, showToast]
+    [firebaseUser, workspace, isPlatformAdmin, writeAuditLog, showToast]
   );
 
   // Taxpayer Mutations
@@ -2263,6 +2269,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     members,
     currentUserRole,
     isOwner,
+    isPlatformAdmin,
     canApproveFinancials,
     canDeleteRecords,
     pendingSyncCount,

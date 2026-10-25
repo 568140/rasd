@@ -10,7 +10,11 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
+        strategies: 'injectManifest',
+        srcDir: 'public',
+        filename: 'sw.js',
         registerType: 'autoUpdate',
+        injectRegister: false,
         includeAssets: ['icon.svg', 'apple-touch-icon.png'],
         manifest: {
           id: '/',
@@ -45,9 +49,8 @@ export default defineConfig(() => {
             },
           ],
         },
-        workbox: {
+        injectManifest: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api/],
         },
         devOptions: {
           enabled: false,

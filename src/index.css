@@ -328,3 +328,58 @@ html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
   animation: voiceWavePulse 0.85s ease-in-out infinite;
 }
 
+/* Subtle Entrance & Status Animations for Auth Screen */
+@keyframes rasdFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes rasdStatusEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-rasd-logo {
+  animation: rasdFadeUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-rasd-card {
+  animation: rasdFadeUp 0.42s cubic-bezier(0.16, 1, 0.3, 1) 0.05s both;
+}
+
+.animate-rasd-status {
+  animation: rasdStatusEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rasd-logo,
+  .animate-rasd-card,
+  .animate-rasd-status,
+  .animate-voice-bar {
+    animation: none !important;
+    transform: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+

@@ -1,16 +1,126 @@
 /**
- * RASD Custom Service Worker with Web Push & Notification Click Handling
+ * RASD Unified Service Worker (Workbox injectManifest + Web Push & Notification Click Handling)
  */
 
-const CACHE_NAME = 'rasd-cache-v3';
+const CACHE_NAME = 'rasd-cache-v4';
+const PRECACHE_MANIFEST = self.__WB_MANIFEST || [];
+const PRECACHE_URLS = Array.from(
+  new Set([
+    '/',
+    '/index.html',
+    '/manifest.webmanifest',
+    '/icon.svg',
+    '/apple-touch-icon.png',
+    '/pwa-192x192.png',
+    '/pwa-512x512.png',
+    ...PRECACHE_MANIFEST.map((entry) => {
+      const rawUrl = typeof entry === 'string' ? entry : entry.url;
+      return rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+    }),
+  ])
+);
 
-self.addEventListener('install', () => {
+self.addEventListener('install', (event) => {
   self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(async (cache) => {
+      for (const url of PRECACHE_URLS) {
+        try {
+          await cache.add(url);
+        } catch {
+          // Ignore individual asset precache failures so SW installation never aborts
+        }
+      }
+    })
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    Promise.all([
+      caches.keys().then((keys) =>
+        Promise.all(
+          keys
+            .filter((key) => key !== CACHE_NAME && (key.startsWith('rasd-cache-') || key.startsWith('workbox-')))
+            .map((key) => caches.delete(key))
+        )
+      ),
+      self.clients.claim(),
+    ])
+  );
 });
+
+// Offline & Static Asset Caching (skips API and Firebase/Firestore dynamic requests)
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET') return;
+
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return;
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  // Never intercept backend API endpoints or Firebase/Google dynamic RPCs
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.hostname.includes('firestore.googleapis.com') ||
+    url.hostname.includes('identitytoolkit.googleapis.com') ||
+    url.hostname.includes('securetoken.googleapis.com')
+  ) {
+    return;
+  }
+
+  // SPA Navigation requests: Network-first with offline fallback to cached /index.html
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', copy)).catch(() => {});
+          }
+          return response;
+        })
+        .catch(async () => {
+          const cache = await caches.open(CACHE_NAME);
+          return (
+            (await cache.match('/index.html')) ||
+            (await cache.match('/')) ||
+            Response.error()
+          );
+        })
+    );
+    return;
+  }
+
+  // Same-origin static assets & Google Fonts: Cache-first with network fallback & cache update
+  if (
+    url.origin === self.location.origin ||
+    url.hostname.includes('fonts.googleapis.com') ||
+    url.hostname.includes('fonts.gstatic.com')
+  ) {
+    event.respondWith(
+      caches.match(request).then((cachedResponse) => {
+        const networkFetch = fetch(request)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              const responseClone = networkResponse.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {});
+            }
+            return networkResponse;
+          })
+          .catch(() => cachedResponse);
+
+        return cachedResponse || networkFetch;
+      })
+    );
+  }
+});
+
 
 // Push Event: triggers when server broadcasts a scheduled or overdue appointment alert
 self.addEventListener('push', (event) => {

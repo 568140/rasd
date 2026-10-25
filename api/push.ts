@@ -1,30 +1,78 @@
 import webpush from 'web-push';
 
-// Ephemeral fallback keys if the user has not yet configured VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY in Vercel
-let cachedFallbackKeys: { publicKey: string; privateKey: string } | null = null;
+// Local dev-only fallback keys (never used in production or Vercel serverless environments)
+let devOnlyFallbackKeys: { publicKey: string; privateKey: string } | null = null;
 
-function getVapidConfig() {
+interface VapidResolution {
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+  isConfiguredInEnv: boolean;
+  isReady: boolean;
+  status: 'configured' | 'dev_ephemeral_fallback' | 'missing_production_env' | 'invalid_production_env';
+  errorMessage?: string;
+}
+
+function getVapidConfig(): VapidResolution {
+  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
   const envPublic = (process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || '').trim();
   const envPrivate = (process.env.VAPID_PRIVATE_KEY || '').trim();
   const subject = (process.env.VAPID_SUBJECT || 'mailto:admin@rasd-field.app').trim();
 
-  if (
-    envPublic &&
-    envPrivate &&
+  const hasEnvKeys =
+    Boolean(envPublic) &&
+    Boolean(envPrivate) &&
     envPublic !== 'YOUR_VAPID_PUBLIC_KEY' &&
-    envPrivate !== 'YOUR_VAPID_PRIVATE_KEY'
-  ) {
-    return { publicKey: envPublic, privateKey: envPrivate, subject, isConfigured: true };
+    envPrivate !== 'YOUR_VAPID_PRIVATE_KEY';
+
+  if (hasEnvKeys) {
+    try {
+      webpush.setVapidDetails(subject, envPublic, envPrivate);
+      return {
+        publicKey: envPublic,
+        privateKey: envPrivate,
+        subject,
+        isConfiguredInEnv: true,
+        isReady: true,
+        status: 'configured',
+      };
+    } catch {
+      if (isProduction) {
+        return {
+          publicKey: '',
+          privateKey: '',
+          subject,
+          isConfiguredInEnv: false,
+          isReady: false,
+          status: 'invalid_production_env',
+          errorMessage: 'مفاتيح VAPID المضبوطة في متغيرات بيئة الإنتاج غير صالحة.',
+        };
+      }
+    }
+  } else if (isProduction) {
+    return {
+      publicKey: '',
+      privateKey: '',
+      subject,
+      isConfiguredInEnv: false,
+      isReady: false,
+      status: 'missing_production_env',
+      errorMessage: 'مفاتيح VAPID الثابتة غير مضبوطة في متغيرات بيئة الإنتاج (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY).',
+    };
   }
 
-  if (!cachedFallbackKeys) {
-    cachedFallbackKeys = webpush.generateVAPIDKeys();
+  // Non-production local development fallback only
+  if (!devOnlyFallbackKeys) {
+    devOnlyFallbackKeys = webpush.generateVAPIDKeys();
   }
+  webpush.setVapidDetails(subject, devOnlyFallbackKeys.publicKey, devOnlyFallbackKeys.privateKey);
   return {
-    publicKey: cachedFallbackKeys.publicKey,
-    privateKey: cachedFallbackKeys.privateKey,
+    publicKey: devOnlyFallbackKeys.publicKey,
+    privateKey: devOnlyFallbackKeys.privateKey,
     subject,
-    isConfigured: false,
+    isConfiguredInEnv: false,
+    isReady: true,
+    status: 'dev_ephemeral_fallback',
   };
 }
 
@@ -41,42 +89,36 @@ export default async function handler(req: any, res: any) {
   const action = String(req.query?.action || '').replace(/^\/+|\/+$/g, '');
   const vapid = getVapidConfig();
 
-  try {
-    webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
-  } catch {
-    // Fallback if invalid custom keys were entered in env vars
-    if (!cachedFallbackKeys) {
-      cachedFallbackKeys = webpush.generateVAPIDKeys();
-    }
-    webpush.setVapidDetails(
-      'mailto:admin@rasd-field.app',
-      cachedFallbackKeys.publicKey,
-      cachedFallbackKeys.privateKey
-    );
-  }
-
   if (req.method === 'GET' && (action === 'vapid-key' || !action)) {
     return res.status(200).json({
       publicKey: vapid.publicKey,
-      isConfiguredInEnv: vapid.isConfigured,
+      isConfiguredInEnv: vapid.isConfiguredInEnv,
+      status: vapid.status,
+      ...(vapid.errorMessage ? { message: vapid.errorMessage } : {}),
     });
   }
 
   if (req.method === 'POST' && action === 'subscribe') {
     return res.status(200).json({
-      success: true,
-      isConfiguredInEnv: vapid.isConfigured,
+      success: vapid.isReady,
+      isConfiguredInEnv: vapid.isConfiguredInEnv,
+      status: vapid.status,
+      ...(vapid.errorMessage ? { message: vapid.errorMessage } : {}),
     });
   }
 
   if (req.method === 'POST' && action === 'test') {
     const subscription = req.body?.subscription;
-    if (!subscription?.endpoint) {
+    if (!vapid.isReady || !subscription?.endpoint) {
       return res.status(200).json({
-        success: true,
+        success: false,
         delivered: 0,
         localFallback: true,
-        message: 'No active PushSubscription provided in request body; using local Service Worker notification.',
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
+        status: vapid.status,
+        message:
+          vapid.errorMessage ||
+          'No active PushSubscription provided in request body; using local Service Worker notification.',
       });
     }
 
@@ -92,12 +134,17 @@ export default async function handler(req: any, res: any) {
 
     try {
       await webpush.sendNotification(subscription, payload);
-      return res.status(200).json({ success: true, delivered: 1 });
+      return res.status(200).json({
+        success: true,
+        delivered: 1,
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
+      });
     } catch (err: unknown) {
       return res.status(200).json({
         success: false,
         delivered: 0,
         localFallback: true,
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -122,12 +169,15 @@ export default async function handler(req: any, res: any) {
       idempotencyKey,
     } = req.body || {};
 
-    if (!subscription?.endpoint) {
+    if (!vapid.isReady || !subscription?.endpoint) {
       return res.status(200).json({
-        success: true,
+        success: false,
         sentCount: 0,
         localFallback: true,
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
+        status: vapid.status,
         idempotencyKey,
+        ...(vapid.errorMessage ? { message: vapid.errorMessage } : {}),
       });
     }
 
@@ -202,12 +252,18 @@ export default async function handler(req: any, res: any) {
 
     try {
       await webpush.sendNotification(subscription, payload);
-      return res.status(200).json({ success: true, sentCount: 1, idempotencyKey });
+      return res.status(200).json({
+        success: true,
+        sentCount: 1,
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
+        idempotencyKey,
+      });
     } catch (err: unknown) {
       return res.status(200).json({
         success: false,
         sentCount: 0,
         localFallback: true,
+        isConfiguredInEnv: vapid.isConfiguredInEnv,
         error: err instanceof Error ? err.message : String(err),
       });
     }

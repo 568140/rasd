@@ -10,14 +10,40 @@ import {
 } from '../utils/dateUtils';
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const cleaned = base64String.trim();
+  const padding = '='.repeat((4 - (cleaned.length % 4)) % 4);
+  const base64 = (cleaned + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = window.atob(base64);
   const outputArray = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; ++i) {
     outputArray[i] = rawData.charCodeAt(i);
   }
   return outputArray;
+}
+
+/**
+ * Validates that a decoded VAPID public key is a valid uncompressed P-256 public key (65 bytes starting with 0x04)
+ */
+function isValidVapidPublicKeyBytes(keyBytes: Uint8Array): boolean {
+  return keyBytes.byteLength === 65 && keyBytes[0] === 0x04;
+}
+
+function areUint8ArraysEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function getSubscriptionServerKeyBytes(sub: PushSubscription): Uint8Array | null {
+  try {
+    const rawKey = sub.options?.applicationServerKey;
+    if (!rawKey) return null;
+    return new Uint8Array(rawKey);
+  } catch {
+    return null;
+  }
 }
 
 export interface PushStatus {
@@ -31,19 +57,34 @@ const LOCAL_NOTIF_FLAG_KEY = 'rasd_local_notif_enabled_v1';
 
 class PushService {
   private registration: ServiceWorkerRegistration | null = null;
+  private registrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 
   public async registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
     if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
       return null;
     }
-    try {
-      this.registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
-      await navigator.serviceWorker.ready;
+    if (this.registration) {
       return this.registration;
-    } catch (err) {
-      console.warn('Service worker registration failed:', err);
-      return null;
     }
+    if (this.registrationPromise) {
+      return this.registrationPromise;
+    }
+
+    this.registrationPromise = (async () => {
+      try {
+        const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        await navigator.serviceWorker.ready;
+        this.registration = reg;
+        return reg;
+      } catch (err) {
+        console.warn('Service worker registration failed:', err);
+        return null;
+      } finally {
+        this.registrationPromise = null;
+      }
+    })();
+
+    return this.registrationPromise;
   }
 
   public async getStatus(): Promise<PushStatus> {
@@ -124,17 +165,49 @@ class PushService {
       }
     }
 
-    // 3. If VAPID key is available and PushManager is supported, subscribe to Web Push
+    // 3. If VAPID key is available and PushManager is supported, validate and subscribe/renew safely
     if (vapidKey && reg && 'pushManager' in reg) {
       try {
+        let convertedKey: Uint8Array;
+        try {
+          convertedKey = urlBase64ToUint8Array(vapidKey);
+          if (!isValidVapidPublicKeyBytes(convertedKey)) {
+            console.warn('Invalid VAPID public key format (expected 65-byte uncompressed P-256 key); falling back to local notifications.');
+            return null;
+          }
+        } catch (keyErr) {
+          console.warn('Failed to decode VAPID public key; falling back to local notifications:', keyErr);
+          return null;
+        }
+
         const existingSub = await reg.pushManager.getSubscription();
-        const convertedKey = urlBase64ToUint8Array(vapidKey);
-        const subscription =
-          existingSub ||
-          (await reg.pushManager.subscribe({
+        let subscription: PushSubscription | null = null;
+
+        if (existingSub) {
+          const existingKeyBytes = getSubscriptionServerKeyBytes(existingSub);
+          const keysMatch =
+            existingKeyBytes !== null && areUint8ArraysEqual(existingKeyBytes, convertedKey);
+
+          if (keysMatch) {
+            subscription = existingSub;
+          } else {
+            // Existing subscription was bound to a different/outdated VAPID key — safely unsubscribe and re-subscribe
+            try {
+              await existingSub.unsubscribe();
+            } catch (unsubErr) {
+              console.warn('Failed to unsubscribe stale PushSubscription before key rotation:', unsubErr);
+            }
+            subscription = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: convertedKey as unknown as BufferSource,
+            });
+          }
+        } else {
+          subscription = await reg.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: convertedKey as unknown as BufferSource,
-          }));
+          });
+        }
 
         try {
           await fetch('/api/push/subscribe', {

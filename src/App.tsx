@@ -81,7 +81,7 @@ const RasdShell: React.FC = () => {
     firebaseUser,
     userProfile,
     workspace,
-    isOwner,
+    isPlatformAdmin,
     isOnline,
     pendingSyncCount,
     activeScreen,
@@ -321,7 +321,7 @@ const RasdShell: React.FC = () => {
     setActiveScreen('home');
   };
 
-  const roleLabel = isOwner ? 'مدير النظام' : userProfile?.jobTitle || 'مسؤول ميداني';
+  const roleLabel = isPlatformAdmin ? 'مدير النظام' : userProfile?.jobTitle || 'مسؤول ميداني';
 
   return (
     <div className="min-h-screen bg-[#F7F5F0] dark:bg-[#161514] text-[#292725] dark:text-[#F4F1EA] flex flex-col" dir="rtl">
@@ -586,8 +586,8 @@ const RasdShell: React.FC = () => {
         onClose={() => setIsThemeModalOpen(false)}
       />
 
-      {/* Temporary Local VAPID Key Generator Modal */}
-      {isVapidToolOpen && (
+      {/* Temporary Local VAPID Key Generator Modal (Primary Platform Admin Only) */}
+      {isPlatformAdmin && isVapidToolOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
           dir="rtl"

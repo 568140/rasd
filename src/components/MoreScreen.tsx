@@ -34,7 +34,7 @@ export const MoreScreen: React.FC = () => {
   const {
     userProfile,
     workspace,
-    isOwner,
+    isPlatformAdmin,
     isOnline,
     pendingSyncCount,
     darkMode,
@@ -234,7 +234,11 @@ export const MoreScreen: React.FC = () => {
       </div>
 
       {/* Settings, Sync & Transparency Hub */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      <div
+        className={`grid grid-cols-1 sm:grid-cols-2 ${
+          isPlatformAdmin ? 'lg:grid-cols-4' : ''
+        } gap-3.5`}
+      >
         <button
           type="button"
           onClick={() => {
@@ -274,32 +278,32 @@ export const MoreScreen: React.FC = () => {
           </p>
         </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setWsName(workspace?.name || '');
-            setWsCurrency(workspace?.defaultCurrency || 'SAR');
-            setWsTaxRate(String(workspace?.taxRatePercent ?? 0));
-            setWsRegion(workspace?.regionName || 'الرياض');
-            setSubPanel(subPanel === 'workspace' ? 'none' : 'workspace');
-          }}
-          className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
-            subPanel === 'workspace'
-              ? 'border-[#0D9488] ring-2 ring-teal-500/15'
-              : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0D9488]'
-          }`}
-        >
-          <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
-            <RefreshCw className="w-4 h-4 text-[#0D9488]" />
-            <span>إعدادات مساحة العمل والمزامنة</span>
-          </div>
-          <p className="text-xs text-slate-500">
-            العملة، نسبة التقييم، وحالة المزامنة ({pendingSyncCount} محلي)
-          </p>
-        </button>
-
-        {isOwner && (
+        {isPlatformAdmin && (
           <>
+            <button
+              type="button"
+              onClick={() => {
+                setWsName(workspace?.name || '');
+                setWsCurrency(workspace?.defaultCurrency || 'SAR');
+                setWsTaxRate(String(workspace?.taxRatePercent ?? 0));
+                setWsRegion(workspace?.regionName || 'الرياض');
+                setSubPanel(subPanel === 'workspace' ? 'none' : 'workspace');
+              }}
+              className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
+                subPanel === 'workspace'
+                  ? 'border-[#0D9488] ring-2 ring-teal-500/15'
+                  : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#0D9488]'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
+                <RefreshCw className="w-4 h-4 text-[#0D9488]" />
+                <span>إعدادات مساحة العمل والمزامنة</span>
+              </div>
+              <p className="text-xs text-slate-500">
+                العملة، نسبة التقييم، وحالة المزامنة ({pendingSyncCount} محلي)
+              </p>
+            </button>
+
             <button
               type="button"
               onClick={() => setSubPanel(subPanel === 'transparency' ? 'none' : 'transparency')}
@@ -318,7 +322,7 @@ export const MoreScreen: React.FC = () => {
               </p>
             </button>
 
-            {/* Temporary Local VAPID Key Pair Generator Card (Admin/Owner only) */}
+            {/* Temporary Local VAPID Key Pair Generator Card (Primary Platform Admin only) */}
             <button
               type="button"
               onClick={() => setSubPanel(subPanel === 'vapid' ? 'none' : 'vapid')}
@@ -346,7 +350,7 @@ export const MoreScreen: React.FC = () => {
       </div>
 
       {/* Sub-panel: Temporary Local VAPID Generator */}
-      {isOwner && subPanel === 'vapid' && (
+      {isPlatformAdmin && subPanel === 'vapid' && (
         <TempVapidGenerator
           onClose={() => setSubPanel('none')}
           onShowToast={showToast}
@@ -430,7 +434,7 @@ export const MoreScreen: React.FC = () => {
       )}
 
       {/* Sub-panel: Workspace Settings */}
-      {subPanel === 'workspace' && (
+      {isPlatformAdmin && subPanel === 'workspace' && (
         <form
           onSubmit={handleSaveWorkspace}
           className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-5 space-y-3.5 shadow-xs"
@@ -449,7 +453,7 @@ export const MoreScreen: React.FC = () => {
               <label className="block text-xs font-bold mb-1">اسم مساحة العمل</label>
               <input
                 type="text"
-                disabled={!isOwner}
+                disabled={!isPlatformAdmin}
                 value={wsName}
                 onChange={(e) => setWsName(e.target.value)}
                 className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
@@ -458,7 +462,7 @@ export const MoreScreen: React.FC = () => {
             <div>
               <label className="block text-xs font-bold mb-1">العملة الافتراضية</label>
               <select
-                disabled={!isOwner}
+                disabled={!isPlatformAdmin}
                 value={wsCurrency}
                 onChange={(e) => setWsCurrency(e.target.value as CurrencyCode)}
                 className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
@@ -477,7 +481,7 @@ export const MoreScreen: React.FC = () => {
                 min="0"
                 max="100"
                 step="0.5"
-                disabled={!isOwner}
+                disabled={!isPlatformAdmin}
                 value={wsTaxRate}
                 onChange={(e) => setWsTaxRate(e.target.value)}
                 className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
@@ -487,7 +491,7 @@ export const MoreScreen: React.FC = () => {
               <label className="block text-xs font-bold mb-1">المنطقة الافتراضية</label>
               <input
                 type="text"
-                disabled={!isOwner}
+                disabled={!isPlatformAdmin}
                 value={wsRegion}
                 onChange={(e) => setWsRegion(e.target.value)}
                 className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
@@ -495,28 +499,26 @@ export const MoreScreen: React.FC = () => {
             </div>
           </div>
 
-          {isOwner && (
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setSubPanel('none')}
-                className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
-              >
-                إغلاق
-              </button>
-              <button
-                type="submit"
-                className="min-h-[40px] px-5 rounded-xl bg-[#0D9488] text-white text-xs font-bold cursor-pointer"
-              >
-                حفظ إعدادات المساحة
-              </button>
-            </div>
-          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setSubPanel('none')}
+              className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
+            >
+              إغلاق
+            </button>
+            <button
+              type="submit"
+              className="min-h-[40px] px-5 rounded-xl bg-[#0D9488] text-white text-xs font-bold cursor-pointer"
+            >
+              حفظ إعدادات المساحة
+            </button>
+          </div>
         </form>
       )}
 
       {/* Sub-panel: Transparency Checklist & Android Packaging */}
-      {subPanel === 'transparency' && (
+      {isPlatformAdmin && subPanel === 'transparency' && (
         <div className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-5 space-y-4 text-xs leading-relaxed shadow-xs">
           <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
             تقرير الشفافية والتحقق والجاهزية (Transparency & Readiness Report)

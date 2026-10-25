@@ -474,7 +474,10 @@ async function startServer() {
   // Web Push & Background Alerts Subsystem
   // ==========================================
   const vapidKeysFilePath = path.resolve(__dirname, '.vapid-keys.json');
-  let vapidKeys: { publicKey: string; privateKey: string };
+  const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+  let vapidKeys: { publicKey: string; privateKey: string } = { publicKey: '', privateKey: '' };
+  let isVapidConfiguredInEnv = false;
+  let isVapidReady = false;
   const envPublicKey = (process.env.VAPID_PUBLIC_KEY || process.env.VITE_VAPID_PUBLIC_KEY || '').trim();
   const envPrivateKey = (process.env.VAPID_PRIVATE_KEY || '').trim();
   const vapidSubject = (process.env.VAPID_SUBJECT || 'mailto:admin@rasd-field.local').trim();
@@ -486,7 +489,8 @@ async function startServer() {
     envPrivateKey !== 'YOUR_VAPID_PRIVATE_KEY'
   ) {
     vapidKeys = { publicKey: envPublicKey, privateKey: envPrivateKey };
-  } else {
+    isVapidConfiguredInEnv = true;
+  } else if (!isProduction) {
     try {
       if (fs.existsSync(vapidKeysFilePath)) {
         vapidKeys = JSON.parse(fs.readFileSync(vapidKeysFilePath, 'utf-8'));
@@ -499,11 +503,21 @@ async function startServer() {
     }
   }
 
-  try {
-    webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
-  } catch {
-    vapidKeys = webpush.generateVAPIDKeys();
-    webpush.setVapidDetails('mailto:admin@rasd-field.local', vapidKeys.publicKey, vapidKeys.privateKey);
+  if (vapidKeys.publicKey && vapidKeys.privateKey) {
+    try {
+      webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
+      isVapidReady = true;
+    } catch {
+      if (!isProduction) {
+        vapidKeys = webpush.generateVAPIDKeys();
+        webpush.setVapidDetails('mailto:admin@rasd-field.local', vapidKeys.publicKey, vapidKeys.privateKey);
+        isVapidReady = true;
+      } else {
+        vapidKeys = { publicKey: '', privateKey: '' };
+        isVapidConfiguredInEnv = false;
+        isVapidReady = false;
+      }
+    }
   }
 
   interface StoredSubscription {
@@ -518,7 +532,15 @@ async function startServer() {
   const sentAlertsIdempotency = new Set<string>();
 
   app.get('/api/push/vapid-key', (_req, res) => {
-    res.json({ publicKey: vapidKeys.publicKey });
+    res.json({
+      publicKey: vapidKeys.publicKey,
+      isConfiguredInEnv: isVapidConfiguredInEnv,
+      status: isVapidConfiguredInEnv
+        ? 'configured'
+        : isVapidReady
+        ? 'dev_file_fallback'
+        : 'missing_production_env',
+    });
   });
 
   app.post('/api/push/subscribe', (req, res) => {

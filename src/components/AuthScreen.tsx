@@ -1,17 +1,26 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Mail,
   Lock,
   User,
   ArrowLeft,
+  ArrowRight,
   RefreshCw,
   AlertCircle,
   WifiOff,
+  Eye,
+  EyeOff,
   CheckCircle2,
+  Check,
+  Fingerprint,
+  Info,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { translateFirebaseError } from '../services/firebase';
+
+const REMEMBERED_EMAIL_KEY = 'rasd_remembered_login_email_v1';
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export const AuthScreen: React.FC = () => {
   const {
@@ -25,30 +34,83 @@ export const AuthScreen: React.FC = () => {
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [emailTouched, setEmailTouched] = useState(false);
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [resetSuccess, setResetSuccess] = useState(false);
+  const [biometricNotice, setBiometricNotice] = useState<string | null>(null);
+
+  // Load remembered email (never passwords) if previously saved
+  useEffect(() => {
+    try {
+      const savedEmail = localStorage.getItem(REMEMBERED_EMAIL_KEY);
+      if (savedEmail) {
+        setEmail(savedEmail);
+        setRememberMe(true);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }, []);
+
+  const trimmedEmail = email.trim();
+  const isEmailFormatValid = EMAIL_REGEX.test(trimmedEmail);
+  const showInlineEmailError = emailTouched && trimmedEmail.length > 0 && !isEmailFormatValid;
+
+  const switchMode = (nextMode: 'login' | 'register' | 'reset') => {
+    setMode(nextMode);
+    setLocalError(null);
+    setResetSuccess(false);
+    setBiometricNotice(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting || googleSubmitting) return;
     setLocalError(null);
+    setResetSuccess(false);
+    setBiometricNotice(null);
+    setEmailTouched(true);
 
     if (!isOnline) {
-      setLocalError('أنت غير متصل بالإنترنت حاليًا. تتطلب المصادقة الأولى اتصالًا بالشبكة.');
+      setLocalError('أنت غير متصل بالإنترنت حاليًا. تتطلب المصادقة اتصالًا بالشبكة.');
       return;
     }
 
-    if (!email.trim()) {
+    if (!trimmedEmail) {
       setLocalError('يرجى إدخال البريد الإلكتروني.');
       return;
+    }
+
+    if (!isEmailFormatValid) {
+      setLocalError('يرجى إدخال بريد إلكتروني بصيغة صحيحة (مثال: name@domain.com).');
+      return;
+    }
+
+    if (mode !== 'reset' && !password) {
+      setLocalError('يرجى إدخال كلمة المرور.');
+      return;
+    }
+
+    // Persist or clear only the email preference (never store passwords)
+    try {
+      if (rememberMe && mode === 'login') {
+        localStorage.setItem(REMEMBERED_EMAIL_KEY, trimmedEmail);
+      } else if (!rememberMe) {
+        localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+      }
+    } catch {
+      // Ignore storage errors
     }
 
     setSubmitting(true);
     try {
       if (mode === 'login') {
-        await loginWithEmail(email, password);
+        await loginWithEmail(trimmedEmail, password);
       } else if (mode === 'register') {
         if (fullName.trim().length < 2) {
           setLocalError('يرجى إدخال الاسم الكامل (حرفان على الأقل).');
@@ -60,10 +122,10 @@ export const AuthScreen: React.FC = () => {
           setSubmitting(false);
           return;
         }
-        await registerWithEmail(fullName, email, password);
+        await registerWithEmail(fullName.trim(), trimmedEmail, password);
       } else if (mode === 'reset') {
-        await resetPassword(email);
-        setMode('login');
+        await resetPassword(trimmedEmail);
+        setResetSuccess(true);
       }
     } catch (err) {
       setLocalError(translateFirebaseError(err));
@@ -75,6 +137,8 @@ export const AuthScreen: React.FC = () => {
   const handleGoogleLogin = async () => {
     if (submitting || googleSubmitting) return;
     setLocalError(null);
+    setResetSuccess(false);
+    setBiometricNotice(null);
     if (!isOnline) {
       setLocalError('يتطلب تسجيل الدخول عبر Google اتصالًا بالإنترنت.');
       return;
@@ -89,238 +153,545 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  return (
-    <div className="min-h-screen bg-[#F4F7FA] dark:bg-[#060D18] flex flex-col justify-between p-4 md:p-8" dir="rtl">
-      {/* Top Connectivity Bar */}
-      <div className="w-full max-w-5xl mx-auto flex items-center justify-between py-2">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#0B192C] via-[#0369A1] to-[#0D9488] text-white flex items-center justify-center shadow-sm">
-            <ShieldCheck className="w-5 h-5" />
-          </div>
-          <div>
-            <span className="text-lg font-extrabold tracking-tight text-slate-900 dark:text-white block leading-none">
-              رَصْد
-            </span>
-            <span className="text-xs text-slate-500 dark:text-slate-400">
-              المساعد الميداني الذكي
-            </span>
-          </div>
-        </div>
+  const handleBiometricClick = () => {
+    if (submitting || googleSubmitting) return;
+    setLocalError(null);
+    setResetSuccess(false);
+    setBiometricNotice(
+      'الدخول بالبصمة غير مفعّل في نظام المصادقة الحالي. يرجى تسجيل الدخول باستخدام البريد الإلكتروني وكلمة المرور أو عبر حساب Google.'
+    );
+  };
 
-        {!isOnline && (
-          <div className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 px-3 py-1.5 rounded-xl border border-amber-200 dark:border-amber-800">
-            <WifiOff className="w-3.5 h-3.5" />
-            <span>دون اتصال</span>
-          </div>
-        )}
+  return (
+    <div
+      className="min-h-screen w-full overflow-x-hidden bg-[#F7F5F0] dark:bg-[#161514] text-[#292725] dark:text-[#F4F1EA] flex flex-col justify-between relative selection:bg-[#743B46] selection:text-white"
+      dir="rtl"
+    >
+      {/* Very Subtle Yemeni Architectural Ornaments on Background Edges */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 overflow-hidden select-none z-0"
+      >
+        {/* Top Architectural Frieze (Yemeni Stepper & Geometric Band) */}
+        <svg
+          className="absolute top-0 left-0 right-0 w-full h-10 text-[#743B46] dark:text-[#E5B9C0] opacity-[0.045]"
+          preserveAspectRatio="none"
+          viewBox="0 0 1200 40"
+          fill="none"
+        >
+          <pattern id="yemeni-top-frieze" x="0" y="0" width="60" height="40" patternUnits="userSpaceOnUse">
+            <path
+              d="M0 0 H60 V6 H0 Z M30 8 L44 22 L30 36 L16 22 Z M30 14 L38 22 L30 30 L22 22 Z M0 22 L8 14 L16 22 L8 30 Z M44 22 L52 14 L60 22 L52 30 Z"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              fill="none"
+            />
+          </pattern>
+          <rect width="1200" height="40" fill="url(#yemeni-top-frieze)" />
+        </svg>
+
+        {/* Top-Right Yemeni Qamariya Arch Ornament */}
+        <svg
+          className="absolute -top-12 -right-12 w-72 h-72 sm:w-96 sm:h-96 text-[#743B46] dark:text-[#E5B9C0] opacity-[0.045]"
+          viewBox="0 0 240 240"
+          fill="none"
+        >
+          <circle cx="240" cy="0" r="210" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6 6" />
+          <circle cx="240" cy="0" r="175" stroke="currentColor" strokeWidth="1.2" />
+          <circle cx="240" cy="0" r="140" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="240" cy="0" r="105" stroke="currentColor" strokeWidth="1" strokeDasharray="4 4" />
+          <circle cx="240" cy="0" r="70" stroke="currentColor" strokeWidth="1.5" />
+          <path
+            d="M240 0 L30 0 M240 0 L48 95 M240 0 L95 155 M240 0 L155 195 M240 0 L240 210"
+            stroke="currentColor"
+            strokeWidth="1"
+          />
+          {/* Traditional Qamariya Star Interlace */}
+          <polygon
+            points="170,35 190,45 200,65 190,85 170,95 150,85 140,65 150,45"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+          />
+        </svg>
+
+        {/* Top-Left Yemeni Qamariya Arch Ornament */}
+        <svg
+          className="absolute -top-12 -left-12 w-72 h-72 sm:w-96 sm:h-96 text-[#A77B35] dark:text-[#D4AF37] opacity-[0.04]"
+          viewBox="0 0 240 240"
+          fill="none"
+        >
+          <circle cx="0" cy="0" r="210" stroke="currentColor" strokeWidth="1.5" strokeDasharray="6 6" />
+          <circle cx="0" cy="0" r="175" stroke="currentColor" strokeWidth="1.2" />
+          <circle cx="0" cy="0" r="140" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="0" cy="0" r="105" stroke="currentColor" strokeWidth="1" strokeDasharray="4 4" />
+          <circle cx="0" cy="0" r="70" stroke="currentColor" strokeWidth="1.5" />
+          <path
+            d="M0 0 L210 0 M0 0 L192 95 M0 0 L145 155 M0 0 L85 195 M0 0 L0 210"
+            stroke="currentColor"
+            strokeWidth="1"
+          />
+        </svg>
+
+        {/* Bottom-Right & Bottom-Left Subtle Yemeni Arch Silhouettes */}
+        <svg
+          className="absolute bottom-0 right-0 w-64 h-64 sm:w-80 sm:h-80 text-[#743B46] dark:text-[#E5B9C0] opacity-[0.04]"
+          viewBox="0 0 200 200"
+          fill="none"
+        >
+          <path
+            d="M200 200 V80 C200 35 165 0 120 0 C75 0 40 35 40 80 V200"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M185 200 V85 C185 48 156 18 120 18 C84 18 55 48 55 85 V200"
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeDasharray="5 5"
+          />
+          <circle cx="120" cy="75" r="32" stroke="currentColor" strokeWidth="1.2" />
+          <rect
+            x="104"
+            y="59"
+            width="32"
+            height="32"
+            transform="rotate(45 120 75)"
+            stroke="currentColor"
+            strokeWidth="1"
+          />
+        </svg>
+
+        <svg
+          className="absolute bottom-0 left-0 w-64 h-64 sm:w-80 sm:h-80 text-[#743B46] dark:text-[#E5B9C0] opacity-[0.04]"
+          viewBox="0 0 200 200"
+          fill="none"
+        >
+          <path
+            d="M160 200 V80 C160 35 125 0 80 0 C35 0 0 35 0 80 V200"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M145 200 V85 C145 48 116 18 80 18 C44 18 15 48 15 85 V200"
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeDasharray="5 5"
+          />
+          <circle cx="80" cy="75" r="32" stroke="currentColor" strokeWidth="1.2" />
+          <rect
+            x="64"
+            y="59"
+            width="32"
+            height="32"
+            transform="rotate(45 80 75)"
+            stroke="currentColor"
+            strokeWidth="1"
+          />
+        </svg>
       </div>
 
-      {/* Main Split Container */}
-      <div className="w-full max-w-5xl mx-auto my-auto grid grid-cols-1 lg:grid-cols-12 gap-8 items-center py-6">
-        {/* Right Column: Deep Navy Brand Showcase */}
-        <div className="lg:col-span-6 rounded-3xl bg-gradient-to-br from-[#0B192C] via-[#102A46] to-[#0369A1] text-white p-6 sm:p-8 shadow-lg space-y-5">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-xl bg-white/10 border border-white/15 text-xs font-bold text-teal-300">
-            <span>منظومة إدارة العمل الميداني العقاري والمالي</span>
-          </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold leading-tight">
-            إدارة ميدانية دقيقة للمكلفين والعقارات والزيارات والتقييمات
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
-            يعمل تطبيق رَصْد كأداة مهنية متكاملة للمسؤول الميداني وفريقه (حتى 10 أعضاء في مساحة عمل معزولة)، مع دعم الأوامر الصوتية العربية، وتحديد المواقع GPS، والعمل دون اتصال مع المزامنة التلقائية عبر Firebase.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-            <div className="p-4 rounded-2xl bg-white/10 border border-white/15">
-              <div className="flex items-center gap-2 text-sm font-bold text-white mb-1">
-                <CheckCircle2 className="w-4 h-4 text-teal-300 shrink-0" />
-                <span>عزلة مساحات العمل</span>
-              </div>
-              <p className="text-xs text-slate-300">
-                قواعد أمان Firestore صارمة تفصل بيانات كل مالك وفريقه بالكامل.
-              </p>
-            </div>
-            <div className="p-4 rounded-2xl bg-white/10 border border-white/15">
-              <div className="flex items-center gap-2 text-sm font-bold text-white mb-1">
-                <CheckCircle2 className="w-4 h-4 text-teal-300 shrink-0" />
-                <span>عمل ميداني دون اتصال</span>
-              </div>
-              <p className="text-xs text-slate-300">
-                تخزين محلي مستمر ومزامنة ذكية مع تمييز السجلات المحلية عن المؤكدة.
-              </p>
-            </div>
+      {/* Offline Connection Indicator */}
+      {!isOnline && (
+        <div className="relative z-20 w-full max-w-md mx-auto px-4 pt-4">
+          <div className="flex items-center justify-center gap-2 text-xs font-bold text-[#8D662A] dark:text-[#E5C17B] bg-[#F6EFE2] dark:bg-[#2E261B] px-4 py-2.5 rounded-2xl border border-[#E6D5B8] dark:border-[#4A3B28]">
+            <WifiOff className="w-4 h-4 shrink-0" />
+            <span>وضع عدم الاتصال — تتطلب المصادقة اتصالًا بالإنترنت</span>
           </div>
         </div>
+      )}
 
-        {/* Left Column: Android Material 3 Auth Card */}
-        <div className="lg:col-span-6">
-          <div className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800 rounded-3xl p-6 md:p-8 shadow-sm">
-            {/* Segmented Mode Switcher */}
-            <div className="grid grid-cols-3 gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-2xl mb-6">
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('login');
-                  setLocalError(null);
-                }}
-                className={`min-h-[42px] text-xs font-bold rounded-xl transition-colors cursor-pointer ${
-                  mode === 'login'
-                    ? 'bg-[#0B192C] dark:bg-[#0284C7] text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                تسجيل الدخول
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('register');
-                  setLocalError(null);
-                }}
-                className={`min-h-[42px] text-xs font-bold rounded-xl transition-colors cursor-pointer ${
-                  mode === 'register'
-                    ? 'bg-[#0B192C] dark:bg-[#0284C7] text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                حساب جديد
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMode('reset');
-                  setLocalError(null);
-                }}
-                className={`min-h-[42px] text-xs font-bold rounded-xl transition-colors cursor-pointer ${
-                  mode === 'reset'
-                    ? 'bg-[#0B192C] dark:bg-[#0284C7] text-white shadow-xs'
-                    : 'text-slate-600 dark:text-slate-400'
-                }`}
-              >
-                استعادة المرور
-              </button>
+      {/* Main Centered Login Experience */}
+      <main className="relative z-10 w-full max-w-[440px] mx-auto px-4 sm:px-6 py-7 sm:py-10 my-auto flex flex-col items-center">
+        {/* Top Brand Section: RASD Emblem, Title & Short Description */}
+        <div className="w-full flex flex-col items-center text-center mb-6 sm:mb-7 animate-rasd-logo">
+          {/* Emblem Container with subtle Yemeni arch framing */}
+          <div className="relative mb-3.5">
+            <div className="w-[72px] h-[72px] sm:w-[76px] sm:h-[76px] rounded-[24px] bg-gradient-to-br from-[#743B46] via-[#65313B] to-[#50242D] text-[#FFFEFC] flex items-center justify-center shadow-[0_10px_25px_-6px_rgba(116,59,70,0.42)] border border-[#8B4B57]/40 relative overflow-hidden">
+              {/* Subtle internal geometric ring */}
+              <div className="absolute inset-1.5 rounded-[18px] border border-[#FFFEFC]/15 pointer-events-none" />
+              <ShieldCheck className="w-9 h-9 text-[#FFFEFC] drop-shadow-xs" strokeWidth={2} />
             </div>
+            {/* Warm golden accent badge */}
+            <span
+              aria-hidden="true"
+              className="absolute -bottom-1 -left-1 w-5 h-5 rounded-full bg-[#A77B35] border-2 border-[#F7F5F0] dark:border-[#161514] flex items-center justify-center"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FFFEFC]" />
+            </span>
+          </div>
 
-            {localError && (
-              <div className="mb-4 p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span>{localError}</span>
+          <h1 className="text-3xl sm:text-[34px] font-extrabold tracking-tight text-[#292725] dark:text-[#F4F1EA] font-display leading-none">
+            رَصْد
+          </h1>
+          <p className="text-xs sm:text-sm font-medium text-[#77716B] dark:text-[#ACA59C] mt-2 max-w-[310px] leading-relaxed">
+            منصة الرصد الميداني ومتابعة الالتزامات الضريبية والعقارية
+          </p>
+        </div>
+
+        {/* Warm White Login Card */}
+        <section
+          aria-label={
+            mode === 'login'
+              ? 'بطاقة تسجيل الدخول'
+              : mode === 'register'
+              ? 'بطاقة إنشاء حساب جديد'
+              : 'بطاقة استعادة كلمة المرور'
+          }
+          className="w-full bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] rounded-[28px] p-6 sm:p-8 shadow-[0_14px_38px_-12px_rgba(116,59,70,0.09),0_4px_14px_-4px_rgba(41,39,37,0.04)] dark:shadow-[0_16px_40px_-12px_rgba(0,0,0,0.5)] animate-rasd-card"
+        >
+          {/* Card Header */}
+          {mode === 'reset' ? (
+            <div className="mb-6 text-right">
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-[#743B46] dark:text-[#E5B9C0] hover:text-[#5D2D37] mb-3.5 py-1 cursor-pointer transition-colors"
+              >
+                <ArrowRight className="w-4 h-4" />
+                <span>العودة إلى تسجيل الدخول</span>
+              </button>
+              <h2 className="text-xl sm:text-2xl font-extrabold text-[#292725] dark:text-[#F4F1EA] tracking-tight font-display">
+                استعادة كلمة المرور
+              </h2>
+              <p className="text-xs sm:text-sm text-[#77716B] dark:text-[#ACA59C] mt-1.5 leading-relaxed">
+                أدخل بريدك الإلكتروني المسجّل وسنرسل إليك رابطًا رسميًا لإعادة تعيين كلمة المرور.
+              </p>
+            </div>
+          ) : (
+            <div className="mb-6">
+              <div className="text-center mb-5">
+                <h2 className="text-xl sm:text-[22px] font-extrabold text-[#292725] dark:text-[#F4F1EA] tracking-tight font-display">
+                  {mode === 'login' ? 'تسجيل الدخول' : 'إنشاء حساب جديد'}
+                </h2>
+                <p className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-1">
+                  {mode === 'login'
+                    ? 'أدخل بيانات حسابك للوصول إلى مساحة العمل الميدانية'
+                    : 'سجّل بياناتك للبدء في إدارة المعاملات والمواعيد الميدانية'}
+                </p>
+              </div>
+
+              {/* Clean Segmented Mode Switcher */}
+              <div className="grid grid-cols-2 gap-1.5 p-1.5 bg-[#F2EFE9] dark:bg-[#2B2826] rounded-2xl border border-[#E7E1D8] dark:border-[#383431]">
+                <button
+                  type="button"
+                  onClick={() => switchMode('login')}
+                  className={`min-h-[42px] text-xs sm:text-sm font-bold rounded-xl transition-all duration-200 cursor-pointer whitespace-nowrap ${
+                    mode === 'login'
+                      ? 'bg-[#743B46] text-[#FFFEFC] shadow-xs'
+                      : 'text-[#77716B] dark:text-[#ACA59C] hover:text-[#292725] dark:hover:text-[#F4F1EA]'
+                  }`}
+                >
+                  تسجيل الدخول
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchMode('register')}
+                  className={`min-h-[42px] text-xs sm:text-sm font-bold rounded-xl transition-all duration-200 cursor-pointer whitespace-nowrap ${
+                    mode === 'register'
+                      ? 'bg-[#743B46] text-[#FFFEFC] shadow-xs'
+                      : 'text-[#77716B] dark:text-[#ACA59C] hover:text-[#292725] dark:hover:text-[#F4F1EA]'
+                  }`}
+                >
+                  حساب جديد
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Status Messages: Real Auth Errors, Reset Success, or Biometric Info */}
+          {localError && (
+            <div
+              role="alert"
+              className="mb-5 p-3.5 rounded-2xl bg-[#F6E9E7] dark:bg-[#3A2020] border border-[#E2C2BE] dark:border-[#5C3030] flex items-start gap-2.5 text-xs text-[#8E352F] dark:text-[#F2B8B5] leading-relaxed animate-rasd-status"
+            >
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#A64B45] dark:text-[#F2B8B5]" />
+              <span className="font-medium">{localError}</span>
+            </div>
+          )}
+
+          {resetSuccess && (
+            <div
+              role="status"
+              className="mb-5 p-4 rounded-2xl bg-[#ECF2EE] dark:bg-[#1E2E23] border border-[#C6D9CC] dark:border-[#334F3C] flex items-start gap-2.5 text-xs text-[#3B5944] dark:text-[#A6D4B4] leading-relaxed animate-rasd-status"
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#52765D] dark:text-[#86B394]" />
+              <div>
+                <p className="font-bold mb-0.5">تم إرسال رابط استعادة كلمة المرور بنجاح</p>
+                <p className="opacity-90">
+                  يرجى مراجعة بريدك الإلكتروني ({trimmedEmail}) واتباع الرابط لإعادة تعيين كلمة المرور.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {biometricNotice && (
+            <div
+              role="status"
+              className="mb-5 p-3.5 rounded-2xl bg-[#F6EFE2] dark:bg-[#2E261B] border border-[#E6D5B8] dark:border-[#4A3B28] flex items-start gap-2.5 text-xs text-[#7D5922] dark:text-[#E5C17B] leading-relaxed animate-rasd-status"
+            >
+              <Info className="w-4 h-4 shrink-0 mt-0.5 text-[#A77B35]" />
+              <span>{biometricNotice}</span>
+            </div>
+          )}
+
+          {/* Main Authentication Form */}
+          <form onSubmit={handleSubmit} noValidate className="space-y-4">
+            {/* Full Name Field (Register Mode Only) */}
+            {mode === 'register' && (
+              <div>
+                <label
+                  htmlFor="rasd-auth-fullname"
+                  className="block text-xs font-bold text-[#292725] dark:text-[#F4F1EA] mb-1.5"
+                >
+                  الاسم الكامل
+                </label>
+                <div className="relative">
+                  <User className="w-4 h-4 text-[#77716B] dark:text-[#ACA59C] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors" />
+                  <input
+                    id="rasd-auth-fullname"
+                    type="text"
+                    required
+                    autoComplete="name"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="أدخل اسمك الثلاثي أو الكامل"
+                    className="w-full min-h-[48px] pr-10 pl-4 rounded-2xl bg-[#F7F5F0]/80 dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] text-sm text-[#292725] dark:text-[#F4F1EA] placeholder:text-[#9E978F] dark:placeholder:text-[#6E6862] focus:outline-none focus:bg-[#FFFEFC] dark:focus:bg-[#22201F] focus:border-[#743B46] dark:focus:border-[#C47A87] focus:ring-4 focus:ring-[#743B46]/10 transition-all duration-200"
+                  />
+                </div>
               </div>
             )}
 
-            {/* Primary Recommended Action: Google Sign-In */}
+            {/* 1. Email Field with Icon, Smooth Focus Border & Format Validation */}
+            <div>
+              <label
+                htmlFor="rasd-auth-email"
+                className="block text-xs font-bold text-[#292725] dark:text-[#F4F1EA] mb-1.5"
+              >
+                البريد الإلكتروني
+              </label>
+              <div className="relative">
+                <Mail
+                  className={`w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors duration-200 ${
+                    showInlineEmailError
+                      ? 'text-[#A64B45]'
+                      : emailTouched && isEmailFormatValid
+                      ? 'text-[#743B46] dark:text-[#E5B9C0]'
+                      : 'text-[#77716B] dark:text-[#ACA59C]'
+                  }`}
+                />
+                <input
+                  id="rasd-auth-email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  required
+                  dir="ltr"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (localError) setLocalError(null);
+                  }}
+                  onBlur={() => setEmailTouched(true)}
+                  placeholder="name@example.com"
+                  aria-invalid={showInlineEmailError}
+                  className={`w-full min-h-[48px] pr-10 pl-4 rounded-2xl bg-[#F7F5F0]/80 dark:bg-[#1B1918] border text-sm text-left text-[#292725] dark:text-[#F4F1EA] placeholder:text-[#9E978F] dark:placeholder:text-[#6E6862] focus:outline-none focus:bg-[#FFFEFC] dark:focus:bg-[#22201F] transition-all duration-200 ${
+                    showInlineEmailError
+                      ? 'border-[#A64B45] focus:border-[#A64B45] focus:ring-4 focus:ring-[#A64B45]/12'
+                      : 'border-[#E7E1D8] dark:border-[#383431] focus:border-[#743B46] dark:focus:border-[#C47A87] focus:ring-4 focus:ring-[#743B46]/10'
+                  }`}
+                />
+              </div>
+              {showInlineEmailError && (
+                <p className="mt-1.5 text-[11px] font-medium text-[#A64B45] dark:text-[#F2B8B5] animate-rasd-status">
+                  يرجى التحقق من صيغة البريد الإلكتروني (مثال: user@domain.com).
+                </p>
+              )}
+            </div>
+
+            {/* 2. Password Field with Toggle Icon */}
             {mode !== 'reset' && (
-              <div className="mb-5">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label
+                    htmlFor="rasd-auth-password"
+                    className="block text-xs font-bold text-[#292725] dark:text-[#F4F1EA]"
+                  >
+                    كلمة المرور
+                  </label>
+                </div>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-[#77716B] dark:text-[#ACA59C] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none transition-colors duration-200" />
+                  <input
+                    id="rasd-auth-password"
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    required
+                    dir="ltr"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (localError) setLocalError(null);
+                    }}
+                    placeholder="••••••••"
+                    className="w-full min-h-[48px] pr-10 pl-12 rounded-2xl bg-[#F7F5F0]/80 dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] text-sm text-left text-[#292725] dark:text-[#F4F1EA] placeholder:text-[#9E978F] dark:placeholder:text-[#6E6862] focus:outline-none focus:bg-[#FFFEFC] dark:focus:bg-[#22201F] focus:border-[#743B46] dark:focus:border-[#C47A87] focus:ring-4 focus:ring-[#743B46]/10 transition-all duration-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    aria-pressed={showPassword}
+                    className="absolute left-1.5 top-1/2 -translate-y-1/2 min-w-[40px] min-h-[40px] flex items-center justify-center text-[#77716B] hover:text-[#743B46] dark:text-[#ACA59C] dark:hover:text-[#E5B9C0] rounded-xl transition-colors duration-150 cursor-pointer"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 4 & 5. Remember Me Interactive Checkbox & Forgot Password Trigger */}
+            {mode === 'login' && (
+              <div className="flex items-center justify-between gap-2 pt-0.5">
+                <label className="inline-flex items-center gap-2.5 cursor-pointer select-none py-1 group">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <span
+                    className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all duration-150 ${
+                      rememberMe
+                        ? 'bg-[#743B46] border-[#743B46] text-[#FFFEFC] shadow-2xs'
+                        : 'bg-[#F7F5F0] dark:bg-[#1B1918] border-[#D5CEC4] dark:border-[#4A4541] group-hover:border-[#743B46]'
+                    } peer-focus-visible:ring-3 peer-focus-visible:ring-[#743B46]/25`}
+                  >
+                    {rememberMe && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                  </span>
+                  <span className="text-xs font-semibold text-[#5C554E] dark:text-[#D5CFC7] group-hover:text-[#292725] dark:group-hover:text-[#F4F1EA] transition-colors">
+                    تذكرني
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => switchMode('reset')}
+                  className="text-xs font-bold text-[#743B46] dark:text-[#E5B9C0] hover:text-[#5D2D37] dark:hover:text-[#F2D5DA] py-1 transition-colors cursor-pointer"
+                >
+                  نسيت كلمة المرور؟
+                </button>
+              </div>
+            )}
+
+            {/* 3. Primary Submit Button with Press Motion, Loading State & Duplicate Click Prevention */}
+            <div className="pt-1.5">
+              <button
+                type="submit"
+                disabled={submitting || googleSubmitting}
+                className="w-full min-h-[50px] px-5 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] active:bg-[#4E242D] active:scale-[0.985] motion-reduce:transform-none text-[#FFFEFC] font-bold text-sm flex items-center justify-center gap-2.5 shadow-[0_8px_20px_-6px_rgba(116,59,70,0.45)] transition-all duration-150 cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
+              >
+                {submitting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+                    <span>
+                      {mode === 'login'
+                        ? 'جاري تسجيل الدخول...'
+                        : mode === 'register'
+                        ? 'جاري إنشاء الحساب...'
+                        : 'جاري إرسال الرابط...'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>
+                      {mode === 'login'
+                        ? 'تسجيل الدخول'
+                        : mode === 'register'
+                        ? 'إنشاء الحساب والبدء'
+                        : 'إرسال رابط الاستعادة'}
+                    </span>
+                    <ArrowLeft className="w-4 h-4 shrink-0" />
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+
+          {/* Secondary Auth Options: Google Sign-In & Honest Biometric Trigger */}
+          {mode !== 'reset' && (
+            <div className="mt-5">
+              <div className="relative my-4 flex items-center justify-center">
+                <div className="border-t border-[#E7E1D8] dark:border-[#383431] w-full" />
+                <span className="bg-[#FFFEFC] dark:bg-[#22201F] px-3 text-[11px] font-medium text-[#8C857E] dark:text-[#9E978F] whitespace-nowrap">
+                  أو المتابعة عبر
+                </span>
+                <div className="border-t border-[#E7E1D8] dark:border-[#383431] w-full" />
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                {/* Google Sign-In Button */}
                 <button
                   type="button"
                   disabled={submitting || googleSubmitting}
                   onClick={handleGoogleLogin}
-                  className="w-full min-h-[48px] rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2.5 shadow-xs transition-colors cursor-pointer"
+                  className="flex-1 min-h-[48px] px-4 rounded-2xl bg-[#F7F5F0]/70 hover:bg-[#EFECE6] active:scale-[0.99] motion-reduce:transform-none dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] disabled:opacity-60 disabled:pointer-events-none text-[#292725] dark:text-[#F4F1EA] font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer"
                 >
                   {googleSubmitting ? (
                     <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>جاري فتح نافذة Google وتأكيد الدخول...</span>
+                      <RefreshCw className="w-4 h-4 animate-spin text-[#743B46] dark:text-[#E5B9C0]" />
+                      <span>جاري الاتصال بـ Google...</span>
                     </>
                   ) : (
                     <>
-                      <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
-                        <path d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 15.64 5 12c0-3.64 3.36-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81Z" />
+                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          fill="#4285F4"
+                          d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"
+                        />
+                        <path
+                          fill="#34A853"
+                          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24Z"
+                        />
+                        <path
+                          fill="#FBBC05"
+                          d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09Z"
+                        />
+                        <path
+                          fill="#EA4335"
+                          d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96Z"
+                        />
                       </svg>
-                      <span>المتابعة السريعة باستخدام حساب Google</span>
+                      <span>حساب Google</span>
                     </>
                   )}
                 </button>
-                <div className="relative my-5 flex items-center justify-center">
-                  <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
-                  <span className="bg-white dark:bg-[#0D1829] px-3 text-xs text-slate-400 whitespace-nowrap">
-                    أو عبر البريد الإلكتروني
-                  </span>
-                  <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
-                </div>
+
+                {/* Biometric Info Button (Transparent status without fake simulation) */}
+                {mode === 'login' && (
+                  <button
+                    type="button"
+                    disabled={submitting || googleSubmitting}
+                    onClick={handleBiometricClick}
+                    title="الدخول بالبصمة (غير مفعّل حاليًا)"
+                    aria-label="معلومات الدخول بالبصمة"
+                    className="min-h-[48px] min-w-[48px] px-3.5 rounded-2xl bg-[#F7F5F0]/70 hover:bg-[#EFECE6] active:scale-[0.98] motion-reduce:transform-none dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] text-[#77716B] hover:text-[#743B46] dark:text-[#ACA59C] dark:hover:text-[#E5B9C0] flex items-center justify-center transition-all duration-150 cursor-pointer shrink-0"
+                  >
+                    <Fingerprint className="w-5 h-5" />
+                  </button>
+                )}
               </div>
-            )}
+            </div>
+          )}
+        </section>
+      </main>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {mode === 'register' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                    الاسم الكامل
-                  </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-                    <input
-                      type="text"
-                      required
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      placeholder="مثال: أحمد العتيبي"
-                      className="w-full min-h-[46px] pr-10 pl-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#0284C7]"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  البريد الإلكتروني
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-                  <input
-                    type="email"
-                    required
-                    dir="ltr"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@example.com"
-                    className="w-full min-h-[46px] pr-10 pl-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-left text-slate-900 dark:text-white focus:outline-none focus:border-[#0284C7]"
-                  />
-                </div>
-              </div>
-
-              {mode !== 'reset' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                    كلمة المرور
-                  </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-                    <input
-                      type="password"
-                      required
-                      dir="ltr"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      className="w-full min-h-[46px] pr-10 pl-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm text-left text-slate-900 dark:text-white focus:outline-none focus:border-[#0284C7]"
-                    />
-                  </div>
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full min-h-[48px] rounded-2xl bg-[#0B192C] hover:bg-[#102A46] dark:bg-[#0284C7] dark:hover:bg-[#0369A1] text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <span>
-                  {submitting
-                    ? 'جاري التنفيذ...'
-                    : mode === 'login'
-                    ? 'تسجيل الدخول بالبريد'
-                    : mode === 'register'
-                    ? 'إنشاء حساب جديد'
-                    : 'إرسال رابط استعادة كلمة المرور'}
-                </span>
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-            </form>
-          </div>
-        </div>
-      </div>
-
-      <footer className="w-full max-w-5xl mx-auto py-3 text-center text-xs text-slate-400">
-        رَصْد — المساعد الميداني الذكي
+      {/* Quiet Editorial Footer */}
+      <footer className="relative z-10 w-full text-center px-4 py-4 text-[11px] font-medium text-[#8C857E] dark:text-[#77716B]">
+        منصة رَصْد — نظام الإدارة الميدانية المتكامل
       </footer>
     </div>
   );

@@ -23,7 +23,7 @@ export const TeamScreen: React.FC = () => {
     workspace,
     members,
     auditLogs,
-    isOwner,
+    isPlatformAdmin,
     addTeamMember,
     updateTeamMember,
     removeTeamMember,
@@ -89,37 +89,39 @@ export const TeamScreen: React.FC = () => {
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
-            {workspace?.inviteCode && (
-              <div className="flex items-center gap-2 bg-white/10 border border-white/15 px-3.5 py-2 rounded-2xl">
-                <div>
-                  <div className="text-[10px] text-slate-300">رمز ربط المساحة</div>
-                  <div className="text-xs font-mono font-bold text-teal-300">
-                    {workspace.inviteCode}
+          {isPlatformAdmin && (
+            <div className="flex flex-wrap items-center gap-2.5">
+              {workspace?.inviteCode && (
+                <div className="flex items-center gap-2 bg-white/10 border border-white/15 px-3.5 py-2 rounded-2xl">
+                  <div>
+                    <div className="text-[10px] text-slate-300">رمز ربط المساحة</div>
+                    <div className="text-xs font-mono font-bold text-teal-300">
+                      {workspace.inviteCode}
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyInvite}
+                    className="min-h-[34px] min-w-[34px] rounded-xl hover:bg-white/15 flex items-center justify-center cursor-pointer"
+                    title="نسخ الرمز"
+                  >
+                    <Copy className="w-4 h-4 text-white" />
+                  </button>
                 </div>
+              )}
+
+              {remainingSlots > 0 && (
                 <button
                   type="button"
-                  onClick={handleCopyInvite}
-                  className="min-h-[34px] min-w-[34px] rounded-xl hover:bg-white/15 flex items-center justify-center cursor-pointer"
-                  title="نسخ الرمز"
+                  onClick={() => setIsAddOpen(true)}
+                  className="min-h-[46px] px-4 rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-2 shadow-sm cursor-pointer transition-colors"
                 >
-                  <Copy className="w-4 h-4 text-white" />
+                  <UserPlus className="w-4 h-4" />
+                  <span>إضافة مساعد ({remainingSlots} متاح)</span>
                 </button>
-              </div>
-            )}
-
-            {isOwner && remainingSlots > 0 && (
-              <button
-                type="button"
-                onClick={() => setIsAddOpen(true)}
-                className="min-h-[46px] px-4 rounded-2xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-2 shadow-sm cursor-pointer transition-colors"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>إضافة مساعد ({remainingSlots} متاح)</span>
-              </button>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -199,7 +201,7 @@ export const TeamScreen: React.FC = () => {
                   </div>
                 </div>
 
-                {isOwner && !isMemberOwner ? (
+                {isPlatformAdmin && !isMemberOwner ? (
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <select
                       value={m.role}
