@@ -32,9 +32,48 @@ export const BACKUP_WORKSPACE_COLLECTIONS = [
 ] as const;
 
 export type BackupWorkspaceCollectionName = (typeof BACKUP_WORKSPACE_COLLECTIONS)[number];
-export type BackupCollectionName = BackupWorkspaceCollectionName | 'users';
+
+/**
+ * مجموعات حوكمة المنصة والاشتراكات والتراخيص (المرحلة الثانية 2A–2D):
+ * - account_licenses: تراخيص الحسابات ومساحات العمل وحالات الموافقة والاشتراك
+ * - subscription_packages: باقات الاشتراك ومددها وحدود أعضاء الفريق
+ * - platform_staff: مساعدو إدارة المنصة وصلاحياتهم المفوضة
+ */
+export const BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS = [
+  'account_licenses',
+  'subscription_packages',
+  'platform_staff',
+] as const;
+
+export type BackupPlatformCollectionName = (typeof BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS)[number];
+export type BackupCollectionName =
+  | BackupWorkspaceCollectionName
+  | 'users'
+  | BackupPlatformCollectionName;
 
 export type BackupScopeMode = 'single_workspace' | 'all_accessible_workspaces';
+
+/**
+ * تحديد قائمة المجموعات الفعّالة في النسخة الاحتياطية:
+ * - الوضع القياسي (المرحلة الأولى): 13 مجموعة تشغيلية (BACKUP_WORKSPACE_COLLECTIONS + 'users')
+ * - وضع شمول حوكمة المنصة والتراخيص (المرحلة 2-D): 16 مجموعة تشمل (account_licenses, subscription_packages, platform_staff)
+ */
+export function resolveActiveBackupCollections(
+  includePlatformGovernance?: boolean,
+  rawOrData?: Partial<Record<BackupCollectionName, unknown>>
+): BackupCollectionName[] {
+  const baseCollections: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+  const hasPlatformCollectionsInData = Boolean(
+    rawOrData &&
+      BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS.some((col) =>
+        Object.prototype.hasOwnProperty.call(rawOrData, col)
+      )
+  );
+  if (includePlatformGovernance === true || hasPlatformCollectionsInData) {
+    return [...baseCollections, ...BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS];
+  }
+  return baseCollections;
+}
 
 /**
  * المجموعات التي يسمح مخطط قواعد الأمان (/firestore.rules) بوجود حقل 'id' داخل جسم الوثيقة (docData).
@@ -166,6 +205,28 @@ export const OFFICIAL_ALLOWED_SCHEMA_FIELDS: ReadonlySet<string> = new Set<strin
   'summary',
   'actorId',
   'actorName',
+  // account_licenses (المرحلة الثانية)
+  'ownerEmail',
+  'planId',
+  'startsAt',
+  'expiresAt',
+  'maxMembers',
+  // subscription_packages (المرحلة الثانية)
+  'nameAr',
+  'descriptionAr',
+  'billingCycle',
+  'durationDays',
+  'isLifetime',
+  'isFreeOwnerPlan',
+  'defaultMaxMembers',
+  'priceAmount',
+  'isActive',
+  // platform_staff (المرحلة الثانية)
+  'permissions',
+  'canViewRequests',
+  'canApproveAndRenew',
+  'canManagePackages',
+  'assignedByUid',
   // حقول التغليف القياسية لأنواع Firestore داخل النسخة الاحتياطية
   '__rasdFirestoreType',
   'seconds',
@@ -330,140 +391,183 @@ export interface BackupRestoreResult {
  * بيان صريح ودقيق بأن النسخة هي نسخة بيانات تشغيلية جزئية وليست نسخة تعافٍ كامل للنظام،
  * مع تفصيل كافة المجموعات المشمولة والبيانات والأنظمة المستثناة
  */
-export function getBackupScopeDisclosure(scopeMode: BackupScopeMode): CollectionScopeDisclosure {
+export function getBackupScopeDisclosure(
+  scopeMode: BackupScopeMode,
+  includePlatformGovernance = false
+): CollectionScopeDisclosure {
+  const baseIncludedCollections: CollectionScopeDisclosure['includedCollections'] = [
+    {
+      name: 'workspaces',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description:
+        scopeMode === 'all_accessible_workspaces'
+          ? 'جميع مساحات العمل المتاحة لمالك المنصة في قاعدة البيانات (تستخدم الحقل المعتمد ownerId)'
+          : 'وثيقة مساحة العمل النشطة الحالية بكامل إعداداتها وأعضائها (ownerId, memberUids)',
+    },
+    {
+      name: 'workspace_members',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات عضوية الفريق والأدوار المعتمدة (owner, field_assistant, finance_assistant, viewer)',
+    },
+    {
+      name: 'taxpayers',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات المكلفين وبيانات الهوية والتواصل والمنطقة',
+    },
+    {
+      name: 'properties',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات العقارات وإحداثيات GPS وارتباطها بالمكلفين',
+    },
+    {
+      name: 'property_units',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات الوحدات العقارية المستقلة المرتبطة بالعقارات',
+    },
+    {
+      name: 'field_visits',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات الزيارات الميدانية وإحداثيات الرصد والملاحظات',
+    },
+    {
+      name: 'appointments',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات المواعيد الميدانية وحالاتها وعداد التأجيلات',
+    },
+    {
+      name: 'appointment_postponements',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'append_only_immutable',
+      description: 'سجلات تاريخ تأجيل المواعيد (مجموعة تاريخية غير قابلة للتعديل أو الحذف Append-Only)',
+    },
+    {
+      name: 'financial_assessments',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات التقييمات المالية وحالة اعتمادها وقفلها النهائي (Terminal State Lock)',
+    },
+    {
+      name: 'financial_transactions',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات المعاملات المالية والمدفوعات والقيود العكسية (لا تقبل الحذف)',
+    },
+    {
+      name: 'notifications',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description: 'سجلات الإشعارات والتنبيهات الداخلية الخاصة بمساحة العمل',
+    },
+    {
+      name: 'audit_logs',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'append_only_immutable',
+      description: includePlatformGovernance
+        ? 'سجل التدقيق الأمني التاريخي الشامل للعمليات الميدانية والعمليات الإدارية للمنصة والتراخيص (غير قابل للتعديل أو الحذف نهائيًا Append-Only)'
+        : 'سجل التدقيق الأمني التاريخي (غير قابل للتعديل أو الحذف نهائيًا Append-Only)',
+    },
+    {
+      name: 'users',
+      acquisitionMethod: 'firestore_document_lookup_by_known_uid',
+      immutabilityPolicy: 'mutable_with_rules',
+      description:
+        'ملفات تعريف المستخدمين المرتبطين بمساحات العمل المستهدفة ممن يملك المستخدِم الحالي صلاحية قراءتها عبر getDoc',
+    },
+  ];
+
+  const platformGovernanceIncluded: CollectionScopeDisclosure['includedCollections'] = [
+    {
+      name: 'account_licenses',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description:
+        'سجلات تراخيص الحسابات ومساحات العمل وحالات الموافقة (pending, active, expired, suspended, rejected) وتواريخ الصلاحية وحدود الفريق',
+    },
+    {
+      name: 'subscription_packages',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description:
+        'سجلات باقات الاشتراك الرسمية ومددها (شهرية، ربع سنوية، سنوية، مدى الحياة) وحدود أعضاء الفريق والأسعار',
+    },
+    {
+      name: 'platform_staff',
+      acquisitionMethod: 'firestore_collection_query',
+      immutabilityPolicy: 'mutable_with_rules',
+      description:
+        'سجلات مساعدي إدارة المنصة وصلاحياتهم المفوضة (canViewRequests, canApproveAndRenew, canManagePackages)',
+    },
+  ];
+
+  const excludedCollectionsAndData: CollectionScopeDisclosure['excludedCollectionsAndData'] = [
+    {
+      name: 'Firebase Authentication (حسابات المصادقة والهويات)',
+      category: 'authentication',
+      reason:
+        'حسابات تسجيل الدخول في Firebase Auth وكلمات المرور وروابط Google OAuth وحالة توثيق البريد (email_verified) تُدار في خدمة الهوية المستقلة خارج Firestore ولا يمكن تصديرها من المتصفح.',
+    },
+    {
+      name: 'Firestore Indexes & Security Rules (الفهارس وقواعد الأمان)',
+      category: 'infrastructure_indexes_rules',
+      reason:
+        'الفهارس المركبة (Composite Indexes) وقواعد الأمان المنشورة (/firestore.rules) هي إعدادات بنية تحتية في مشروع Firebase وليست وثائق بيانات.',
+    },
+    {
+      name: 'Environment & Deployment Config (متغيرات البيئة وإعدادات النشر)',
+      category: 'environment_and_secrets',
+      reason:
+        'ملفات البيئة (.env) وإعدادات Vercel ومفاتيح VAPID الخاصة ومفاتيح واجهات البرمجة مستثناة ومحظورة أمنيًا لمنع تسرب الأسرار.',
+    },
+    {
+      name: 'External Push Subscriptions (.data/push-subscriptions.json)',
+      category: 'external_notifications',
+      reason:
+        'اشتراكات إشعارات الدفع (Web Push Endpoints & Auth Keys) وسجل الإرسال مخزنة على الخادم المحلي خارج Firestore وتحتوي على مفاتيح تشفير جلسات المتصفح.',
+    },
+    {
+      name: 'admins (مجموعة مشرفي ومالكي المنصة)',
+      category: 'security_governance',
+      reason:
+        'قواعد Firestore تمنع الاستعلام الجماعي (list) على مجموعة admins، كما يُمنع أمنيًا استعادة أو تعديل صلاحيات مالكي المنصة عبر ملفات النسخ الاحتياطي.',
+    },
+    includePlatformGovernance
+      ? {
+          name: 'Client LocalStorage & Ephemeral UI Cache (البيانات المؤقتة في متصفح العميل)',
+          category: 'security_governance',
+          reason:
+            'البيانات المحلية المؤقتة في متصفح المستخدم (localStorage والوضع الداكن والتفضيلات المؤقتة) محلية في الجهاز ولا تُعد جزءًا من قاعدة البيانات المركزية.',
+        }
+      : {
+          name: 'account_licenses & platform_staff (مجموعات التراخيص ومساعدي المنصة)',
+          category: 'security_governance',
+          reason:
+            'هذه المجموعات جزء من المخطط المقترح للمرحلة الثانية (في DRAFT_firestore.rules فقط) ولم تُنشأ أو تُفعل في قاعدة بيانات الإنتاج خلال المرحلة الأولى.',
+        },
+    {
+      name: 'users (الحسابات غير المرتبطة أو المحمية بقواعد الخصوصية)',
+      category: 'privacy_restricted_profiles',
+      reason:
+        'قواعد /users/{userId} تمنع list الشامل وتقصر get على صاحب الحساب نفسه أو مالك المنصة (isAdmin)؛ لذا عند التصدير بواسطة مالك مساحة عمل عادي لا تُجلب وثائق /users الخاصة بأعضاء فريقه الآخرين.',
+    },
+  ];
+
   return {
     backupClassification: 'operational_firestore_data_partial',
     isFullDisasterRecovery: false,
-    disclaimerAr:
-      'تنبيه هام: هذه النسخة تغطي البيانات التشغيلية المسموح بقراءتها في Firestore فقط، ولا تُعدّ نسخة تعافٍ كامل للنظام (Not Full Disaster Recovery)؛ إذ لا تشمل حسابات Firebase Authentication، ولا الفهارس المركبة، ولا متغيرات البيئة، ولا اشتراكات إشعارات الدفع الخارجية على الخادم.',
-    includedCollections: [
-      {
-        name: 'workspaces',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description:
-          scopeMode === 'all_accessible_workspaces'
-            ? 'جميع مساحات العمل المتاحة لمالك المنصة في قاعدة البيانات (تستخدم الحقل المعتمد ownerId)'
-            : 'وثيقة مساحة العمل النشطة الحالية بكامل إعداداتها وأعضائها (ownerId, memberUids)',
-      },
-      {
-        name: 'workspace_members',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات عضوية الفريق والأدوار المعتمدة (owner, field_assistant, finance_assistant, viewer)',
-      },
-      {
-        name: 'taxpayers',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات المكلفين وبيانات الهوية والتواصل والمنطقة',
-      },
-      {
-        name: 'properties',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات العقارات وإحداثيات GPS وارتباطها بالمكلفين',
-      },
-      {
-        name: 'property_units',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات الوحدات العقارية المستقلة المرتبطة بالعقارات',
-      },
-      {
-        name: 'field_visits',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات الزيارات الميدانية وإحداثيات الرصد والملاحظات',
-      },
-      {
-        name: 'appointments',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات المواعيد الميدانية وحالاتها وعداد التأجيلات',
-      },
-      {
-        name: 'appointment_postponements',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'append_only_immutable',
-        description: 'سجلات تاريخ تأجيل المواعيد (مجموعة تاريخية غير قابلة للتعديل أو الحذف Append-Only)',
-      },
-      {
-        name: 'financial_assessments',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات التقييمات المالية وحالة اعتمادها وقفلها النهائي (Terminal State Lock)',
-      },
-      {
-        name: 'financial_transactions',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات المعاملات المالية والمدفوعات والقيود العكسية (لا تقبل الحذف)',
-      },
-      {
-        name: 'notifications',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'mutable_with_rules',
-        description: 'سجلات الإشعارات والتنبيهات الداخلية الخاصة بمساحة العمل',
-      },
-      {
-        name: 'audit_logs',
-        acquisitionMethod: 'firestore_collection_query',
-        immutabilityPolicy: 'append_only_immutable',
-        description: 'سجل التدقيق الأمني التاريخي (غير قابل للتعديل أو الحذف نهائيًا Append-Only)',
-      },
-      {
-        name: 'users',
-        acquisitionMethod: 'firestore_document_lookup_by_known_uid',
-        immutabilityPolicy: 'mutable_with_rules',
-        description:
-          'ملفات تعريف المستخدمين المرتبطين بمساحات العمل المستهدفة ممن يملك المستخدِم الحالي صلاحية قراءتها عبر getDoc',
-      },
-    ],
-    excludedCollectionsAndData: [
-      {
-        name: 'Firebase Authentication (حسابات المصادقة والهويات)',
-        category: 'authentication',
-        reason:
-          'حسابات تسجيل الدخول في Firebase Auth وكلمات المرور وروابط Google OAuth وحالة توثيق البريد (email_verified) تُدار في خدمة الهوية المستقلة خارج Firestore ولا يمكن تصديرها من المتصفح.',
-      },
-      {
-        name: 'Firestore Indexes & Security Rules (الفهارس وقواعد الأمان)',
-        category: 'infrastructure_indexes_rules',
-        reason:
-          'الفهارس المركبة (Composite Indexes) وقواعد الأمان المنشورة (/firestore.rules) هي إعدادات بنية تحتية في مشروع Firebase وليست وثائق بيانات.',
-      },
-      {
-        name: 'Environment & Deployment Config (متغيرات البيئة وإعدادات النشر)',
-        category: 'environment_and_secrets',
-        reason:
-          'ملفات البيئة (.env) وإعدادات Vercel ومفاتيح VAPID الخاصة ومفاتيح واجهات البرمجة مستثناة ومحظورة أمنيًا لمنع تسرب الأسرار.',
-      },
-      {
-        name: 'External Push Subscriptions (.data/push-subscriptions.json)',
-        category: 'external_notifications',
-        reason:
-          'اشتراكات إشعارات الدفع (Web Push Endpoints & Auth Keys) وسجل الإرسال مخزنة على الخادم المحلي خارج Firestore وتحتوي على مفاتيح تشفير جلسات المتصفح.',
-      },
-      {
-        name: 'admins (مجموعة مشرفي ومالكي المنصة)',
-        category: 'security_governance',
-        reason:
-          'قواعد Firestore تمنع الاستعلام الجماعي (list) على مجموعة admins، كما يُمنع أمنيًا استعادة أو تعديل صلاحيات مالكي المنصة عبر ملفات النسخ الاحتياطي.',
-      },
-      {
-        name: 'account_licenses & platform_staff (مجموعات التراخيص ومساعدي المنصة)',
-        category: 'security_governance',
-        reason:
-          'هذه المجموعات جزء من المخطط المقترح للمرحلة الثانية (في DRAFT_firestore.rules فقط) ولم تُنشأ أو تُفعل في قاعدة بيانات الإنتاج خلال المرحلة الأولى.',
-      },
-      {
-        name: 'users (الحسابات غير المرتبطة أو المحمية بقواعد الخصوصية)',
-        category: 'privacy_restricted_profiles',
-        reason:
-          'قواعد /users/{userId} تمنع list الشامل وتقصر get على صاحب الحساب نفسه أو مالك المنصة (isAdmin)؛ لذا عند التصدير بواسطة مالك مساحة عمل عادي لا تُجلب وثائق /users الخاصة بأعضاء فريقه الآخرين.',
-      },
-    ],
+    disclaimerAr: includePlatformGovernance
+      ? 'تنبيه هام: هذه النسخة تغطي البيانات التشغيلية ومجموعات التراخيص والباقات ومساعدي المنصة وسجلات التدقيق المسموح بقراءتها في Firestore فقط، ولا تُعدّ نسخة تعافٍ كامل للنظام (Not Full Disaster Recovery)؛ إذ لا تشمل حسابات Firebase Authentication، ولا الفهارس المركبة وقواعد الأمان، ولا متغيرات البيئة والأسرار، ولا مجموعة /admins، ولا اشتراكات إشعارات الدفع الخارجية على الخادم.'
+      : 'تنبيه هام: هذه النسخة تغطي البيانات التشغيلية المسموح بقراءتها في Firestore فقط، ولا تُعدّ نسخة تعافٍ كامل للنظام (Not Full Disaster Recovery)؛ إذ لا تشمل حسابات Firebase Authentication، ولا الفهارس المركبة، ولا متغيرات البيئة، ولا اشتراكات إشعارات الدفع الخارجية على الخادم.',
+    includedCollections: includePlatformGovernance
+      ? [...baseIncludedCollections, ...platformGovernanceIncluded]
+      : baseIncludedCollections,
+    excludedCollectionsAndData,
   };
 }
 
@@ -863,7 +967,10 @@ export function verifyBackupIntegrity(payload: RasdBackupPayload): BackupIntegri
   const unapprovedIdFieldLeaks: { collection: BackupCollectionName; docId: string }[] = [];
   const invalidOwnerIdRecords: { collection: BackupCollectionName; docId: string; reason: string }[] = [];
 
-  const allCollectionNames: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+  const allCollectionNames: BackupCollectionName[] = resolveActiveBackupCollections(
+    undefined,
+    payload.data
+  );
   let collectionCountsMatch = true;
   let documentIdSetMatch = true;
   let totalDocumentsChecked = 0;
@@ -882,6 +989,9 @@ export function verifyBackupIntegrity(payload: RasdBackupPayload): BackupIntegri
     notifications: new Set(),
     audit_logs: new Set(),
     users: new Set(),
+    account_licenses: new Set(),
+    subscription_packages: new Set(),
+    platform_staff: new Set(),
   };
 
   for (const colName of allCollectionNames) {
@@ -915,7 +1025,13 @@ export function verifyBackupIntegrity(payload: RasdBackupPayload): BackupIntegri
       }
 
       // فحص توافق ownerId مع المخطط الفعلي وعدم استخدام ownerUid الخاطئ
-      if (colName !== 'users' && docData && typeof docData === 'object') {
+      if (
+        colName !== 'users' &&
+        colName !== 'subscription_packages' &&
+        colName !== 'platform_staff' &&
+        docData &&
+        typeof docData === 'object'
+      ) {
         if (Object.prototype.hasOwnProperty.call(docData, 'ownerUid') && !docData.ownerId) {
           invalidOwnerIdRecords.push({
             collection: colName,
@@ -923,15 +1039,56 @@ export function verifyBackupIntegrity(payload: RasdBackupPayload): BackupIntegri
             reason: 'يحتوي السجل على الحقل غير المعتمد ownerUid بدلاً من الحقل الفعلي ownerId',
           });
         }
-        if (colName === 'workspaces') {
+        if (colName === 'workspaces' || colName === 'account_licenses') {
           const ownerIdVal = typeof docData.ownerId === 'string' ? docData.ownerId.trim() : '';
           if (!ownerIdVal) {
             invalidOwnerIdRecords.push({
               collection: colName,
               docId: docId || `#${index}`,
-              reason: 'وثيقة مساحة العمل تفتقر إلى الحقل الإلزامي ownerId',
+              reason: `وثيقة ${colName} تفتقر إلى الحقل الإلزامي ownerId`,
             });
           }
+        }
+        if (colName === 'account_licenses') {
+          const wsIdVal = typeof docData.workspaceId === 'string' ? docData.workspaceId.trim() : '';
+          const maxMembersVal = Number(docData.maxMembers);
+          if (!wsIdVal || wsIdVal !== docId) {
+            invalidOwnerIdRecords.push({
+              collection: colName,
+              docId: docId || `#${index}`,
+              reason: 'معرّف وثيقة الترخيص في account_licenses يجب أن يطابق الحقل workspaceId',
+            });
+          }
+          if (!Number.isInteger(maxMembersVal) || maxMembersVal < 1 || maxMembersVal > 10) {
+            invalidOwnerIdRecords.push({
+              collection: colName,
+              docId: docId || `#${index}`,
+              reason: 'حقل maxMembers في account_licenses يجب أن يكون عددًا صحيحًا بين 1 و10',
+            });
+          }
+        }
+      }
+
+      if (colName === 'platform_staff' && docData && typeof docData === 'object') {
+        const staffUid = typeof docData.uid === 'string' ? docData.uid.trim() : '';
+        const staffEmail = typeof docData.email === 'string' ? docData.email.trim().toLowerCase() : '';
+        if (!staffUid || staffUid !== docId) {
+          invalidOwnerIdRecords.push({
+            collection: colName,
+            docId: docId || `#${index}`,
+            reason: 'معرّف وثيقة المساعد في platform_staff يجب أن يطابق الحقل uid',
+          });
+        }
+        if (
+          staffEmail === 'am1075022@gmail.com' ||
+          staffEmail === 'ahah26@gmail.com' ||
+          staffEmail === 'ahah26h@gmail.com'
+        ) {
+          invalidOwnerIdRecords.push({
+            collection: colName,
+            docId: docId || `#${index}`,
+            reason: 'لا يجوز إدراج البريد الإلكتروني للمالك الدائم ضمن مجموعة مساعدي المنصة platform_staff',
+          });
         }
       }
     });
@@ -1003,6 +1160,19 @@ export function verifyBackupIntegrity(payload: RasdBackupPayload): BackupIntegri
           workspaceId: wsId || '(مفقود)',
         });
       }
+    }
+  }
+
+  // التحقق من ارتباط سجلات التراخيص (account_licenses) بمساحات العمل الموجودة في النسخة الاحتياطية
+  for (const env of payload.data?.account_licenses || []) {
+    const docId = String(env.docId || '');
+    const wsId = typeof env.docData?.workspaceId === 'string' ? env.docData.workspaceId.trim() : '';
+    if (!wsId || !idSets.workspaces.has(wsId)) {
+      orphanWorkspaceRecords.push({
+        collection: 'account_licenses',
+        docId,
+        workspaceId: wsId || '(مفقود)',
+      });
     }
   }
 
@@ -1179,9 +1349,11 @@ function normalizeRawInputToEnvelope(
   const extractedId =
     typeof record.id === 'string' && record.id.trim()
       ? record.id.trim()
-      : colName === 'users' && typeof record.uid === 'string'
+      : (colName === 'users' || colName === 'platform_staff') && typeof record.uid === 'string'
         ? record.uid.trim()
-        : '';
+        : colName === 'account_licenses' && typeof record.workspaceId === 'string'
+          ? record.workspaceId.trim()
+          : '';
 
   if (!COLLECTIONS_ALLOWING_ID_IN_DOCUMENT_BODY.has(colName)) {
     delete record.id;
@@ -1207,10 +1379,15 @@ export function buildBackupPayloadFromRawData(params: {
   targetWorkspaceId: string | null;
   projectId?: string;
   databaseId?: string;
+  includePlatformGovernance?: boolean;
 }): RasdBackupPayload {
   const removedKeysTracker: string[] = [];
   const timestampCounter = { count: 0 };
-  const allCollectionNames: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+  const allCollectionNames: BackupCollectionName[] = resolveActiveBackupCollections(
+    params.includePlatformGovernance,
+    params.rawCollections
+  );
+  const isPlatformGovernanceActive = allCollectionNames.includes('account_licenses');
 
   const sanitizedData = {} as Record<BackupCollectionName, BackupDocumentEnvelope[]>;
   const collectionCounts = {} as Record<BackupCollectionName, number>;
@@ -1262,7 +1439,7 @@ export function buildBackupPayloadFromRawData(params: {
       projectId: params.projectId || FIREBASE_PROJECT_ID,
       databaseId: params.databaseId || FIRESTORE_DATABASE_ID,
     },
-    scopeDisclosure: getBackupScopeDisclosure(params.scopeMode),
+    scopeDisclosure: getBackupScopeDisclosure(params.scopeMode, isPlatformGovernanceActive),
     manifest: {
       totalDocuments,
       collectionCounts,
@@ -1280,6 +1457,7 @@ export function buildBackupPayloadFromRawData(params: {
  * استخراج نسخة احتياطية حقيقية مباشرة من Firestore
  * - يفصل d.id في envelope.docId ويحفظ d.data() في envelope.docData دون حقن حقل id.
  * - يستخدم الحقل الفعلي المعتمد ownerId لاستخراج معرف مالك مساحة العمل.
+ * - يدعم اختياريًا تضمين مجموعات حوكمة المنصة والتراخيص (account_licenses, subscription_packages, platform_staff).
  */
 export async function exportFirestoreBackup(options: {
   scopeMode: BackupScopeMode;
@@ -1287,6 +1465,7 @@ export async function exportFirestoreBackup(options: {
   currentUserUid: string;
   currentUserEmail: string;
   firestoreInstance?: Firestore;
+  includePlatformGovernance?: boolean;
 }): Promise<{ payload: RasdBackupPayload; integrity: BackupIntegrityReport }> {
   const targetDb = options.firestoreInstance || db;
   const rawCollections: Partial<Record<BackupCollectionName, BackupDocumentEnvelope[]>> = {};
@@ -1294,6 +1473,8 @@ export async function exportFirestoreBackup(options: {
   if (options.currentUserUid) {
     knownUserUids.add(options.currentUserUid);
   }
+  const shouldIncludeGovernance =
+    options.includePlatformGovernance ?? options.scopeMode === 'all_accessible_workspaces';
 
   for (const colName of BACKUP_WORKSPACE_COLLECTIONS) {
     if (options.scopeMode === 'all_accessible_workspaces') {
@@ -1360,12 +1541,56 @@ export async function exportFirestoreBackup(options: {
   }
   rawCollections.users = userEnvelopes;
 
+  if (shouldIncludeGovernance) {
+    try {
+      if (options.scopeMode === 'all_accessible_workspaces') {
+        const licSnap = await getDocs(collection(targetDb, 'account_licenses'));
+        rawCollections.account_licenses = licSnap.docs.map((d) => ({
+          docId: d.id,
+          docData: d.data() as Record<string, unknown>,
+        }));
+      } else if (options.workspaceId) {
+        const licDoc = await getDoc(doc(targetDb, 'account_licenses', options.workspaceId));
+        rawCollections.account_licenses = licDoc.exists()
+          ? [{ docId: licDoc.id, docData: licDoc.data() as Record<string, unknown> }]
+          : [];
+      }
+    } catch {
+      rawCollections.account_licenses = [];
+    }
+
+    try {
+      const pkgSnap = await getDocs(collection(targetDb, 'subscription_packages'));
+      rawCollections.subscription_packages = pkgSnap.docs.map((d) => ({
+        docId: d.id,
+        docData: d.data() as Record<string, unknown>,
+      }));
+    } catch {
+      rawCollections.subscription_packages = [];
+    }
+
+    try {
+      if (options.scopeMode === 'all_accessible_workspaces') {
+        const staffSnap = await getDocs(collection(targetDb, 'platform_staff'));
+        rawCollections.platform_staff = staffSnap.docs.map((d) => ({
+          docId: d.id,
+          docData: d.data() as Record<string, unknown>,
+        }));
+      } else {
+        rawCollections.platform_staff = [];
+      }
+    } catch {
+      rawCollections.platform_staff = [];
+    }
+  }
+
   const payload = buildBackupPayloadFromRawData({
     rawCollections,
     createdByUid: options.currentUserUid,
     createdByEmail: options.currentUserEmail,
     scopeMode: options.scopeMode,
     targetWorkspaceId: options.scopeMode === 'single_workspace' ? options.workspaceId : null,
+    includePlatformGovernance: shouldIncludeGovernance,
   });
 
   const integrity = verifyBackupIntegrity(payload);
@@ -1384,7 +1609,11 @@ export class InMemoryFirestoreSandbox {
   public batchCommitsCount = 0;
 
   constructor() {
-    const allCols: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+    const allCols: BackupCollectionName[] = [
+      ...BACKUP_WORKSPACE_COLLECTIONS,
+      'users',
+      ...BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS,
+    ];
     allCols.forEach((c) => this.store.set(c, new Map()));
   }
 
@@ -1437,9 +1666,16 @@ export class InMemoryFirestoreSandbox {
     this.batchCommitsCount += 1;
   }
 
-  public exportAllCollections(): Record<BackupCollectionName, BackupDocumentEnvelope[]> {
+  public exportAllCollections(
+    activeCollections?: BackupCollectionName[]
+  ): Record<BackupCollectionName, BackupDocumentEnvelope[]> {
     const result = {} as Record<BackupCollectionName, BackupDocumentEnvelope[]>;
-    const allCols: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+    const allCols: BackupCollectionName[] =
+      activeCollections || [
+        ...BACKUP_WORKSPACE_COLLECTIONS,
+        'users',
+        ...BACKUP_PLATFORM_GOVERNANCE_COLLECTIONS,
+      ];
     for (const colName of allCols) {
       const colMap = this.store.get(colName) || new Map();
       result[colName] = Array.from(colMap.entries())
@@ -1472,7 +1708,8 @@ export function restoreBackupToSandbox(
   sandbox: InMemoryFirestoreSandbox;
 } {
   const preRestoreIntegrity = verifyBackupIntegrity(payload);
-  const allCols: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+  const allCols: BackupCollectionName[] = resolveActiveBackupCollections(undefined, payload.data);
+  const isPlatformGovernanceActive = allCols.includes('account_licenses');
   const emptyCounts = {} as Record<BackupCollectionName, number>;
   allCols.forEach((c) => {
     emptyCounts[c] = 0;
@@ -1614,7 +1851,7 @@ export function restoreBackupToSandbox(
   }
 
   // إعادة بناء نسخة من البيانات المستعادة داخل البيئة المعزولة للتحقق من سلامتها وتطابقها
-  const restoredRaw = sandbox.exportAllCollections();
+  const restoredRaw = sandbox.exportAllCollections(allCols);
   const postRestorePayload = buildBackupPayloadFromRawData({
     rawCollections: restoredRaw,
     createdByUid: payload.createdByUid,
@@ -1623,6 +1860,7 @@ export function restoreBackupToSandbox(
     targetWorkspaceId: payload.targetWorkspaceId,
     projectId: payload.sourceEnvironment.projectId,
     databaseId: payload.sourceEnvironment.databaseId,
+    includePlatformGovernance: isPlatformGovernanceActive,
   });
 
   const postRestoreIntegrity = verifyBackupIntegrity(postRestorePayload);
@@ -1791,7 +2029,7 @@ export async function restoreBackupToIsolatedFirestore(
   }
 
   const targetDb = options.isolatedFirestoreInstance;
-  const allCols: BackupCollectionName[] = [...BACKUP_WORKSPACE_COLLECTIONS, 'users'];
+  const allCols: BackupCollectionName[] = resolveActiveBackupCollections(undefined, payload.data);
   const reconstructedTracker = { timestamps: 0 };
   const immutableReport: ImmutableCollectionRestoreReport = {
     ...sandboxResult.immutableHandlingReport,

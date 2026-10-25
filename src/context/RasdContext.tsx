@@ -35,8 +35,28 @@ import {
   sanitizeText,
   translateFirebaseError,
 } from '../services/firebase';
-import { verifyPlatformOwnerIdentity } from '../services/licenseService';
 import {
+  DEFAULT_SUBSCRIPTION_PACKAGES,
+  PENDING_REGISTRATION_JOB_TITLE_MARKER,
+  assertPlatformOperationAuthorized,
+  authorizePlatformOperation,
+  buildClientSubscriptionMutation,
+  buildPendingRegistrationLicense,
+  buildPermanentOwnerLicense,
+  buildPlatformClientAccountSummary,
+  buildRegistrationDecisionTransition,
+  buildRegistrationRequestSummary,
+  evaluateAccountAccessGate,
+  isPermanentPlatformOwnerEmail,
+  isPendingRegistrationProfileMarker,
+  validateAndBuildPlatformStaffRecord,
+  validateAndBuildSubscriptionPackageUpdate,
+  validateTeamMemberAdditionLimit,
+  verifyPlatformOwnerIdentity,
+} from '../services/licenseService';
+import {
+  AccountApprovalGateStatus,
+  AccountLicense,
   Appointment,
   AppointmentPostponement,
   AuditActionType,
@@ -48,9 +68,17 @@ import {
   FinancialTransaction,
   NotificationItem,
   OperationType,
+  PlatformAdminAuditEntry,
+  PlatformAdminOperation,
+  PlatformClientAccountSummary,
+  PlatformStaff,
+  PlatformStaffPermissions,
   Property,
   PropertyUnit,
+  RegistrationRequestMetadata,
   ScreenId,
+  SubscriptionPackage,
+  SubscriptionPlanId,
   Taxpayer,
   UserProfile,
   Workspace,
@@ -122,7 +150,7 @@ interface RasdContextValue {
   refreshAuthUser: () => Promise<void>;
   logout: () => Promise<void>;
 
-  // Workspace & Permissions
+  // Workspace, Approval Gate & Permissions
   workspace: Workspace | null;
   members: WorkspaceMember[];
   currentUserRole: WorkspaceRole;
@@ -131,6 +159,58 @@ interface RasdContextValue {
   canApproveFinancials: boolean;
   canDeleteRecords: boolean;
   pendingSyncCount: number;
+  accountApprovalStatus: AccountApprovalGateStatus;
+  canAccessWorkScreens: boolean;
+  accountLicense: AccountLicense | null;
+  registrationRequest: RegistrationRequestMetadata | null;
+  receivedRegistrationRequests: RegistrationRequestMetadata[];
+  refreshRegistrationStatus: () => Promise<void>;
+  refreshReceivedRegistrationRequests: () => Promise<void>;
+
+  // Stage 2-C: Platform Administration Dashboard (لوحة إدارة منصة رَصْد)
+  platformStaffRecord: PlatformStaff | null;
+  canAccessPlatformAdmin: boolean;
+  platformClientAccounts: PlatformClientAccountSummary[];
+  subscriptionPackages: Record<SubscriptionPlanId, SubscriptionPackage>;
+  platformStaffList: PlatformStaff[];
+  platformAdminAuditLogs: PlatformAdminAuditEntry[];
+  refreshPlatformAdminData: () => Promise<void>;
+  decideRegistrationRequest: (params: {
+    request: RegistrationRequestMetadata;
+    decision: 'approve' | 'reject';
+    approvedPlanId?: SubscriptionPlanId;
+    customDurationDays?: number | null;
+    maxMembers?: number;
+    decisionNotes?: string;
+  }) => Promise<void>;
+  mutateClientSubscription: (params: {
+    client: PlatformClientAccountSummary;
+    action: 'activate' | 'renew' | 'suspend' | 'reactivate';
+    planId?: SubscriptionPlanId;
+    customDurationDays?: number | null;
+    maxMembers?: number;
+    notes?: string;
+  }) => Promise<void>;
+  updateSubscriptionPackageConfig: (
+    planId: SubscriptionPlanId,
+    patch: {
+      nameAr?: string;
+      descriptionAr?: string;
+      durationDays?: number | null;
+      defaultMaxMembers?: number;
+      priceAmount?: number;
+      currency?: CurrencyCode;
+      isActive?: boolean;
+    }
+  ) => Promise<void>;
+  upsertPlatformStaffMember: (params: {
+    staffUid: string;
+    email: string;
+    displayName: string;
+    status: 'active' | 'suspended';
+    permissions: PlatformStaffPermissions;
+  }) => Promise<void>;
+  removePlatformStaffMember: (staffUid: string) => Promise<void>;
 
   // Collections
   taxpayers: Taxpayer[];
@@ -249,6 +329,56 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [transactions, setTransactions] = useState<FinancialTransaction[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [accountApprovalStatus, setAccountApprovalStatus] =
+    useState<AccountApprovalGateStatus>('checking');
+  const [accountLicense, setAccountLicense] = useState<AccountLicense | null>(null);
+  const [registrationRequest, setRegistrationRequest] =
+    useState<RegistrationRequestMetadata | null>(null);
+  const [receivedRegistrationRequests, setReceivedRegistrationRequests] = useState<
+    RegistrationRequestMetadata[]
+  >([]);
+  const [platformStaffRecord, setPlatformStaffRecord] = useState<PlatformStaff | null>(null);
+  const [platformClientAccounts, setPlatformClientAccounts] = useState<
+    PlatformClientAccountSummary[]
+  >([]);
+  const [subscriptionPackages, setSubscriptionPackages] = useState<
+    Record<SubscriptionPlanId, SubscriptionPackage>
+  >(() => {
+    try {
+      const cached = localStorage.getItem('rasd_subscription_packages_v1');
+      if (cached) {
+        const parsed = JSON.parse(cached) as Partial<Record<SubscriptionPlanId, SubscriptionPackage>>;
+        return {
+          ...DEFAULT_SUBSCRIPTION_PACKAGES,
+          ...parsed,
+          owner_permanent: DEFAULT_SUBSCRIPTION_PACKAGES.owner_permanent,
+        };
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return { ...DEFAULT_SUBSCRIPTION_PACKAGES };
+  });
+  const [platformStaffList, setPlatformStaffList] = useState<PlatformStaff[]>(() => {
+    try {
+      const cached = localStorage.getItem('rasd_platform_staff_v1');
+      if (cached) return JSON.parse(cached) as PlatformStaff[];
+    } catch {
+      // ignore storage errors
+    }
+    return [];
+  });
+  const [platformAdminAuditLogs, setPlatformAdminAuditLogs] = useState<PlatformAdminAuditEntry[]>(
+    () => {
+      try {
+        const cached = localStorage.getItem('rasd_platform_admin_audit_v1');
+        if (cached) return JSON.parse(cached) as PlatformAdminAuditEntry[];
+      } catch {
+        // ignore storage errors
+      }
+      return [];
+    }
+  );
 
   useEffect(() => {
     if (darkMode) {
@@ -290,6 +420,12 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTransactions([]);
     setNotifications([]);
     setAuditLogs([]);
+    setAccountApprovalStatus('checking');
+    setAccountLicense(null);
+    setRegistrationRequest(null);
+    setReceivedRegistrationRequests([]);
+    setPlatformStaffRecord(null);
+    setPlatformClientAccounts([]);
     setSelectedPropertyId(null);
     setSelectedTaxpayerId(null);
     setActiveScreen('home');
@@ -341,13 +477,47 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
   }, []);
 
-  // Bootstrap User & Workspace on login
+  // Bootstrap User & Workspace on login / registration with Stage 2-B Approval Gate
   const ensureUserAndWorkspace = useCallback(
-    async (user: FirebaseUser, customDisplayName?: string) => {
+    async (
+      user: FirebaseUser,
+      customDisplayName?: string,
+      options?: { isExplicitRegistration?: boolean }
+    ) => {
       const uid = user.uid;
       applyOptimisticSession(user, customDisplayName);
 
-      if (bootstrappingPromiseRef.current?.uid === uid) {
+      const ownerCheck = verifyPlatformOwnerIdentity(user);
+      if (ownerCheck.isVerifiedOwner) {
+        setAccountApprovalStatus('approved');
+        try {
+          localStorage.setItem(`rasd_gate_status_${uid}`, 'approved');
+        } catch {
+          // ignore storage errors
+        }
+      } else if (options?.isExplicitRegistration) {
+        setAccountApprovalStatus('checking');
+      } else {
+        try {
+          const cachedGate = localStorage.getItem(
+            `rasd_gate_status_${uid}`
+          ) as AccountApprovalGateStatus | null;
+          if (
+            cachedGate === 'approved' ||
+            cachedGate === 'legacy_active' ||
+            cachedGate === 'pending_approval' ||
+            cachedGate === 'suspended'
+          ) {
+            setAccountApprovalStatus(cachedGate);
+          } else {
+            setAccountApprovalStatus('checking');
+          }
+        } catch {
+          setAccountApprovalStatus('checking');
+        }
+      }
+
+      if (bootstrappingPromiseRef.current?.uid === uid && !options?.isExplicitRegistration) {
         return bootstrappingPromiseRef.current.promise;
       }
 
@@ -358,9 +528,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         try {
           const userSnap = await getDoc(userDocRef);
-          let activeWsId = userSnap.exists()
+          const userExistedPrior = userSnap.exists();
+          let activeWsId = userExistedPrior
             ? userSnap.data().activeWorkspaceId || defaultWsId
             : defaultWsId;
+
+          let isInvitedTeamMember = activeWsId !== defaultWsId;
+          let invitedMemberStatus: 'active' | 'invited' | 'suspended' | null = null;
 
           // Check if this user was invited to a team workspace by email
           const normalizedUserEmail = (user.email || '').trim().toLowerCase();
@@ -393,6 +567,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   const updatedMemberUids = Array.from(new Set([...filteredUids, uid])).slice(0, 10);
 
                   activeWsId = targetWsId;
+                  isInvitedTeamMember = true;
+                  invitedMemberStatus = 'active';
 
                   await updateDoc(targetWsRef, {
                     memberUids: updatedMemberUids,
@@ -442,13 +618,31 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const isOwnDefaultWs = activeWsId === defaultWsId;
           const [wsSnap, memberSnap] = isOwnDefaultWs
             ? await Promise.all([getDoc(wsRef), getDoc(memberRef)])
-            : [null, null];
+            : [null, await getDoc(memberRef).catch(() => null)];
+
+          const wsExistedPrior = Boolean(wsSnap && wsSnap.exists());
+          const memberExistedPrior = Boolean(memberSnap && memberSnap.exists());
+
+          if (isInvitedTeamMember && memberExistedPrior && memberSnap) {
+            invitedMemberStatus = (memberSnap.data()?.status as 'active' | 'invited' | 'suspended') || 'active';
+          }
+
+          const isVerifiedOwnerNow =
+            ownerCheck.isVerifiedOwner || isPermanentPlatformOwnerEmail(user.email);
+
+          // الحساب الجديد المسجل ذاتيًا: لم يكن له سجل مستخدم أو مساحة عمل سابقة وليس مالكًا دائمًا ولا عضو فريق مدعوًا
+          const isNewSelfRegistration =
+            !isVerifiedOwnerNow &&
+            !isInvitedTeamMember &&
+            !userExistedPrior &&
+            !wsExistedPrior &&
+            !memberExistedPrior;
 
           const needsUserDoc =
-            !userSnap.exists() ||
-            (userSnap.exists() && userSnap.data().activeWorkspaceId !== activeWsId);
-          const needsWsDoc = isOwnDefaultWs && wsSnap !== null && !wsSnap.exists();
-          const needsMemberDoc = isOwnDefaultWs && memberSnap !== null && !memberSnap.exists();
+            !userExistedPrior ||
+            (userExistedPrior && userSnap.data().activeWorkspaceId !== activeWsId);
+          const needsWsDoc = isOwnDefaultWs && wsSnap !== null && !wsExistedPrior;
+          const needsMemberDoc = isOwnDefaultWs && memberSnap !== null && !memberExistedPrior;
 
           const displayName = sanitizeText(
             customDisplayName || user.displayName || user.email?.split('@')[0] || 'مستخدم رصد',
@@ -463,6 +657,20 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             4,
             'RASD1000'
           );
+          const workspaceName = sanitizeText(
+            `مساحة عمل ${displayName}`,
+            120,
+            1,
+            'مساحة العمل الميدانية'
+          );
+
+          // تحديد المسمى الوظيفي وحالة العضوية عند الإنشاء الأولي فقط (دون المساس بالحسابات الحالية إطلاقًا)
+          const initialJobTitle = isNewSelfRegistration
+            ? PENDING_REGISTRATION_JOB_TITLE_MARKER
+            : 'مسؤول ميداني أول';
+          const initialOwnerMemberStatus: WorkspaceMember['status'] = isNewSelfRegistration
+            ? 'invited'
+            : 'active';
 
           if (needsUserDoc || needsWsDoc || needsMemberDoc) {
             const batch = writeBatch(db);
@@ -470,7 +678,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (needsWsDoc) {
               currentStepPath = `workspaces/${activeWsId}`;
               batch.set(wsRef, {
-                name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
+                name: workspaceName,
                 ownerId: uid,
                 ownerName: displayName,
                 defaultCurrency: 'YER',
@@ -486,14 +694,18 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             if (needsUserDoc) {
               currentStepPath = `users/${uid}`;
+              const preservedJobTitle =
+                userExistedPrior && userSnap.data().jobTitle
+                  ? userSnap.data().jobTitle
+                  : initialJobTitle;
               batch.set(userDocRef, {
                 uid,
                 displayName,
                 email,
-                phone: '',
-                jobTitle: 'مسؤول ميداني أول',
+                phone: userExistedPrior ? userSnap.data().phone || '' : '',
+                jobTitle: preservedJobTitle,
                 activeWorkspaceId: activeWsId,
-                createdAt: serverTimestamp(),
+                createdAt: userExistedPrior && userSnap.data().createdAt ? userSnap.data().createdAt : serverTimestamp(),
                 updatedAt: serverTimestamp(),
               });
             }
@@ -507,7 +719,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 displayName,
                 email,
                 role: 'owner',
-                status: 'active',
+                status: initialOwnerMemberStatus,
                 canApproveFinancials: true,
                 canDeleteRecords: true,
                 memberUids: [uid],
@@ -520,11 +732,126 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             await batch.commit();
           }
 
+          // للعملاء الجدد: تجهيز وتسجيل طلب الترخيص بحالة pending في /account_licenses/{activeWsId} وفي التخزين المحلي
+          let resolvedLicense: AccountLicense | null = null;
+          if (isNewSelfRegistration) {
+            const pendingLicense = buildPendingRegistrationLicense({
+              workspaceId: activeWsId,
+              ownerId: uid,
+              ownerEmail: email,
+              applicantName: displayName,
+              workspaceName,
+              requestedPlanId: 'trial',
+            });
+            resolvedLicense = pendingLicense;
+
+            try {
+              localStorage.setItem(
+                `rasd_reg_req_${uid}`,
+                JSON.stringify({
+                  applicantUid: uid,
+                  applicantName: displayName,
+                  applicantEmail: email.toLowerCase(),
+                  applicantPhone: '',
+                  workspaceId: activeWsId,
+                  workspaceName,
+                  requestedPlanId: 'trial',
+                  status: 'pending',
+                  requestedAtIso: new Date().toISOString(),
+                  source: 'local_cache',
+                  notes: 'طلب تسجيل عميل جديد بانتظار مراجعة واعتماد إدارة المنصة.',
+                } satisfies RegistrationRequestMetadata)
+              );
+            } catch {
+              // ignore storage errors
+            }
+
+            // محاولة إنشاء وثيقة /account_licenses/{activeWsId} بحالة pending (تنجح فور تفعيل قواعد المجموعة ولا تعطل التطبيق قبل نشرها)
+            try {
+              await setDoc(doc(db, 'account_licenses', activeWsId), {
+                workspaceId: pendingLicense.workspaceId,
+                ownerId: pendingLicense.ownerId,
+                ownerEmail: pendingLicense.ownerEmail,
+                planId: pendingLicense.planId,
+                status: 'pending',
+                startsAt: pendingLicense.startsAt,
+                expiresAt: pendingLicense.expiresAt,
+                maxMembers: pendingLicense.maxMembers,
+                notes: pendingLicense.notes,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            } catch {
+              // القواعد الحالية في /firestore.rules قبل النشر قد ترفض الوصول إلى /account_licenses؛ تعتمد البوابة حينها على علامة الانتظار المحفوظة في users و workspace_members
+            }
+          } else {
+            // محاولة قراءة وثيقة الترخيص إن وجدت دون فرض أي ترحيل أو كتابة على الحسابات الحالية النشطة
+            try {
+              const licRef = doc(db, 'account_licenses', activeWsId);
+              const licSnap = await getDoc(licRef);
+              if (licSnap.exists()) {
+                const licData = licSnap.data();
+                resolvedLicense = {
+                  id: licSnap.id,
+                  workspaceId: licData.workspaceId || licSnap.id,
+                  ownerId: licData.ownerId,
+                  ownerEmail: licData.ownerEmail,
+                  planId: licData.planId,
+                  status: licData.status,
+                  startsAt: licData.startsAt,
+                  expiresAt: licData.expiresAt,
+                  maxMembers: licData.maxMembers,
+                  notes: licData.notes || '',
+                  createdAt: licData.createdAt,
+                  updatedAt: licData.updatedAt,
+                };
+              } else if (
+                !ownerCheck.isVerifiedOwner &&
+                !isInvitedTeamMember &&
+                isPendingRegistrationProfileMarker(
+                  userExistedPrior ? userSnap.data().jobTitle : initialJobTitle,
+                  memberSnap?.exists() ? memberSnap.data().status : initialOwnerMemberStatus
+                )
+              ) {
+                // إذا كان الحساب معلقًا بانتظار الموافقة ولم تُنشأ وثيفته في /account_licenses بعد، نسجلها الآن
+                const pendingLicense = buildPendingRegistrationLicense({
+                  workspaceId: activeWsId,
+                  ownerId: uid,
+                  ownerEmail: email,
+                  applicantName: displayName,
+                  workspaceName,
+                  requestedPlanId: 'trial',
+                });
+                resolvedLicense = pendingLicense;
+                await setDoc(licRef, {
+                  workspaceId: pendingLicense.workspaceId,
+                  ownerId: pendingLicense.ownerId,
+                  ownerEmail: pendingLicense.ownerEmail,
+                  planId: pendingLicense.planId,
+                  status: 'pending',
+                  startsAt: pendingLicense.startsAt,
+                  expiresAt: pendingLicense.expiresAt,
+                  maxMembers: pendingLicense.maxMembers,
+                  notes: pendingLicense.notes,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              }
+            } catch {
+              // ignore if offline
+            }
+          }
+
           currentStepPath = `users/${uid}`;
-          const finalUserSnap = await getDoc(userDocRef);
+          const [finalUserSnap, finalMemberSnap] = await Promise.all([
+            getDoc(userDocRef),
+            getDoc(memberRef).catch(() => null),
+          ]);
+
+          let latestProfile: UserProfile | null = null;
           if (finalUserSnap.exists()) {
             const d = finalUserSnap.data();
-            setUserProfile({
+            latestProfile = {
               id: finalUserSnap.id,
               uid: d.uid,
               displayName: d.displayName,
@@ -534,10 +861,96 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               activeWorkspaceId: d.activeWorkspaceId || activeWsId,
               isPendingSync: finalUserSnap.metadata.hasPendingWrites,
               fromCache: finalUserSnap.metadata.fromCache,
-            });
+            };
+            setUserProfile(latestProfile);
           }
+
+          const finalOwnerMemberData =
+            finalMemberSnap && finalMemberSnap.exists() ? finalMemberSnap.data() : null;
+
+          // تقييم بوابة الموافقة والاشتراك للحساب (مع الحفاظ على الحسابات الحالية القائمة قبل نظام التراخيص دون ترحيل قسري)
+          const gateEval = evaluateAccountAccessGate({
+            authCandidate: user,
+            isNewSelfRegistration,
+            existingUserProfile: latestProfile || (userExistedPrior ? (userSnap.data() as Partial<UserProfile>) : null),
+            existingOwnerMember: finalOwnerMemberData
+              ? { role: finalOwnerMemberData.role, status: finalOwnerMemberData.status }
+              : null,
+            isInvitedTeamMember,
+            invitedMemberStatus,
+            accountLicense: resolvedLicense,
+            enforceSubscriptionExpiryOnExisting: true,
+          });
+
+          setAccountLicense(resolvedLicense);
+          setAccountApprovalStatus(gateEval.gateStatus);
+          try {
+            localStorage.setItem(`rasd_gate_status_${uid}`, gateEval.gateStatus);
+          } catch {
+            // ignore storage errors
+          }
+
+          let cachedReqMeta: Partial<RegistrationRequestMetadata> | null = null;
+          try {
+            const rawCached = localStorage.getItem(`rasd_reg_req_${uid}`);
+            if (rawCached) {
+              cachedReqMeta = JSON.parse(rawCached) as Partial<RegistrationRequestMetadata>;
+            }
+          } catch {
+            cachedReqMeta = null;
+          }
+
+          const regSummary = buildRegistrationRequestSummary({
+            license: resolvedLicense,
+            userProfile: latestProfile || {
+              uid,
+              displayName,
+              email,
+              phone: '',
+              jobTitle: initialJobTitle,
+              activeWorkspaceId: activeWsId,
+            },
+            workspace: {
+              id: activeWsId,
+              name: workspaceName,
+              ownerId: uid,
+              ownerName: displayName,
+            },
+            memberStatus:
+              (finalOwnerMemberData?.status as string | undefined) || initialOwnerMemberStatus,
+            fallbackUid: uid,
+            fallbackEmail: email,
+            fallbackName: displayName,
+          });
+
+          if (cachedReqMeta?.requestedAtIso && !resolvedLicense) {
+            regSummary.requestedAtIso = cachedReqMeta.requestedAtIso;
+          }
+
+          setRegistrationRequest(regSummary);
         } catch (error) {
           console.warn('Bootstrap Firestore notice at', currentStepPath, error);
+          // في حال الانقطاع عن الشبكة، نحافظ على حالة المالك الدائم أو الحالة المخزنة محليًا دون قفل الحسابات الحالية
+          if (ownerCheck.isVerifiedOwner || isPermanentPlatformOwnerEmail(user.email)) {
+            setAccountApprovalStatus('approved');
+          } else {
+            try {
+              const cachedGate = localStorage.getItem(
+                `rasd_gate_status_${uid}`
+              ) as AccountApprovalGateStatus | null;
+              if (cachedGate === 'pending_approval' || cachedGate === 'suspended') {
+                setAccountApprovalStatus(cachedGate);
+              } else if (options?.isExplicitRegistration) {
+                setAccountApprovalStatus('pending_approval');
+              } else {
+                setAccountApprovalStatus('legacy_active');
+              }
+            } catch {
+              setAccountApprovalStatus(
+                options?.isExplicitRegistration ? 'pending_approval' : 'legacy_active'
+              );
+            }
+          }
         } finally {
           if (bootstrappingPromiseRef.current?.uid === uid) {
             bootstrappingPromiseRef.current = null;
@@ -594,6 +1007,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [applyOptimisticSession, ensureUserAndWorkspace, clearAllUserState]);
 
+  const canAccessWorkScreens = useMemo(() => {
+    return accountApprovalStatus === 'approved' || accountApprovalStatus === 'legacy_active';
+  }, [accountApprovalStatus]);
+
   // Attach Real-time Listeners once user is authenticated
   useEffect(() => {
     if (!authReady || !firebaseUser || !userProfile?.activeWorkspaceId) {
@@ -601,9 +1018,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const uid = firebaseUser.uid;
+    const activeWsId = userProfile.activeWorkspaceId;
     const unsubs: Unsubscribe[] = [];
 
-    // 1. User Profile listener
+    // 1. User Profile listener (يرصد أيضًا أي تحديث إداري لحالة الحساب)
     unsubs.push(
       onSnapshot(
         doc(db, 'users', uid),
@@ -611,7 +1029,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (snap) => {
           if (snap.exists()) {
             const d = snap.data();
-            setUserProfile({
+            const updatedProfile: UserProfile = {
               id: snap.id,
               uid: d.uid,
               displayName: d.displayName,
@@ -621,12 +1039,75 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               activeWorkspaceId: d.activeWorkspaceId,
               isPendingSync: snap.metadata.hasPendingWrites,
               fromCache: snap.metadata.fromCache,
-            });
+            };
+            setUserProfile(updatedProfile);
           }
         },
         (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
       )
     );
+
+    // 1B. Account License real-time listener (يحدث حالة الموافقة والاشتراك لحظيًا فور اعتماد المالك أو التجديد أو الإيقاف)
+    unsubs.push(
+      onSnapshot(
+        doc(db, 'account_licenses', activeWsId),
+        { includeMetadataChanges: true },
+        (licSnap) => {
+          if (licSnap.exists()) {
+            const licData = licSnap.data();
+            const liveLicense: AccountLicense = {
+              id: licSnap.id,
+              workspaceId: licData.workspaceId || licSnap.id,
+              ownerId: licData.ownerId,
+              ownerEmail: licData.ownerEmail,
+              planId: licData.planId,
+              status: licData.status,
+              startsAt: licData.startsAt,
+              expiresAt: licData.expiresAt,
+              maxMembers: licData.maxMembers,
+              notes: licData.notes || '',
+              createdAt: licData.createdAt,
+              updatedAt: licData.updatedAt,
+            };
+            setAccountLicense(liveLicense);
+
+            const gateEval = evaluateAccountAccessGate({
+              authCandidate: firebaseUser,
+              isNewSelfRegistration: false,
+              existingUserProfile: userProfile,
+              accountLicense: liveLicense,
+              enforceSubscriptionExpiryOnExisting: true,
+            });
+            setAccountApprovalStatus(gateEval.gateStatus);
+            try {
+              localStorage.setItem(`rasd_gate_status_${uid}`, gateEval.gateStatus);
+            } catch {
+              // ignore storage errors
+            }
+
+            const regSummary = buildRegistrationRequestSummary({
+              license: liveLicense,
+              userProfile,
+              fallbackUid: uid,
+              fallbackEmail: firebaseUser.email || userProfile.email,
+              fallbackName: userProfile.displayName,
+              sourceOverride: 'account_licenses',
+            });
+            setRegistrationRequest(regSummary);
+          }
+        },
+        () => {
+          // ignore if document doesn't exist or user is a grandfathered client without a license doc
+        }
+      )
+    );
+
+    // إذا كان الحساب في حالة انتظار الموافقة أو موقوفًا، لا نفتح مستمعات مجموعات العمل التشغيلية قبل الموافقة
+    if (!canAccessWorkScreens) {
+      return () => {
+        unsubs.forEach((u) => u());
+      };
+    }
 
     // 2. Workspaces listener
     unsubs.push(
@@ -712,12 +1193,518 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [authReady, firebaseUser, userProfile?.activeWorkspaceId]);
+  }, [authReady, firebaseUser, userProfile?.activeWorkspaceId, canAccessWorkScreens]);
 
   // Computed Permissions
   const isPlatformAdmin = useMemo(() => {
     return verifyPlatformOwnerIdentity(firebaseUser).isVerifiedOwner;
   }, [firebaseUser]);
+
+  // فحص ما إذا كان المستخدم الحالي ضمن مساعدي المنصة المفوضين
+  useEffect(() => {
+    if (!firebaseUser) {
+      setPlatformStaffRecord(null);
+      return;
+    }
+    if (isPlatformAdmin) {
+      setPlatformStaffRecord(null);
+      return;
+    }
+    let cancelled = false;
+    const resolveStaff = async () => {
+      try {
+        const staffSnap = await getDoc(doc(db, 'platform_staff', firebaseUser.uid));
+        if (!cancelled && staffSnap.exists()) {
+          const d = staffSnap.data();
+          setPlatformStaffRecord({
+            id: staffSnap.id,
+            uid: d.uid || staffSnap.id,
+            email: (d.email || '').toLowerCase(),
+            displayName: d.displayName || 'مساعد منصة',
+            status: d.status === 'suspended' ? 'suspended' : 'active',
+            permissions: {
+              canViewRequests: Boolean(d.permissions?.canViewRequests),
+              canApproveAndRenew: Boolean(d.permissions?.canApproveAndRenew),
+              canManagePackages: Boolean(d.permissions?.canManagePackages),
+            },
+            assignedByUid: d.assignedByUid || '',
+          });
+          return;
+        }
+      } catch {
+        // fallback to local list if /platform_staff rules are not yet deployed
+      }
+      if (!cancelled) {
+        const matched =
+          platformStaffList.find(
+            (s) =>
+              s.uid === firebaseUser.uid ||
+              (firebaseUser.email && s.email === firebaseUser.email.trim().toLowerCase())
+          ) || null;
+        setPlatformStaffRecord(
+          matched ? { ...matched, uid: firebaseUser.uid, id: firebaseUser.uid } : null
+        );
+      }
+    };
+    void resolveStaff();
+    return () => {
+      cancelled = true;
+    };
+  }, [firebaseUser, isPlatformAdmin, platformStaffList]);
+
+  const canAccessPlatformAdmin = useMemo(() => {
+    if (isPlatformAdmin) return true;
+    return authorizePlatformOperation({
+      actorAuth: firebaseUser,
+      actorStaffRecord: platformStaffRecord,
+      operation: 'view_admin_dashboard',
+    }).allowed;
+  }, [firebaseUser, isPlatformAdmin, platformStaffRecord]);
+
+  // جلب شامل لبيانات لوحة إدارة المنصة (الطلبات، العملاء والتراخيص، الباقات، والمساعدين) دون ترحيل جماعي
+  const refreshPlatformAdminData = useCallback(async () => {
+    if (!firebaseUser || !canAccessPlatformAdmin) {
+      setReceivedRegistrationRequests([]);
+      setPlatformClientAccounts([]);
+      return;
+    }
+
+    const byWorkspaceReq = new Map<string, RegistrationRequestMetadata>();
+    const licensesByWs = new Map<string, AccountLicense>();
+    const usersByUid = new Map<string, UserProfile>();
+    const workspacesById = new Map<string, Workspace>();
+
+    // 1. محاولة جلب التراخيص من /account_licenses
+    try {
+      const licSnap = await getDocs(collection(db, 'account_licenses'));
+      licSnap.docs.forEach((docSnap) => {
+        const d = docSnap.data();
+        const wsId = d.workspaceId || docSnap.id;
+        const lic: AccountLicense = {
+          id: docSnap.id,
+          workspaceId: wsId,
+          ownerId: d.ownerId,
+          ownerEmail: d.ownerEmail,
+          planId: d.planId,
+          status: d.status,
+          startsAt: d.startsAt,
+          expiresAt: d.expiresAt,
+          maxMembers: d.maxMembers,
+          notes: d.notes || '',
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+        };
+        licensesByWs.set(wsId, lic);
+        const summary = buildRegistrationRequestSummary({
+          license: lic,
+          sourceOverride: 'account_licenses',
+        });
+        byWorkspaceReq.set(summary.workspaceId, summary);
+      });
+    } catch {
+      // قد لا تكون /account_licenses منشورة بعد في قواعد الإنتاج الحالية
+    }
+
+    // دمج التراخيص المخزنة محليًا أثناء مرحلة ما قبل نشر القواعد
+    try {
+      const cachedLicsRaw = localStorage.getItem('rasd_platform_licenses_v1');
+      if (cachedLicsRaw) {
+        const cachedLics = JSON.parse(cachedLicsRaw) as Record<string, AccountLicense>;
+        Object.entries(cachedLics).forEach(([wsId, lic]) => {
+          if (!licensesByWs.has(wsId)) {
+            licensesByWs.set(wsId, lic);
+            const summary = buildRegistrationRequestSummary({
+              license: lic,
+              sourceOverride: 'local_cache',
+            });
+            byWorkspaceReq.set(wsId, summary);
+          }
+        });
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    // 2. جلب المستخدمين من /users (مسموح لمالكي المنصة في قواعد الإنتاج الحالية)
+    try {
+      const usersSnap = await getDocs(collection(db, 'users'));
+      usersSnap.docs.forEach((uDoc) => {
+        const d = uDoc.data();
+        const u: UserProfile = {
+          id: uDoc.id,
+          uid: d.uid || uDoc.id,
+          displayName: d.displayName || 'مستخدم رصد',
+          email: (d.email || '').toLowerCase(),
+          phone: d.phone || '',
+          jobTitle: d.jobTitle || '',
+          activeWorkspaceId:
+            d.activeWorkspaceId ||
+            `ws_${String(d.uid || uDoc.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`,
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+        };
+        usersByUid.set(u.uid, u);
+
+        if (u.jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER && !byWorkspaceReq.has(u.activeWorkspaceId)) {
+          let requestedAtIso = new Date().toISOString();
+          if (d.createdAt && typeof d.createdAt.toDate === 'function') {
+            requestedAtIso = d.createdAt.toDate().toISOString();
+          }
+          byWorkspaceReq.set(u.activeWorkspaceId, {
+            applicantUid: u.uid,
+            applicantName: u.displayName,
+            applicantEmail: u.email,
+            applicantPhone: u.phone,
+            workspaceId: u.activeWorkspaceId,
+            workspaceName: `مساحة عمل ${u.displayName}`,
+            requestedPlanId: 'trial',
+            status: 'pending',
+            requestedAtIso,
+            source: 'workspace_member_marker',
+            notes: 'طلب تسجيل عميل جديد بانتظار موافقة إدارة المنصة.',
+          });
+        }
+      });
+    } catch {
+      // في حال عدم توفر صلاحية قراءة جميع المستخدمين، نحاول استعلام الطلبات المعلقة فقط
+      try {
+        const pendingUsersQuery = query(
+          collection(db, 'users'),
+          where('jobTitle', '==', PENDING_REGISTRATION_JOB_TITLE_MARKER)
+        );
+        const pendingUsersSnap = await getDocs(pendingUsersQuery);
+        pendingUsersSnap.docs.forEach((uDoc) => {
+          const d = uDoc.data();
+          const wsId =
+            d.activeWorkspaceId ||
+            `ws_${String(d.uid || uDoc.id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+          if (!byWorkspaceReq.has(wsId)) {
+            let requestedAtIso = new Date().toISOString();
+            if (d.createdAt && typeof d.createdAt.toDate === 'function') {
+              requestedAtIso = d.createdAt.toDate().toISOString();
+            }
+            byWorkspaceReq.set(wsId, {
+              applicantUid: d.uid || uDoc.id,
+              applicantName: d.displayName || 'عميل جديد',
+              applicantEmail: (d.email || '').toLowerCase(),
+              applicantPhone: d.phone || '',
+              workspaceId: wsId,
+              workspaceName: `مساحة عمل ${d.displayName || 'عميل جديد'}`,
+              requestedPlanId: 'trial',
+              status: 'pending',
+              requestedAtIso,
+              source: 'workspace_member_marker',
+              notes: 'طلب تسجيل عميل جديد بانتظار موافقة إدارة المنصة.',
+            });
+          }
+        });
+      } catch {
+        // ignore if offline
+      }
+    }
+
+    // 3. جلب مساحات العمل من /workspaces (مسموح لمالكي المنصة في قواعد الإنتاج الحالية)
+    try {
+      const wsSnap = await getDocs(collection(db, 'workspaces'));
+      wsSnap.docs.forEach((wDoc) => {
+        const d = wDoc.data();
+        workspacesById.set(wDoc.id, {
+          id: wDoc.id,
+          name: d.name || 'مساحة عمل',
+          ownerId: d.ownerId || '',
+          ownerName: d.ownerName || 'مدير المساحة',
+          defaultCurrency: d.defaultCurrency || 'YER',
+          taxRatePercent: Number(d.taxRatePercent) || 0,
+          regionName: d.regionName || 'عدن',
+          inviteCode: d.inviteCode || '',
+          memberUids: Array.isArray(d.memberUids) ? d.memberUids : [],
+          memberCount: Number(d.memberCount) || 1,
+        });
+      });
+    } catch {
+      // ignore if offline
+    }
+
+    // 4. جلب الباقات من /subscription_packages (وتهيئتها في Firestore عند الحاجة للمالك الدائم)
+    try {
+      const pkgSnap = await getDocs(collection(db, 'subscription_packages'));
+      if (!pkgSnap.empty) {
+        setSubscriptionPackages((prev) => {
+          const next = { ...prev };
+          pkgSnap.docs.forEach((pDoc) => {
+            const d = pDoc.data() as SubscriptionPackage;
+            const pid = (d.id || pDoc.id) as SubscriptionPlanId;
+            if (pid && pid !== 'owner_permanent' && pid in next) {
+              next[pid] = {
+                ...next[pid],
+                ...d,
+                id: pid,
+              };
+            }
+          });
+          next.owner_permanent = DEFAULT_SUBSCRIPTION_PACKAGES.owner_permanent;
+          return next;
+        });
+      } else if (isPlatformAdmin) {
+        // تهيئة الباقات الافتراضية القابلة للإدارة في مجموعة /subscription_packages في قاعدة البيانات الفعلية
+        const editablePlans: SubscriptionPlanId[] = [
+          'trial',
+          'monthly',
+          'quarterly',
+          'semi_annual',
+          'annual',
+          'lifetime',
+          'custom',
+        ];
+        await Promise.all(
+          editablePlans.map(async (planId) => {
+            const pkg = subscriptionPackages[planId] || DEFAULT_SUBSCRIPTION_PACKAGES[planId];
+            if (!pkg) return;
+            try {
+              await setDoc(doc(db, 'subscription_packages', planId), {
+                id: pkg.id,
+                nameAr: pkg.nameAr,
+                descriptionAr: pkg.descriptionAr,
+                billingCycle: pkg.billingCycle,
+                durationDays: pkg.durationDays,
+                isLifetime: Boolean(pkg.isLifetime),
+                isFreeOwnerPlan: Boolean(pkg.isFreeOwnerPlan),
+                defaultMaxMembers: pkg.defaultMaxMembers,
+                priceAmount: pkg.priceAmount,
+                currency: pkg.currency,
+                isActive: Boolean(pkg.isActive),
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+              });
+            } catch {
+              // ignore individual package seed failure
+            }
+          })
+        );
+      }
+    } catch {
+      // ignore if offline
+    }
+
+    // 5. جلب مساعدي المنصة من /platform_staff (للمالكين الدائمين فقط)
+    if (isPlatformAdmin) {
+      try {
+        const staffSnap = await getDocs(collection(db, 'platform_staff'));
+        if (!staffSnap.empty) {
+          const list: PlatformStaff[] = staffSnap.docs.map((sDoc) => {
+            const d = sDoc.data();
+            return {
+              id: sDoc.id,
+              uid: d.uid || sDoc.id,
+              email: (d.email || '').toLowerCase(),
+              displayName: d.displayName || 'مساعد منصة',
+              status: d.status === 'suspended' ? 'suspended' : 'active',
+              permissions: {
+                canViewRequests: Boolean(d.permissions?.canViewRequests),
+                canApproveAndRenew: Boolean(d.permissions?.canApproveAndRenew),
+                canManagePackages: Boolean(d.permissions?.canManagePackages),
+              },
+              assignedByUid: d.assignedByUid || '',
+            };
+          });
+          setPlatformStaffList(list);
+          try {
+            localStorage.setItem('rasd_platform_staff_v1', JSON.stringify(list));
+          } catch {
+            // ignore storage errors
+          }
+        }
+      } catch {
+        // ignore if offline
+      }
+    }
+
+    // 5B. جلب سجلات التدقيق الإدارية من /audit_logs في Firestore ودمجها مع السجل المحلي
+    try {
+      const auditSnap = await getDocs(collection(db, 'audit_logs'));
+      if (!auditSnap.empty) {
+        const remoteAdminEntries: PlatformAdminAuditEntry[] = [];
+        auditSnap.docs.forEach((aDoc) => {
+          const d = aDoc.data();
+          const summaryStr = typeof d.summary === 'string' ? d.summary : '';
+          if (aDoc.id.startsWith('adm_log') || summaryStr.startsWith('[إدارة المنصة]')) {
+            let createdAtIso = new Date().toISOString();
+            if (d.createdAt && typeof d.createdAt.toDate === 'function') {
+              createdAtIso = d.createdAt.toDate().toISOString();
+            }
+            const inferredOperation: PlatformAdminOperation = summaryStr.includes('طلب تسجيل')
+              ? 'decide_registration_request'
+              : summaryStr.includes('تجديد')
+              ? 'renew_subscription'
+              : summaryStr.includes('إيقاف') || summaryStr.includes('تعليق')
+              ? 'suspend_subscription'
+              : summaryStr.includes('إعادة تفعيل')
+              ? 'reactivate_subscription'
+              : summaryStr.includes('باقة') || summaryStr.includes('إعدادات')
+              ? 'manage_packages'
+              : summaryStr.includes('مساعد')
+              ? 'manage_platform_staff'
+              : 'activate_subscription';
+
+            remoteAdminEntries.push({
+              id: aDoc.id,
+              operation: inferredOperation,
+              actionType: d.actionType || 'update',
+              entityType: d.entityType || 'workspace',
+              entityId: d.entityId || '',
+              targetWorkspaceId: d.entityId || d.workspaceId || '',
+              summary: summaryStr,
+              actorUid: d.actorId || '',
+              actorEmail: '',
+              actorName: d.actorName || 'مسؤول المنصة',
+              actorRole: 'permanent_owner',
+              createdAtIso,
+              persistedToFirestore: true,
+            });
+          }
+        });
+
+        if (remoteAdminEntries.length > 0) {
+          setPlatformAdminAuditLogs((prev) => {
+            const byId = new Map<string, PlatformAdminAuditEntry>();
+            prev.forEach((item) => byId.set(item.id, item));
+            remoteAdminEntries.forEach((remoteItem) => {
+              const existingLocal = byId.get(remoteItem.id);
+              byId.set(remoteItem.id, {
+                ...(existingLocal || remoteItem),
+                persistedToFirestore: true,
+              });
+            });
+            const merged = Array.from(byId.values())
+              .sort((a, b) => b.createdAtIso.localeCompare(a.createdAtIso))
+              .slice(0, 250);
+            try {
+              localStorage.setItem('rasd_platform_admin_audit_v1', JSON.stringify(merged));
+            } catch {
+              // ignore storage errors
+            }
+            return merged;
+          });
+        }
+      }
+    } catch {
+      // ignore if offline
+    }
+
+    const sortedReqs = Array.from(byWorkspaceReq.values()).sort((a, b) =>
+      b.requestedAtIso.localeCompare(a.requestedAtIso)
+    );
+    setReceivedRegistrationRequests(sortedReqs);
+
+    // 6. تجميع قائمة العملاء وحالة تراخيصهم دون أي تعديل أو ترحيل على البيانات الحالية
+    const allWsIds = new Set<string>([
+      ...Array.from(workspacesById.keys()),
+      ...Array.from(licensesByWs.keys()),
+    ]);
+    usersByUid.forEach((u) => {
+      if (u.activeWorkspaceId && u.uid && u.activeWorkspaceId.includes(u.uid.slice(0, 12))) {
+        allWsIds.add(u.activeWorkspaceId);
+      }
+    });
+
+    const clientSummaries: PlatformClientAccountSummary[] = [];
+    allWsIds.forEach((wsId) => {
+      const ws = workspacesById.get(wsId) || null;
+      const lic = licensesByWs.get(wsId) || null;
+      const ownerUid = lic?.ownerId || ws?.ownerId || '';
+      const ownerProfile = ownerUid ? usersByUid.get(ownerUid) || null : null;
+
+      const summary = buildPlatformClientAccountSummary({
+        workspace: ws,
+        userProfile: ownerProfile,
+        license: lic,
+        packagesMap: subscriptionPackages,
+      });
+      if (summary.workspaceId) {
+        clientSummaries.push(summary);
+      }
+    });
+
+    // ضمان ظهور حسابَي المالكين الدائمين دائمًا في أعلى القائمة بصلاحياتهما الكاملة والمجانية مدى الحياة
+    const permanentOwnersGuaranteed: { email: string; name: string; defaultWsId: string; uid: string }[] = [
+      {
+        email: 'am1075022@gmail.com',
+        name: 'المالك الدائم الرئيسي للمنصة',
+        defaultWsId: 'ws_owner_primary_am1075022',
+        uid: 'owner_primary_am1075022',
+      },
+      {
+        email: 'ahah26@gmail.com',
+        name: 'المالك الدائم الثاني للمنصة',
+        defaultWsId: 'ws_owner_backup_ahah26',
+        uid: 'owner_backup_ahah26',
+      },
+    ];
+
+    permanentOwnersGuaranteed.forEach((po) => {
+      const alreadyPresent = clientSummaries.some(
+        (c) =>
+          c.ownerEmail === po.email ||
+          (po.email === 'ahah26@gmail.com' && c.ownerEmail === 'ahah26h@gmail.com')
+      );
+      if (!alreadyPresent) {
+        const permLic = buildPermanentOwnerLicense({
+          workspaceId: po.defaultWsId,
+          ownerId: po.uid,
+          ownerEmail: po.email,
+        });
+        clientSummaries.unshift(
+          buildPlatformClientAccountSummary({
+            workspace: {
+              id: po.defaultWsId,
+              name: `مساحة ${po.name}`,
+              ownerId: po.uid,
+              ownerName: po.name,
+              defaultCurrency: 'YER',
+              regionName: 'عدن',
+              memberCount: 1,
+            },
+            userProfile: {
+              uid: po.uid,
+              displayName: po.name,
+              email: po.email,
+              phone: '',
+            },
+            license: permLic,
+            packagesMap: subscriptionPackages,
+          })
+        );
+      }
+    });
+
+    clientSummaries.sort((a, b) => {
+      if (a.isPermanentOwner !== b.isPermanentOwner) return a.isPermanentOwner ? -1 : 1;
+      if (a.effectiveStatus === 'pending' && b.effectiveStatus !== 'pending') return -1;
+      if (b.effectiveStatus === 'pending' && a.effectiveStatus !== 'pending') return 1;
+      return a.workspaceName.localeCompare(b.workspaceName, 'ar');
+    });
+
+    setPlatformClientAccounts(clientSummaries);
+  }, [firebaseUser, canAccessPlatformAdmin, isPlatformAdmin, subscriptionPackages]);
+
+  const refreshReceivedRegistrationRequests = useCallback(async () => {
+    await refreshPlatformAdminData();
+  }, [refreshPlatformAdminData]);
+
+  useEffect(() => {
+    if (authReady && canAccessPlatformAdmin && canAccessWorkScreens) {
+      void refreshPlatformAdminData();
+    }
+  }, [authReady, canAccessPlatformAdmin, canAccessWorkScreens, refreshPlatformAdminData]);
+
+  const refreshRegistrationStatus = useCallback(async () => {
+    if (!auth.currentUser) return;
+    await auth.currentUser.reload();
+    const refreshed = auth.currentUser;
+    setFirebaseUser({ ...refreshed } as FirebaseUser);
+    await ensureUserAndWorkspace(refreshed);
+    showToast('تم فحص وتحديث حالة طلب التسجيل من الخادم.', 'info');
+  }, [ensureUserAndWorkspace, showToast]);
 
   const isOwner = useMemo(() => {
     if (!firebaseUser) return false;
@@ -762,7 +1749,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Internal Audit Logger
   const writeAuditLog = useCallback(
     async (actionType: AuditActionType, entityType: AuditEntityType, entityId: string, summary: string) => {
-      if (!firebaseUser || !workspace || !userProfile) return;
+      if (!firebaseUser || !workspace || !userProfile || !canAccessWorkScreens) return;
       const logId = generateSafeId('log');
       const path = `audit_logs/${logId}`;
       try {
@@ -782,7 +1769,543 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(error, OperationType.CREATE, path);
       }
     },
-    [firebaseUser, workspace, userProfile]
+    [firebaseUser, workspace, userProfile, canAccessWorkScreens]
+  );
+
+  // سجل تدقيق خاص بالعمليات الإدارية على مستوى المنصة (يحفظ في /audit_logs وفي سجل التدقيق الإداري)
+  const recordPlatformAdminAudit = useCallback(
+    async (params: {
+      operation: PlatformAdminOperation;
+      actionType: AuditActionType;
+      entityType: AuditEntityType;
+      entityId: string;
+      targetWorkspaceId: string;
+      targetOwnerEmail?: string;
+      summary: string;
+      actorRole: 'permanent_owner' | 'platform_staff';
+    }) => {
+      if (!firebaseUser) return;
+      const logId = generateSafeId('adm_log');
+      const cleanEntityId = sanitizeText(
+        params.entityId.replace(/[^a-zA-Z0-9_-]/g, '_'),
+        120,
+        1,
+        'platform_entity'
+      );
+      const cleanSummary = sanitizeText(params.summary, 490, 2, '[إدارة المنصة] عملية إدارية');
+      const actorName = sanitizeText(
+        userProfile?.displayName || firebaseUser.displayName || firebaseUser.email || 'مسؤول المنصة',
+        120,
+        1,
+        'مسؤول المنصة'
+      );
+
+      let persistedToFirestore = false;
+      const fallbackAuditWsId =
+        workspace?.id ||
+        userProfile?.activeWorkspaceId ||
+        `ws_${firebaseUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+      const fallbackAuditOwnerId = workspace?.ownerId || firebaseUser.uid;
+      const fallbackAuditMemberUids =
+        workspace && workspace.memberUids.includes(firebaseUser.uid)
+          ? workspace.memberUids
+          : [firebaseUser.uid];
+
+      try {
+        await setDoc(doc(db, 'audit_logs', logId), {
+          workspaceId: fallbackAuditWsId,
+          ownerId: fallbackAuditOwnerId,
+          actionType: params.actionType,
+          entityType: params.entityType,
+          entityId: cleanEntityId,
+          summary: cleanSummary,
+          actorId: firebaseUser.uid,
+          actorName,
+          memberUids: fallbackAuditMemberUids,
+          createdAt: serverTimestamp(),
+        });
+        persistedToFirestore = true;
+      } catch {
+        persistedToFirestore = false;
+      }
+
+      const newEntry: PlatformAdminAuditEntry = {
+        id: logId,
+        operation: params.operation,
+        actionType: params.actionType,
+        entityType: params.entityType,
+        entityId: cleanEntityId,
+        targetWorkspaceId: params.targetWorkspaceId,
+        targetOwnerEmail: params.targetOwnerEmail,
+        summary: cleanSummary,
+        actorUid: firebaseUser.uid,
+        actorEmail: (firebaseUser.email || '').toLowerCase(),
+        actorName,
+        actorRole: params.actorRole,
+        createdAtIso: new Date().toISOString(),
+        persistedToFirestore,
+      };
+
+      setPlatformAdminAuditLogs((prev) => {
+        const next = [newEntry, ...prev].slice(0, 250);
+        try {
+          localStorage.setItem('rasd_platform_admin_audit_v1', JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+    },
+    [firebaseUser, userProfile, workspace]
+  );
+
+  const persistLicenseLocally = useCallback((lic: AccountLicense) => {
+    try {
+      const raw = localStorage.getItem('rasd_platform_licenses_v1');
+      const map: Record<string, AccountLicense> = raw ? JSON.parse(raw) : {};
+      map[lic.workspaceId] = lic;
+      localStorage.setItem('rasd_platform_licenses_v1', JSON.stringify(map));
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  // 1. قبول أو رفض طلب تسجيل عميل جديد (حصري للمالكين الدائمين فقط)
+  const decideRegistrationRequest = useCallback(
+    async (params: {
+      request: RegistrationRequestMetadata;
+      decision: 'approve' | 'reject';
+      approvedPlanId?: SubscriptionPlanId;
+      customDurationDays?: number | null;
+      maxMembers?: number;
+      decisionNotes?: string;
+    }) => {
+      const authRes = assertPlatformOperationAuthorized({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        operation: 'decide_registration_request',
+        targetOwnerEmail: params.request.applicantEmail,
+        targetCurrentStatus: 'pending',
+      });
+
+      const transition = buildRegistrationDecisionTransition({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        request: params.request,
+        decision: params.decision,
+        approvedPlanId: params.approvedPlanId,
+        customDurationDays: params.customDurationDays,
+        maxMembers: params.maxMembers,
+        decisionNotes: params.decisionNotes,
+        packagesMap: subscriptionPackages,
+      });
+
+      // حفظ في التخزين المحلي التكميلي
+      persistLicenseLocally(transition.updatedLicense);
+
+      // حفظ وثيقة الترخيص في /account_licenses/{workspaceId} بما يتوافق مع قواعد create و update الصارمة
+      try {
+        const licRef = doc(db, 'account_licenses', transition.updatedLicense.workspaceId);
+        const existingLicSnap = await getDoc(licRef);
+        if (existingLicSnap.exists()) {
+          await updateDoc(licRef, {
+            planId: transition.updatedLicense.planId,
+            status: transition.updatedLicense.status,
+            startsAt: transition.updatedLicense.startsAt,
+            expiresAt: transition.updatedLicense.expiresAt,
+            maxMembers: transition.updatedLicense.maxMembers,
+            notes: transition.updatedLicense.notes,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(licRef, {
+            workspaceId: transition.updatedLicense.workspaceId,
+            ownerId: transition.updatedLicense.ownerId,
+            ownerEmail: transition.updatedLicense.ownerEmail,
+            planId: transition.updatedLicense.planId,
+            status: transition.updatedLicense.status,
+            startsAt: transition.updatedLicense.startsAt,
+            expiresAt: transition.updatedLicense.expiresAt,
+            maxMembers: transition.updatedLicense.maxMembers,
+            notes: transition.updatedLicense.notes,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        console.warn('account_licenses update notice:', err);
+      }
+
+      // تحديث وثيقة المستخدم وعضوية مساحة العمل في Firestore
+      if (params.request.applicantUid) {
+        try {
+          await updateDoc(doc(db, 'users', params.request.applicantUid), {
+            jobTitle: transition.userProfilePatch.jobTitle,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore if user doc doesn't exist in Firestore yet
+        }
+
+        const ownerMemberDocId = `${params.request.workspaceId}_${params.request.applicantUid}`
+          .replace(/[^a-zA-Z0-9_-]/g, '')
+          .slice(0, 120);
+        try {
+          await updateDoc(doc(db, 'workspace_members', ownerMemberDocId), {
+            status: transition.ownerMemberPatch.status,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore if member doc doesn't exist
+        }
+      }
+
+      await recordPlatformAdminAudit({
+        operation: 'decide_registration_request',
+        actionType: params.decision === 'approve' ? 'approve' : 'update',
+        entityType: 'workspace',
+        entityId: params.request.workspaceId,
+        targetWorkspaceId: params.request.workspaceId,
+        targetOwnerEmail: params.request.applicantEmail,
+        summary: transition.auditSummary,
+        actorRole: authRes.actorRole === 'permanent_owner' ? 'permanent_owner' : 'platform_staff',
+      });
+
+      await refreshPlatformAdminData();
+      showToast(
+        params.decision === 'approve'
+          ? `تمت الموافقة على طلب تسجيل (${params.request.applicantName}) وتفعيل الاشتراك بنجاح.`
+          : `تم رفض طلب تسجيل (${params.request.applicantName}) وتوثيق العملية في سجل التدقيق.`,
+        params.decision === 'approve' ? 'success' : 'warning'
+      );
+    },
+    [
+      firebaseUser,
+      platformStaffRecord,
+      subscriptionPackages,
+      persistLicenseLocally,
+      recordPlatformAdminAudit,
+      refreshPlatformAdminData,
+      showToast,
+    ]
+  );
+
+  // 2. إجراءات تفعيل الاشتراك وتجديده وتعليقه وإعادة تفعيله
+  const mutateClientSubscription = useCallback(
+    async (params: {
+      client: PlatformClientAccountSummary;
+      action: 'activate' | 'renew' | 'suspend' | 'reactivate';
+      planId?: SubscriptionPlanId;
+      customDurationDays?: number | null;
+      maxMembers?: number;
+      notes?: string;
+    }) => {
+      const existingLicense: AccountLicense | null =
+        params.client.source === 'account_licenses'
+          ? {
+              id: params.client.workspaceId,
+              workspaceId: params.client.workspaceId,
+              ownerId: params.client.ownerId,
+              ownerEmail: params.client.ownerEmail,
+              planId: params.client.planId,
+              status: params.client.licenseStatus,
+              startsAt: params.client.startsAtIso,
+              expiresAt: params.client.expiresAtIso,
+              maxMembers: params.client.maxMembers,
+              notes: params.client.notes,
+            }
+          : null;
+
+      const mutation = buildClientSubscriptionMutation({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        action: params.action,
+        workspaceId: params.client.workspaceId,
+        ownerId: params.client.ownerId,
+        ownerEmail: params.client.ownerEmail,
+        ownerName: params.client.ownerName,
+        existingLicense,
+        planId: params.planId,
+        customDurationDays: params.customDurationDays,
+        maxMembers: params.maxMembers,
+        notes: params.notes,
+        packagesMap: subscriptionPackages,
+      });
+
+      persistLicenseLocally(mutation.updatedLicense);
+
+      try {
+        const licRef = doc(db, 'account_licenses', mutation.updatedLicense.workspaceId);
+        const existingLicSnap = await getDoc(licRef);
+        if (existingLicSnap.exists()) {
+          await updateDoc(licRef, {
+            planId: mutation.updatedLicense.planId,
+            status: mutation.updatedLicense.status,
+            startsAt: mutation.updatedLicense.startsAt,
+            expiresAt: mutation.updatedLicense.expiresAt,
+            maxMembers: mutation.updatedLicense.maxMembers,
+            notes: mutation.updatedLicense.notes,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(licRef, {
+            workspaceId: mutation.updatedLicense.workspaceId,
+            ownerId: mutation.updatedLicense.ownerId,
+            ownerEmail: mutation.updatedLicense.ownerEmail,
+            planId: mutation.updatedLicense.planId,
+            status: mutation.updatedLicense.status,
+            startsAt: mutation.updatedLicense.startsAt,
+            expiresAt: mutation.updatedLicense.expiresAt,
+            maxMembers: mutation.updatedLicense.maxMembers,
+            notes: mutation.updatedLicense.notes,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        console.warn('mutateClientSubscription Firestore notice:', err);
+      }
+
+      if (params.client.ownerId && !params.client.isPermanentOwner) {
+        const ownerMemberDocId = `${params.client.workspaceId}_${params.client.ownerId}`
+          .replace(/[^a-zA-Z0-9_-]/g, '')
+          .slice(0, 120);
+        try {
+          await updateDoc(doc(db, 'workspace_members', ownerMemberDocId), {
+            status: mutation.ownerMemberStatusPatch,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // ignore if member doc not accessible
+        }
+      }
+
+      const opMap: Record<typeof params.action, PlatformAdminOperation> = {
+        activate: 'activate_subscription',
+        renew: 'renew_subscription',
+        suspend: 'suspend_subscription',
+        reactivate: 'reactivate_subscription',
+      };
+
+      await recordPlatformAdminAudit({
+        operation: opMap[params.action],
+        actionType: params.action === 'activate' || params.action === 'reactivate' ? 'approve' : 'update',
+        entityType: 'workspace',
+        entityId: params.client.workspaceId,
+        targetWorkspaceId: params.client.workspaceId,
+        targetOwnerEmail: params.client.ownerEmail,
+        summary: mutation.auditSummary,
+        actorRole: isPlatformAdmin ? 'permanent_owner' : 'platform_staff',
+      });
+
+      await refreshPlatformAdminData();
+      showToast(mutation.auditSummary.replace('[إدارة المنصة] ', ''), 'success');
+    },
+    [
+      firebaseUser,
+      platformStaffRecord,
+      subscriptionPackages,
+      persistLicenseLocally,
+      recordPlatformAdminAudit,
+      isPlatformAdmin,
+      refreshPlatformAdminData,
+      showToast,
+    ]
+  );
+
+  // 3. إدارة الباقات ومددها وحدود أعضاء الفريق
+  const updateSubscriptionPackageConfig = useCallback(
+    async (
+      planId: SubscriptionPlanId,
+      patch: {
+        nameAr?: string;
+        descriptionAr?: string;
+        durationDays?: number | null;
+        defaultMaxMembers?: number;
+        priceAmount?: number;
+        currency?: CurrencyCode;
+        isActive?: boolean;
+      }
+    ) => {
+      const { updatedPackage, auditSummary } = validateAndBuildSubscriptionPackageUpdate({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        planId,
+        existingPackage: subscriptionPackages[planId],
+        patch,
+      });
+
+      setSubscriptionPackages((prev) => {
+        const next = {
+          ...prev,
+          [planId]: updatedPackage,
+          owner_permanent: DEFAULT_SUBSCRIPTION_PACKAGES.owner_permanent,
+        };
+        try {
+          localStorage.setItem('rasd_subscription_packages_v1', JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+
+      try {
+        await setDoc(doc(db, 'subscription_packages', planId), {
+          id: updatedPackage.id,
+          nameAr: updatedPackage.nameAr,
+          descriptionAr: updatedPackage.descriptionAr,
+          billingCycle: updatedPackage.billingCycle,
+          durationDays: updatedPackage.durationDays,
+          isLifetime: Boolean(updatedPackage.isLifetime),
+          isFreeOwnerPlan: Boolean(updatedPackage.isFreeOwnerPlan),
+          defaultMaxMembers: updatedPackage.defaultMaxMembers,
+          priceAmount: updatedPackage.priceAmount,
+          currency: updatedPackage.currency,
+          isActive: Boolean(updatedPackage.isActive),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        console.warn('subscription_packages update notice:', err);
+      }
+
+      await recordPlatformAdminAudit({
+        operation: 'manage_packages',
+        actionType: 'update',
+        entityType: 'workspace',
+        entityId: `pkg_${planId}`,
+        targetWorkspaceId: workspace?.id || 'platform_packages',
+        summary: auditSummary,
+        actorRole: isPlatformAdmin ? 'permanent_owner' : 'platform_staff',
+      });
+
+      showToast(`تم حفظ إعدادات (${updatedPackage.nameAr}) بنجاح.`, 'success');
+    },
+    [
+      firebaseUser,
+      platformStaffRecord,
+      subscriptionPackages,
+      recordPlatformAdminAudit,
+      workspace?.id,
+      isPlatformAdmin,
+      showToast,
+    ]
+  );
+
+  // 4. إدارة مساعدي المنصة وصلاحياتهم (حصري للمالكين الدائمين فقط)
+  const upsertPlatformStaffMember = useCallback(
+    async (params: {
+      staffUid: string;
+      email: string;
+      displayName: string;
+      status: 'active' | 'suspended';
+      permissions: PlatformStaffPermissions;
+    }) => {
+      const { staffRecord, auditSummary } = validateAndBuildPlatformStaffRecord({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        staffUid: params.staffUid,
+        email: params.email,
+        displayName: params.displayName,
+        status: params.status,
+        permissions: params.permissions,
+      });
+
+      setPlatformStaffList((prev) => {
+        const filtered = prev.filter(
+          (item) => item.uid !== staffRecord.uid && item.email !== staffRecord.email
+        );
+        const next = [staffRecord, ...filtered];
+        try {
+          localStorage.setItem('rasd_platform_staff_v1', JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+
+      try {
+        const staffRef = doc(db, 'platform_staff', staffRecord.uid);
+        const existingStaffSnap = await getDoc(staffRef);
+        if (existingStaffSnap.exists()) {
+          await updateDoc(staffRef, {
+            email: staffRecord.email,
+            displayName: staffRecord.displayName,
+            status: staffRecord.status,
+            permissions: staffRecord.permissions,
+            assignedByUid: staffRecord.assignedByUid,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          await setDoc(staffRef, {
+            uid: staffRecord.uid,
+            email: staffRecord.email,
+            displayName: staffRecord.displayName,
+            status: staffRecord.status,
+            permissions: staffRecord.permissions,
+            assignedByUid: staffRecord.assignedByUid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } catch (err) {
+        console.warn('platform_staff update notice:', err);
+      }
+
+      await recordPlatformAdminAudit({
+        operation: 'manage_platform_staff',
+        actionType: 'team_change',
+        entityType: 'member',
+        entityId: staffRecord.uid,
+        targetWorkspaceId: workspace?.id || 'platform_staff',
+        targetOwnerEmail: staffRecord.email,
+        summary: auditSummary,
+        actorRole: 'permanent_owner',
+      });
+
+      showToast(`تم حفظ بيانات وصلاحيات المساعد (${staffRecord.displayName}) بنجاح.`, 'success');
+    },
+    [firebaseUser, platformStaffRecord, recordPlatformAdminAudit, workspace?.id, showToast]
+  );
+
+  const removePlatformStaffMember = useCallback(
+    async (staffUid: string) => {
+      assertPlatformOperationAuthorized({
+        actorAuth: firebaseUser,
+        actorStaffRecord: platformStaffRecord,
+        operation: 'manage_platform_staff',
+      });
+
+      const target = platformStaffList.find((s) => s.uid === staffUid);
+      setPlatformStaffList((prev) => {
+        const next = prev.filter((s) => s.uid !== staffUid);
+        try {
+          localStorage.setItem('rasd_platform_staff_v1', JSON.stringify(next));
+        } catch {
+          // ignore storage errors
+        }
+        return next;
+      });
+
+      try {
+        await deleteDoc(doc(db, 'platform_staff', staffUid));
+      } catch (err) {
+        console.warn('platform_staff delete notice:', err);
+      }
+
+      await recordPlatformAdminAudit({
+        operation: 'manage_platform_staff',
+        actionType: 'delete',
+        entityType: 'member',
+        entityId: staffUid,
+        targetWorkspaceId: workspace?.id || 'platform_staff',
+        targetOwnerEmail: target?.email,
+        summary: `[إدارة المنصة] إزالة مساعد المنصة (${target?.displayName || staffUid}) وإلغاء تفويضه`,
+        actorRole: 'permanent_owner',
+      });
+
+      showToast('تم إزالة مساعد المنصة وإلغاء تفويضه بنجاح.', 'info');
+    },
+    [firebaseUser, platformStaffRecord, platformStaffList, recordPlatformAdminAudit, workspace?.id, showToast]
   );
 
   // Auth Handlers
@@ -794,13 +2317,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         applyOptimisticSession(res.user);
         setAuthReady(true);
         setActiveScreen('home');
+        await ensureUserAndWorkspace(res.user).catch((err) => {
+          console.error('Background workspace sync error:', err);
+        });
         showToast(
           `تم تسجيل الدخول بنجاح — مرحبًا بك ${res.user.displayName || res.user.email || ''}`,
           'success'
         );
-        ensureUserAndWorkspace(res.user).catch((err) => {
-          console.error('Background workspace sync error:', err);
-        });
       }
     } catch (error) {
       showToast(translateFirebaseError(error), 'error');
@@ -817,10 +2340,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           applyOptimisticSession(res.user);
           setAuthReady(true);
           setActiveScreen('home');
-          showToast('تم تسجيل الدخول بنجاح', 'success');
-          ensureUserAndWorkspace(res.user).catch((err) => {
+          await ensureUserAndWorkspace(res.user).catch((err) => {
             console.error('Background workspace sync error:', err);
           });
+          showToast('تم تسجيل الدخول بنجاح', 'success');
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -841,10 +2364,19 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           applyOptimisticSession(res.user, cleanName);
           setAuthReady(true);
           setActiveScreen('home');
-          showToast('تم إنشاء الحساب وتسجيل الدخول بنجاح', 'success');
-          ensureUserAndWorkspace(res.user, cleanName).catch((err) => {
+          await ensureUserAndWorkspace(res.user, cleanName, {
+            isExplicitRegistration: true,
+          }).catch((err) => {
             console.error('Background workspace sync error:', err);
           });
+          if (verifyPlatformOwnerIdentity(res.user).isVerifiedOwner || isPermanentPlatformOwnerEmail(res.user.email)) {
+            showToast('تم إنشاء وتفعيل حساب مالك المنصة الدائم بنجاح', 'success');
+          } else {
+            showToast(
+              'تم استلام طلب تسجيل حسابك بنجاح — حسابك الآن بانتظار موافقة إدارة المنصة.',
+              'info'
+            );
+          }
         }
       } catch (error) {
         showToast(translateFirebaseError(error), 'error');
@@ -2331,8 +3863,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         showToast('فقط المدير الأساسي أو مالك مساحة العمل يستطيع إضافة مستخدمين للفريق.', 'error');
         return;
       }
-      if (members.length >= 10 || workspace.memberUids.length >= 10) {
-        showToast('تم الوصول للحد الأقصى للفريق (10 أعضاء: المدير الأساسي + 9 مساعدين).', 'error');
+      const teamLimitCheck = validateTeamMemberAdditionLimit({
+        currentMembersCount: members.length,
+        currentMemberUidsCount: workspace.memberUids.length,
+        accountLicense,
+        isPermanentOwner: isPlatformAdmin,
+      });
+      if (!teamLimitCheck.allowed) {
+        showToast(teamLimitCheck.messageAr, 'error');
         return;
       }
       if (role === 'owner') {
@@ -2385,7 +3923,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cleanUid = createdUid || trimmedUidInput || generateSafeId('assist');
       const isRealUid = Boolean(createdUid || trimmedUidInput);
       const memberDocId = `${workspace.id}_${cleanUid}`.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
-      const updatedMemberUids = Array.from(new Set([...workspace.memberUids, cleanUid])).slice(0, 10);
+      const updatedMemberUids = Array.from(new Set([...workspace.memberUids, cleanUid])).slice(
+        0,
+        teamLimitCheck.effectiveMaxMembers
+      );
 
       try {
         // 1. Update Workspace memberUids
@@ -2656,6 +4197,25 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     canApproveFinancials,
     canDeleteRecords,
     pendingSyncCount,
+    accountApprovalStatus,
+    canAccessWorkScreens,
+    accountLicense,
+    registrationRequest,
+    receivedRegistrationRequests,
+    refreshRegistrationStatus,
+    refreshReceivedRegistrationRequests,
+    platformStaffRecord,
+    canAccessPlatformAdmin,
+    platformClientAccounts,
+    subscriptionPackages,
+    platformStaffList,
+    platformAdminAuditLogs,
+    refreshPlatformAdminData,
+    decideRegistrationRequest,
+    mutateClientSubscription,
+    updateSubscriptionPackageConfig,
+    upsertPlatformStaffMember,
+    removePlatformStaffMember,
     taxpayers,
     properties,
     propertyUnits,

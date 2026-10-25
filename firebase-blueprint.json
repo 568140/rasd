@@ -1035,9 +1035,93 @@
         }
       },
       "required": ["workspaceId", "ownerId", "actionType", "entityType", "entityId", "summary", "actorId", "actorName", "memberUids", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Explicit platform administrator record",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "PlatformStaff": {
+      "title": "PlatformStaff",
+      "description": "Delegated platform staff member with granular permissions",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "permissions": { "type": "object" },
+        "assignedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "status", "permissions", "assignedByUid", "createdAt", "updatedAt"]
+    },
+    "AccountLicense": {
+      "title": "AccountLicense",
+      "description": "Unified workspace account license and subscription record",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "planId": { "type": "string", "enum": ["owner_permanent", "lifetime", "annual", "quarterly", "monthly", "trial"] },
+        "status": { "type": "string", "enum": ["active", "pending", "expired", "suspended"] },
+        "startsAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "maxMembers": { "type": "number" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["workspaceId", "ownerId", "ownerEmail", "planId", "status", "startsAt", "expiresAt", "maxMembers", "notes", "createdAt", "updatedAt"]
+    },
+    "SubscriptionPackage": {
+      "title": "SubscriptionPackage",
+      "description": "Platform subscription package configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "nameAr": { "type": "string" },
+        "descriptionAr": { "type": "string" },
+        "billingCycle": { "type": "string", "enum": ["lifetime", "annual", "quarterly", "monthly", "trial"] },
+        "durationDays": { "type": "number" },
+        "isLifetime": { "type": "boolean" },
+        "isFreeOwnerPlan": { "type": "boolean" },
+        "defaultMaxMembers": { "type": "number" },
+        "priceAmount": { "type": "number" },
+        "currency": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["nameAr", "descriptionAr", "billingCycle", "durationDays", "isLifetime", "isFreeOwnerPlan", "defaultMaxMembers", "priceAmount", "currency", "isActive", "updatedAt"]
     }
   },
   "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Explicit platform administrators"
+    },
+    "/platform_staff/{staffUid}": {
+      "schema": { "$ref": "#/entities/PlatformStaff" },
+      "description": "Delegated platform staff members and their permissions"
+    },
+    "/account_licenses/{workspaceId}": {
+      "schema": { "$ref": "#/entities/AccountLicense" },
+      "description": "Workspace account licenses and subscription states"
+    },
+    "/subscription_packages/{packageId}": {
+      "schema": { "$ref": "#/entities/SubscriptionPackage" },
+      "description": "Platform subscription packages and member limits"
+    },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "Private user account profiles strictly isolated to the owner"

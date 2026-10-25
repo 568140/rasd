@@ -48,6 +48,7 @@ export const MoreScreen: React.FC = () => {
     workspace,
     isOwner,
     isPlatformAdmin,
+    canAccessPlatformAdmin,
     isOnline,
     pendingSyncCount,
     darkMode,
@@ -58,12 +59,14 @@ export const MoreScreen: React.FC = () => {
     updateWorkspaceSettings,
     logout,
     showToast,
+    receivedRegistrationRequests,
+    refreshReceivedRegistrationRequests,
   } = useRasd();
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
   const [subPanel, setSubPanel] = useState<
-    'none' | 'profile' | 'workspace' | 'sounds' | 'transparency' | 'vapid' | 'backup'
+    'none' | 'profile' | 'workspace' | 'sounds' | 'transparency' | 'vapid' | 'backup' | 'reg_requests'
   >(activeScreen === 'settings' || activeScreen === 'notifications' ? 'sounds' : 'none');
   const [isThemeOpen, setIsThemeOpen] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
@@ -187,6 +190,7 @@ export const MoreScreen: React.FC = () => {
         workspaceId: workspace?.id || null,
         currentUserUid: userProfile.uid,
         currentUserEmail: userProfile.email || '',
+        includePlatformGovernance: isPlatformAdmin,
       });
       setLastBackupIntegrity(integrity);
       const filename = downloadBackupJsonFile(payload);
@@ -229,7 +233,8 @@ export const MoreScreen: React.FC = () => {
   };
 
   const scopeDisclosure = getBackupScopeDisclosure(
-    isPlatformAdmin ? backupScope : 'single_workspace'
+    isPlatformAdmin ? backupScope : 'single_workspace',
+    isPlatformAdmin
   );
 
   return (
@@ -398,10 +403,31 @@ export const MoreScreen: React.FC = () => {
           >
             <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white mb-1">
               <Database className="w-4 h-4 text-[#0284C7]" />
-              <span>نسخ البيانات التشغيلية (JSON) وفحص الاستعادة المعزول</span>
+              <span>نسخ البيانات التشغيلية وحوكمة المنصة (JSON) وفحص الاستعادة المعزول</span>
             </div>
             <p className="text-xs text-slate-500">
-              تصدير تشغيلي لـ 13 مجموعة (مع حفظ Timestamp وفصل docId) ومعاينة استعادة تجريبية معزولة فقط
+              تصدير تشغيلي لـ {scopeDisclosure.includedCollections.length} مجموعة (يشمل التراخيص والباقات ومساعدي المنصة وسجلات التدقيق) ومعاينة استعادة معزولة
+            </p>
+          </button>
+        )}
+
+        {(isPlatformAdmin || canAccessPlatformAdmin) && (
+          <button
+            type="button"
+            onClick={() => setActiveScreen('platform_admin')}
+            className="p-4 rounded-3xl bg-gradient-to-l from-[#292725] to-[#4A252D] text-white border border-[#743B46] text-right transition-all cursor-pointer sm:col-span-2 lg:col-span-3 shadow-sm hover:opacity-95"
+          >
+            <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+              <div className="flex items-center gap-2 text-sm font-extrabold">
+                <Shield className="w-4 h-4 text-[#E5B9C0]" />
+                <span>لوحة إدارة منصة «رَصْد» (الطلبات · التراخيص · الباقات · المساعدون · التدقيق)</span>
+              </div>
+              <span className="px-2.5 py-0.5 rounded-lg bg-white/15 text-[#F4F1EA] text-[11px] font-bold">
+                {receivedRegistrationRequests.filter((r) => r.status === 'pending').length} طلب بانتظار المراجعة
+              </span>
+            </div>
+            <p className="text-xs text-[#DFD8CE]">
+              إدارة طلبات التسجيل، قبول أو رفض العملاء (للمالكين الدائمين فقط)، تفعيل وتجديد وتعليق التراخيص، إدارة الباقات وحدود الفريق، صلاحيات المساعدين، وسجل التدقيق الإداري.
             </p>
           </button>
         )}
@@ -423,6 +449,34 @@ export const MoreScreen: React.FC = () => {
               </div>
               <p className="text-xs text-slate-500">
                 تقرير التحقق الفعلي وخطوات البناء عبر Capacitor
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (subPanel !== 'reg_requests') {
+                  void refreshReceivedRegistrationRequests();
+                }
+                setSubPanel(subPanel === 'reg_requests' ? 'none' : 'reg_requests');
+              }}
+              className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
+                subPanel === 'reg_requests'
+                  ? 'border-[#743B46] ring-2 ring-[#743B46]/20'
+                  : 'border-slate-200/80 dark:border-slate-800/80 hover:border-[#743B46]'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-white">
+                  <UserCheck className="w-4 h-4 text-[#743B46]" />
+                  <span>معاينة سريعة لطلبات التسجيل</span>
+                </div>
+                <span className="px-2 py-0.5 rounded-lg bg-[#743B46]/10 text-[#743B46] dark:text-[#E5B9C0] text-[11px] font-bold">
+                  {receivedRegistrationRequests.filter((r) => r.status === 'pending').length} بانتظار الموافقة
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                عرض سريع لحالة الطلبات (أو افتح لوحة إدارة المنصة للقبول والرفض الكامل)
               </p>
             </button>
 
@@ -620,6 +674,92 @@ export const MoreScreen: React.FC = () => {
           onClose={() => setSubPanel('none')}
           onShowToast={showToast}
         />
+      )}
+
+      {/* Sub-panel: Received Registration Requests Preview */}
+      {isPlatformAdmin && subPanel === 'reg_requests' && (
+        <div className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl p-5 space-y-4 shadow-xs text-xs">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                <UserCheck className="w-5 h-5 text-[#743B46]" />
+                <span>سجل استقبال طلبات تسجيل العملاء وحالتها</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                عرض سريع لطلبات التسجيل المستقبلة وحالتها الحالية، مع إمكانية فتح لوحة إدارة المنصة الكاملة لاعتماد الطلبات أو رفضها وإدارة الاشتراكات.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setActiveScreen('platform_admin')}
+                className="min-h-[34px] px-3 rounded-xl bg-[#743B46] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Shield className="w-3.5 h-3.5" />
+                <span>فتح لوحة إدارة المنصة</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshReceivedRegistrationRequests()}
+                className="min-h-[34px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>تحديث القائمة</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubPanel('none')}
+                className="min-h-[34px] px-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+
+          {receivedRegistrationRequests.length === 0 ? (
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 text-center">
+              لا توجد طلبات تسجيل جديدة في قائمة الانتظار حاليًا.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {receivedRegistrationRequests.map((req) => (
+                <div
+                  key={req.workspaceId}
+                  className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap"
+                >
+                  <div className="space-y-1">
+                    <div className="font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                      <span>{req.applicantName}</span>
+                      <span className="font-mono text-[11px] text-slate-500" dir="ltr">
+                        ({req.applicantEmail})
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono">
+                      Workspace: {req.workspaceId} · Plan: {req.requestedPlanId}
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2.5 py-1 rounded-xl text-[11px] font-bold ${
+                      req.status === 'pending'
+                        ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                        : req.status === 'active'
+                        ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                        : 'bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300'
+                    }`}
+                  >
+                    {req.status === 'pending'
+                      ? 'بانتظار الموافقة'
+                      : req.status === 'active'
+                      ? 'معتمد ونشط'
+                      : req.status === 'suspended'
+                      ? 'موقوف'
+                      : 'منتهي'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Sub-panel: Offline Notification & Alert Sounds */}

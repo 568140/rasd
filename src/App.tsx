@@ -38,6 +38,11 @@ import { ScreenId } from './types/rasd';
 const AuthScreen = lazy(() =>
   import('./components/AuthScreen').then((m) => ({ default: m.AuthScreen }))
 );
+const RegistrationApprovalGateScreen = lazy(() =>
+  import('./components/RegistrationApprovalGateScreen').then((m) => ({
+    default: m.RegistrationApprovalGateScreen,
+  }))
+);
 const HomeScreen = lazy(() =>
   import('./components/HomeScreen').then((m) => ({ default: m.HomeScreen }))
 );
@@ -73,6 +78,9 @@ const AuditLogScreen = lazy(() =>
 );
 const MoreScreen = lazy(() =>
   import('./components/MoreScreen').then((m) => ({ default: m.MoreScreen }))
+);
+const PlatformAdminScreen = lazy(() =>
+  import('./components/PlatformAdminScreen').then((m) => ({ default: m.PlatformAdminScreen }))
 );
 const NotificationCenterModal = lazy(() =>
   import('./components/NotificationCenterModal').then((m) => ({ default: m.NotificationCenterModal }))
@@ -124,6 +132,7 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   audit: 'سجل التدقيق الأمني',
   notifications: 'الإشعارات والتنبيهات',
   settings: 'الإعدادات',
+  platform_admin: 'لوحة إدارة منصة رَصْد',
 };
 
 const PRIMARY_TABS: { id: ScreenId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -157,6 +166,8 @@ const RasdShell: React.FC = () => {
     toasts,
     dismissToast,
     showToast,
+    accountApprovalStatus,
+    canAccessWorkScreens,
   } = useRasd();
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
@@ -313,7 +324,7 @@ const RasdShell: React.FC = () => {
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 
-  if (!authReady) {
+  if (!authReady || (firebaseUser && accountApprovalStatus === 'checking')) {
     return (
       <div className="min-h-screen bg-[#F7F5F0] dark:bg-[#161514] flex flex-col items-center justify-center p-6" dir="rtl">
         <div className="w-16 h-16 rounded-3xl bg-[#743B46] text-white flex items-center justify-center mb-4 shadow-md animate-pulse">
@@ -323,7 +334,7 @@ const RasdShell: React.FC = () => {
           رَصْد — المساعد الميداني الذكي
         </div>
         <div className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-1.5">
-          جاري التحقق من جلسة المصادقة الآمنة...
+          جاري التحقق من جلسة المصادقة وحالة اعتماد الحساب...
         </div>
       </div>
     );
@@ -363,6 +374,45 @@ const RasdShell: React.FC = () => {
         )}
         <Suspense fallback={<ScreenFallback />}>
           <AuthScreen />
+        </Suspense>
+      </>
+    );
+  }
+
+  // بوابة الموافقة على الحسابات الجديدة: منع الوصول إلى شاشات العمل قبل الموافقة أو عند الإيقاف
+  if (!canAccessWorkScreens) {
+    return (
+      <>
+        {toasts.length > 0 && (
+          <div className="fixed top-6 left-4 right-4 z-50 max-w-md mx-auto space-y-2 pointer-events-none" dir="rtl">
+            {toasts.map((t) => (
+              <div
+                key={t.id}
+                className={`pointer-events-auto p-3.5 rounded-2xl shadow-lg border text-xs font-semibold flex items-center justify-between gap-2.5 ${
+                  t.type === 'error'
+                    ? 'bg-[#A64B45] text-white border-[#8E3B36]'
+                    : t.type === 'warning'
+                    ? 'bg-[#A77B35] text-white border-[#8D662A]'
+                    : t.type === 'success'
+                    ? 'bg-[#52765D] text-white border-[#41604B]'
+                    : 'bg-[#743B46] text-white border-[#5D2D37]'
+                }`}
+              >
+                <span className="leading-relaxed">{t.text}</span>
+                <button
+                  type="button"
+                  onClick={() => dismissToast(t.id)}
+                  className="p-1.5 rounded-xl hover:bg-black/15 cursor-pointer shrink-0"
+                  aria-label="إغلاق التنبيه"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <Suspense fallback={<ScreenFallback />}>
+          <RegistrationApprovalGateScreen />
         </Suspense>
       </>
     );
@@ -728,6 +778,7 @@ const RasdShell: React.FC = () => {
           {activeScreen === 'reports' && <ReportsScreen />}
           {activeScreen === 'team' && <TeamScreen />}
           {activeScreen === 'audit' && <AuditLogScreen />}
+          {activeScreen === 'platform_admin' && <PlatformAdminScreen />}
           {(activeScreen === 'more' || activeScreen === 'notifications' || activeScreen === 'settings') && (
             <MoreScreen />
           )}

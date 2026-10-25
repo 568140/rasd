@@ -78,6 +78,14 @@ service cloud.firestore {
       return isAdmin();
     }
 
+    // التحقق من كون المستخدم مساعد منصة نشطًا
+    function isActivePlatformStaff() {
+      let staffPath = /databases/$(database)/documents/platform_staff/$(request.auth.uid);
+      return isSignedIn() &&
+        exists(staffPath) &&
+        get(staffPath).data.status == 'active';
+    }
+
     // التحقق من مساعد المنصة المفوض من أحد المالكين وصلاحيته المحددة
     function hasStaffPermission(permKey) {
       let staffPath = /databases/$(database)/documents/platform_staff/$(request.auth.uid);
@@ -87,21 +95,57 @@ service cloud.firestore {
         get(staffPath).data.permissions[permKey] == true;
     }
 
+    // التحقق من الحسابات الحالية القائمة قبل نظام التراخيص (Grandfathered Legacy Workspaces)
+    // يعمل فقط عند عدم وجود وثيقة في /account_licenses/{wsId} بشرط أن تكون عضوية مالك المساحة نشطة (status == 'active')
+    // وألا يحمل ملف المالك علامة طلب التسجيل المعلق أو المرفوض.
+    function isLegacyGrandfatheredWorkspaceActive(wsId) {
+      let wsPath = /databases/$(database)/documents/workspaces/$(wsId);
+      let licPath = /databases/$(database)/documents/account_licenses/$(wsId);
+      let wsOwnerId = get(wsPath).data.ownerId;
+      let ownerMemberPath = /databases/$(database)/documents/workspace_members/$(wsId + '_' + wsOwnerId);
+      let ownerUserPath = /databases/$(database)/documents/users/$(wsOwnerId);
+      return isValidId(wsId) &&
+        !exists(licPath) &&
+        exists(wsPath) &&
+        exists(ownerMemberPath) &&
+        get(ownerMemberPath).data.role == 'owner' &&
+        get(ownerMemberPath).data.status == 'active' &&
+        (!exists(ownerUserPath) || !(get(ownerUserPath).data.jobTitle in [
+          'طلب تسجيل جديد - بانتظار الموافقة',
+          'طلب تسجيل مرفوض'
+        ]));
+    }
+
     // التحقق من سريان ترخيص العميل لمساحة العمل في المجموعة الموحدة /account_licenses/{wsId}
-    // المالكان الدائمان (isAdmin / owner_permanent) والاشتراكات مدى الحياة (lifetime) معفيون من انتهاء الصلاحية
+    // المالكان الدائمان (isAdmin / owner_permanent) والاشتراكات مدى الحياة (lifetime) معفيون من انتهاء الصلاحية،
+    // كما تُحترم الحسابات الحالية القائمة قبل نظام التراخيص دون إجبارها على ترحيل قسري.
     function isWorkspaceLicenseActive(wsId) {
       let wsPath = /databases/$(database)/documents/workspaces/$(wsId);
       let licPath = /databases/$(database)/documents/account_licenses/$(wsId);
       return isAdmin() || (
         isValidId(wsId) &&
-        exists(wsPath) &&
-        exists(licPath) &&
-        get(licPath).data.status == 'active' && (
-          isPermanentOwnerEmail(get(licPath).data.ownerEmail) ||
-          get(licPath).data.planId in ['lifetime', 'owner_permanent'] ||
-          get(licPath).data.expiresAt > request.time
+        exists(wsPath) && (
+          (
+            exists(licPath) &&
+            get(licPath).data.status == 'active' && (
+              isPermanentOwnerEmail(get(licPath).data.ownerEmail) ||
+              get(licPath).data.planId in ['lifetime', 'owner_permanent'] ||
+              get(licPath).data.expiresAt > request.time
+            )
+          ) ||
+          isLegacyGrandfatheredWorkspaceActive(wsId)
         )
       );
+    }
+
+    // استخراج الحد الأقصى المسموح به لأعضاء الفريق في مساحة العمل حسب وثيقة الترخيص (أو 10 كحد أقصى افتراضي)
+    function getWorkspaceMaxMembers(wsId) {
+      let licPath = /databases/$(database)/documents/account_licenses/$(wsId);
+      return isAdmin()
+        ? 10
+        : (exists(licPath) && get(licPath).data.maxMembers is number
+            ? get(licPath).data.maxMembers
+            : 10);
     }
 
     function isValidMemberUids(arr) {
@@ -142,6 +186,7 @@ service cloud.firestore {
         data.keys().hasOnly(['uid', 'email', 'displayName', 'status', 'permissions', 'assignedByUid', 'createdAt', 'updatedAt']) &&
         isValidId(data.uid) &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        !isPermanentOwnerEmail(data.email) &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
         data.status is string && data.status.size() <= 20 && data.status in ['active', 'suspended'] &&
         data.permissions is map &&
@@ -170,6 +215,22 @@ service cloud.firestore {
         data.maxMembers is number && data.maxMembers >= 1 && data.maxMembers <= 10 &&
         data.notes is string && data.notes.size() <= 1000 &&
         data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSubscriptionPackage(data) {
+      return data.keys().hasAll(['nameAr', 'descriptionAr', 'billingCycle', 'durationDays', 'isLifetime', 'defaultMaxMembers', 'priceAmount', 'currency', 'isActive', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'nameAr', 'descriptionAr', 'billingCycle', 'durationDays', 'isLifetime', 'isFreeOwnerPlan', 'defaultMaxMembers', 'priceAmount', 'currency', 'isActive', 'createdAt', 'updatedAt']) &&
+        (!('id' in data) || data.id in ['owner_permanent', 'lifetime', 'trial', 'monthly', 'quarterly', 'semi_annual', 'annual', 'custom']) &&
+        data.nameAr is string && data.nameAr.size() >= 2 && data.nameAr.size() <= 120 &&
+        data.descriptionAr is string && data.descriptionAr.size() >= 2 && data.descriptionAr.size() <= 500 &&
+        data.billingCycle in ['monthly', 'quarterly', 'semi_annual', 'annual', 'lifetime', 'custom'] &&
+        (data.durationDays == null || (data.durationDays is number && data.durationDays >= 1 && data.durationDays <= 36500)) &&
+        data.isLifetime is bool &&
+        data.defaultMaxMembers is number && data.defaultMaxMembers >= 1 && data.defaultMaxMembers <= 10 &&
+        data.priceAmount is number && data.priceAmount >= 0 &&
+        data.currency in ['YER', 'SAR', 'AED', 'EGP', 'JOD', 'IQD', 'KWD', 'OMR', 'QAR', 'BHD', 'USD'] &&
+        data.isActive is bool &&
         data.updatedAt is timestamp;
     }
 
@@ -482,14 +543,17 @@ service cloud.firestore {
         isWorkspaceMember(workspaceId) ||
         isWorkspaceOwner(workspaceId) ||
         isAdmin() ||
-        hasStaffPermission('canViewRequests')
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
       allow list: if isSignedIn() && (
         existing().ownerId == request.auth.uid ||
         isAdmin() ||
-        hasStaffPermission('canViewRequests')
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
-      // يسمح للعميل الجديد بإنشاء طلب ترخيص بحالة pending فقط ومرتبط بـ ownerId وبريده الموثق دون تفعيل نفسه أو طلب باقة المالك
+      // يسمح للعميل الجديد بإنشاء طلب ترخيص بحالة pending فقط ومرتبط بـ ownerId وبريده الموثق دون تفعيل نفسه أو طلب باقة المالك،
+      // كما يسمح لمساعد المنصة المفوض (canApproveAndRenew) بإصدار وثيقة ترخيص لحساب عميل قائم سابقًا (Grandfathered) غير معلق.
       allow create: if isVerifiedUser() &&
         isValidId(workspaceId) &&
         isValidAccountLicense(incoming()) &&
@@ -497,8 +561,18 @@ service cloud.firestore {
           isAdmin() || (
             incoming().ownerId == request.auth.uid &&
             (request.auth.token.email == null || incoming().ownerEmail == request.auth.token.email) &&
+            !isPermanentOwnerEmail(incoming().ownerEmail) &&
             incoming().planId != 'owner_permanent' &&
             incoming().status == 'pending' &&
+            incoming().createdAt == request.time &&
+            incoming().updatedAt == request.time
+          ) || (
+            hasStaffPermission('canApproveAndRenew') &&
+            isLegacyGrandfatheredWorkspaceActive(workspaceId) &&
+            !isPermanentOwnerEmail(incoming().ownerEmail) &&
+            incoming().planId != 'owner_permanent' &&
+            incoming().status in ['active', 'suspended'] &&
+            incoming().ownerId == get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId &&
             incoming().createdAt == request.time &&
             incoming().updatedAt == request.time
           )
@@ -507,7 +581,10 @@ service cloud.firestore {
         isValidId(workspaceId) &&
         isValidAccountLicense(incoming()) && (
           isAdmin() || (
+            // قبول أو رفض طلب التسجيل الأولي (existing().status == 'pending') حصري للمالكين الدائمين (isAdmin) فقط
             hasStaffPermission('canApproveAndRenew') &&
+            existing().status != 'pending' &&
+            incoming().status != 'pending' &&
             !isPermanentOwnerEmail(existing().ownerEmail) &&
             existing().planId != 'owner_permanent' &&
             incoming().planId != 'owner_permanent' &&
@@ -526,18 +603,40 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(workspaceId);
     }
 
+    // Collection 0D: /subscription_packages/{packageId} (باقات الاشتراك ومددها وحدود أعضاء الفريق)
+    match /subscription_packages/{packageId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isVerifiedUser() &&
+        isValidId(packageId) &&
+        packageId != 'owner_permanent' &&
+        isValidSubscriptionPackage(incoming()) &&
+        (!('id' in incoming()) || incoming().id == packageId) &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          hasStaffPermission('canManagePackages')
+        );
+      allow delete: if isAdmin() && isValidId(packageId) && packageId != 'owner_permanent';
+    }
+
     // Collection 1: /users/{userId} (PII strictly isolated to owner, workspace owner binding, or admin)
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (
         request.auth.uid == userId ||
         isAdmin() ||
-        hasStaffPermission('canViewRequests')
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
-      allow list: if isSignedIn() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (
+        existing().uid == request.auth.uid ||
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
+      );
       allow create: if isVerifiedUser() &&
         isValidId(userId) &&
         isValidUser(incoming()) &&
         incoming().uid == userId &&
+        (!isPermanentOwnerEmail(incoming().email) || isAdmin()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time && (
           (userId == request.auth.uid && (request.auth.token.email == null || incoming().email == request.auth.token.email)) ||
@@ -553,7 +652,12 @@ service cloud.firestore {
             incoming().email == existing().email &&
             (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'phone', 'jobTitle', 'activeWorkspaceId', 'createdAt', 'updatedAt']) &&
+            (
+              !(existing().jobTitle in ['طلب تسجيل جديد - بانتظار الموافقة', 'طلب تسجيل مرفوض']) ||
+              incoming().jobTitle == existing().jobTitle ||
+              isWorkspaceLicenseActive(existing().activeWorkspaceId)
+            )
           )
         );
       allow delete: if isAdmin();
@@ -566,13 +670,15 @@ service cloud.firestore {
         workspaceId == 'ws_' + request.auth.uid ||
         (resource != null && (request.auth.uid in existing().memberUids || existing().ownerId == request.auth.uid)) ||
         isAdmin() ||
-        hasStaffPermission('canViewRequests')
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
       allow list: if isSignedIn() && (
         request.auth.uid in existing().memberUids ||
         existing().ownerId == request.auth.uid ||
         isAdmin() ||
-        hasStaffPermission('canViewRequests')
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
       allow create: if isVerifiedUser() &&
         isValidId(workspaceId) &&
@@ -591,6 +697,7 @@ service cloud.firestore {
             (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
             request.auth.uid in incoming().memberUids &&
+            (incoming().memberUids.size() <= getWorkspaceMaxMembers(workspaceId) || incoming().memberUids.size() <= existing().memberUids.size()) &&
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'ownerName', 'defaultCurrency', 'taxRatePercent', 'regionName', 'inviteCode', 'memberUids', 'memberCount', 'createdAt', 'updatedAt'])
           ) || (
             // Action 2: Invited member links their UID into workspace memberUids
@@ -605,6 +712,7 @@ service cloud.firestore {
             incoming().createdAt == existing().createdAt &&
             incoming().updatedAt == request.time &&
             request.auth.uid in incoming().memberUids &&
+            (incoming().memberUids.size() <= getWorkspaceMaxMembers(workspaceId) || incoming().memberUids.size() <= existing().memberUids.size()) &&
             incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'memberCount', 'updatedAt'])
           )
         );
@@ -622,23 +730,34 @@ service cloud.firestore {
           existing().ownerId == request.auth.uid ||
           existing().email == request.auth.token.email
         )) ||
-        isAdmin()
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
       allow list: if isSignedIn() && (
         request.auth.uid in existing().memberUids ||
         existing().userId == request.auth.uid ||
         existing().ownerId == request.auth.uid ||
         existing().email == request.auth.token.email ||
-        isAdmin()
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew')
       );
       allow create: if isVerifiedUser() &&
         isValidId(memberId) &&
         isValidWorkspaceMember(incoming()) &&
         incoming().createdBy == request.auth.uid &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          (incoming().ownerId == request.auth.uid && incoming().userId == request.auth.uid && incoming().role == 'owner' && request.auth.uid in incoming().memberUids) ||
-          (isWorkspaceLicenseActive(incoming().workspaceId) && isWorkspaceOwner(incoming().workspaceId)) ||
+        incoming().updatedAt == request.time &&
+        incoming().memberUids.size() <= getWorkspaceMaxMembers(incoming().workspaceId) && (
+          (
+            incoming().ownerId == request.auth.uid &&
+            incoming().userId == request.auth.uid &&
+            incoming().role == 'owner' &&
+            request.auth.uid in incoming().memberUids &&
+            (incoming().status == 'invited' || isAdmin() || isWorkspaceLicenseActive(incoming().workspaceId))
+          ) ||
+          (isWorkspaceLicenseActive(incoming().workspaceId) && isWorkspaceOwner(incoming().workspaceId) && incoming().role != 'owner') ||
           isAdmin() ||
           (isWorkspaceLicenseActive(incoming().workspaceId) && incoming().userId == request.auth.uid && incoming().role != 'owner' && isWorkspaceMember(incoming().workspaceId))
         );
@@ -646,17 +765,22 @@ service cloud.firestore {
         isValidId(memberId) &&
         isValidWorkspaceMember(incoming()) && (
           isAdmin() || (
-            // Action 1: Owner updates member role, permissions, status, or memberUids
+            // Action 1: Owner updates assistant member role, permissions, status, or memberUids (cannot self-activate own owner status)
             isWorkspaceLicenseActive(existing().workspaceId) &&
             (existing().ownerId == request.auth.uid || isWorkspaceOwner(existing().workspaceId)) &&
             incoming().workspaceId == existing().workspaceId &&
             incoming().ownerId == existing().ownerId &&
+            (existing().userId != existing().ownerId || incoming().status == existing().status) &&
+            (incoming().role != 'owner' || existing().role == 'owner') &&
+            (incoming().memberUids.size() <= getWorkspaceMaxMembers(existing().workspaceId) || incoming().memberUids.size() <= existing().memberUids.size()) &&
             (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
             incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'displayName', 'email', 'role', 'status', 'canApproveFinancials', 'canDeleteRecords', 'memberUids', 'createdAt', 'updatedAt'])
           ) || (
-            // Action 2: Invited member activates their own membership record
+            // Action 2: Invited team assistant (role != 'owner') activates their own membership record
             isWorkspaceLicenseActive(existing().workspaceId) &&
+            existing().role != 'owner' &&
+            existing().status == 'invited' &&
             existing().email == request.auth.token.email &&
             incoming().workspaceId == existing().workspaceId &&
             incoming().ownerId == existing().ownerId &&
@@ -665,8 +789,19 @@ service cloud.firestore {
             incoming().canDeleteRecords == existing().canDeleteRecords &&
             incoming().userId == request.auth.uid &&
             incoming().status == 'active' &&
+            (incoming().memberUids.size() <= getWorkspaceMaxMembers(existing().workspaceId) || incoming().memberUids.size() <= existing().memberUids.size()) &&
             incoming().updatedAt == request.time &&
             incoming().diff(existing()).affectedKeys().hasOnly(['userId', 'displayName', 'status', 'memberUids', 'updatedAt'])
+          ) || (
+            // Action 3: Platform Staff with canApproveAndRenew syncs workspace owner status during subscription suspension/reactivation (never initial pending 'invited')
+            hasStaffPermission('canApproveAndRenew') &&
+            existing().role == 'owner' &&
+            existing().userId == existing().ownerId &&
+            existing().status != 'invited' &&
+            !isPermanentOwnerEmail(existing().email) &&
+            incoming().status in ['active', 'suspended'] &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           )
         );
       allow delete: if isVerifiedUser() && isValidId(memberId) && (
@@ -998,16 +1133,30 @@ service cloud.firestore {
 
     // Collection 13: /audit_logs/{logId} (Strictly Immutable Append-Only Audit Trail)
     match /audit_logs/{logId} {
-      allow get: if isSignedIn() && isValidId(logId) && resource != null && (request.auth.uid in existing().memberUids || isAdmin());
-      allow list: if isSignedIn() && (request.auth.uid in existing().memberUids || isAdmin());
+      allow get: if isSignedIn() && isValidId(logId) && resource != null && (
+        request.auth.uid in existing().memberUids ||
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew') ||
+        hasStaffPermission('canManagePackages')
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid in existing().memberUids ||
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew') ||
+        hasStaffPermission('canManagePackages')
+      );
       allow create: if isVerifiedUser() &&
         isValidId(logId) &&
         isValidAuditLog(incoming()) &&
         incoming().actorId == request.auth.uid &&
         incoming().createdAt == request.time &&
-        request.auth.uid in incoming().memberUids &&
-        isWorkspaceMember(incoming().workspaceId) &&
-        isWorkspaceLicenseActive(incoming().workspaceId);
+        request.auth.uid in incoming().memberUids && (
+          isAdmin() ||
+          isActivePlatformStaff() ||
+          (isWorkspaceMember(incoming().workspaceId) && isWorkspaceLicenseActive(incoming().workspaceId))
+        );
       allow update, delete: if false;
     }
   }

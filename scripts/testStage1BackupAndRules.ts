@@ -909,17 +909,17 @@ async function runStage1Tests() {
     `صحة المواضع المعتمدة=${validSentinelReport.isValid} (روابط مكسورة=${validSentinelReport.brokenRelations.length})، ورفض المواضع/المعرفات غير المعتمدة=${invalidSentinelReport.brokenRelations.length}/4`
   );
 
-  // التحقق 9: مواءمة DRAFT_firestore.rules مع firestore.rules الكامل وعدم المساس بملف الإنتاج
+  // التحقق 9: ترقية ومواءمة firestore.rules الإنتاجي مع DRAFT_firestore.rules الكامل
   const prodRulesPath = path.resolve(process.cwd(), 'firestore.rules');
   const draftRulesPath = path.resolve(process.cwd(), 'DRAFT_firestore.rules');
   const prodRulesText = fs.readFileSync(prodRulesPath, 'utf8');
   const draftRulesText = fs.readFileSync(draftRulesPath, 'utf8');
 
-  const prodRulesUntouched =
-    prodRulesText.split('\n').length === 771 &&
-    !prodRulesText.includes('account_licenses') &&
-    !prodRulesText.includes('tenant_licenses') &&
-    !prodRulesText.includes('platform_staff') &&
+  const prodRulesPromoted =
+    prodRulesText === draftRulesText &&
+    prodRulesText.includes('match /account_licenses/{workspaceId}') &&
+    prodRulesText.includes('match /platform_staff/{staffUid}') &&
+    prodRulesText.includes('match /subscription_packages/{packageId}') &&
     prodRulesText.includes('function isAdmin()');
 
   const requiredValidators = [
@@ -940,29 +940,29 @@ async function runStage1Tests() {
     'isValidPlatformStaff',
   ];
 
-  // التأكد من عدم استخدام ownerUid ككود في المسودة، وتوحيد account_licenses، والحفاظ على الأدوار الفعلية
-  const draftCodeLines = draftRulesText
+  // التأكد من عدم استخدام ownerUid ككود، وتوحيد account_licenses، والحفاظ على الأدوار الفعلية
+  const prodCodeLines = prodRulesText
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n');
 
-  const draftAligned =
-    requiredValidators.every((fn) => draftCodeLines.includes(`function ${fn}(`)) &&
-    !draftCodeLines.includes('ownerUid') &&
-    !draftCodeLines.includes('tenant_licenses') &&
-    !draftCodeLines.includes('field_officer') &&
-    draftCodeLines.includes("['owner', 'field_assistant', 'finance_assistant', 'viewer']") &&
-    draftCodeLines.includes('match /account_licenses/{workspaceId}') &&
-    draftCodeLines.includes('match /platform_staff/{staffUid}') &&
-    draftCodeLines.includes('am1075022@gmail.com') &&
-    draftCodeLines.includes('ahah26h@gmail.com');
+  const rulesAligned =
+    requiredValidators.every((fn) => prodCodeLines.includes(`function ${fn}(`)) &&
+    !prodCodeLines.includes('ownerUid') &&
+    !prodCodeLines.includes('tenant_licenses') &&
+    !prodCodeLines.includes('field_officer') &&
+    prodCodeLines.includes("['owner', 'field_assistant', 'finance_assistant', 'viewer']") &&
+    prodCodeLines.includes('match /account_licenses/{workspaceId}') &&
+    prodCodeLines.includes('match /platform_staff/{staffUid}') &&
+    prodCodeLines.includes('am1075022@gmail.com') &&
+    prodCodeLines.includes('ahah26h@gmail.com');
 
   recordAssertion(
     'S1B-09',
     'rules_alignment',
-    'بقاء firestore.rules (771 سطرًا) دون تغيير، ومواءمة DRAFT_firestore.rules بالكامل (ownerId، الأدوار الفعلية، account_licenses، والـ 15 دالة تحقق)',
-    prodRulesUntouched && draftAligned,
-    `بقاء firestore.rules الأصلي (771 سطرًا)=${prodRulesUntouched}، ومواءمة المسودة الكاملة=${draftAligned}`
+    'تفعيل ومواءمة firestore.rules الإنتاجي بالكامل (ownerId، الأدوار الفعلية، account_licenses، والـ 15+ دالة تحقق)',
+    prodRulesPromoted && rulesAligned,
+    `تطابق وترقية firestore.rules الإنتاجي=${prodRulesPromoted}، ومواءمة القواعد الكاملة=${rulesAligned}`
   );
 
   const passedCount = assertions.filter((a) => a.passed).length;

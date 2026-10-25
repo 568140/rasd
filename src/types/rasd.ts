@@ -39,7 +39,8 @@ export type ScreenId =
   | 'team'
   | 'audit'
   | 'notifications'
-  | 'settings';
+  | 'settings'
+  | 'platform_admin';
 
 export type WorkspaceRole = 'owner' | 'field_assistant' | 'finance_assistant' | 'viewer';
 export type MemberStatus = 'active' | 'invited' | 'suspended';
@@ -462,4 +463,98 @@ export interface PlatformStaff extends SyncMeta {
   createdAt?: unknown;
   updatedAt?: unknown;
 }
+
+// ============================================================================
+// نظام طلبات تسجيل العملاء وبوابة الموافقة (المرحلة الثانية — استقبال الطلبات)
+// ============================================================================
+
+export type AccountApprovalGateStatus =
+  | 'checking'
+  | 'approved'
+  | 'legacy_active'
+  | 'pending_approval'
+  | 'suspended';
+
+export type AccountApprovalReasonCode =
+  | 'permanent_owner'
+  | 'active_license'
+  | 'grandfathered_existing_account'
+  | 'invited_team_member'
+  | 'expired_license_not_enforced_yet'
+  | 'new_account_pending_approval'
+  | 'existing_pending_request'
+  | 'account_suspended';
+
+export interface RegistrationRequestMetadata {
+  applicantUid: string;
+  applicantName: string;
+  applicantEmail: string;
+  applicantPhone: string;
+  workspaceId: string;
+  workspaceName: string;
+  requestedPlanId: SubscriptionPlanId;
+  status: LicenseStatus;
+  requestedAtIso: string;
+  source: 'account_licenses' | 'workspace_member_marker' | 'local_cache';
+  notes: string;
+}
+
+// ============================================================================
+// لوحة إدارة منصة «رَصْد» (المرحلة الثالثة — إدارة الطلبات، الاشتراكات، الباقات، والمساعدين)
+// ============================================================================
+
+export type PlatformAdminOperation =
+  | 'view_admin_dashboard'
+  | 'decide_registration_request'
+  | 'activate_subscription'
+  | 'renew_subscription'
+  | 'suspend_subscription'
+  | 'reactivate_subscription'
+  | 'manage_packages'
+  | 'manage_platform_staff';
+
+export interface PlatformClientAccountSummary {
+  workspaceId: string;
+  workspaceName: string;
+  ownerId: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPhone: string;
+  regionName: string;
+  defaultCurrency: CurrencyCode;
+  currentMembersCount: number;
+  maxMembers: number;
+  planId: SubscriptionPlanId;
+  planNameAr: string;
+  licenseStatus: LicenseStatus;
+  effectiveStatus: LicenseStatus;
+  isPermanentOwner: boolean;
+  isLifetime: boolean;
+  isGrandfatheredLegacy: boolean;
+  isExpired: boolean;
+  remainingDays: number | null;
+  startsAtIso: string;
+  expiresAtIso: string;
+  notes: string;
+  source: 'permanent_owner' | 'account_licenses' | 'legacy_workspace';
+}
+
+export interface PlatformAdminAuditEntry {
+  id: string;
+  operation: PlatformAdminOperation;
+  actionType: AuditActionType;
+  entityType: AuditEntityType;
+  entityId: string;
+  targetWorkspaceId: string;
+  targetOwnerEmail?: string;
+  summary: string;
+  actorUid: string;
+  actorEmail: string;
+  actorName: string;
+  actorRole: 'permanent_owner' | 'platform_staff';
+  createdAtIso: string;
+  persistedToFirestore: boolean;
+}
+
+
 

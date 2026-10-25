@@ -1,13 +1,21 @@
 import { Timestamp } from 'firebase/firestore';
 import {
+  AccountApprovalGateStatus,
+  AccountApprovalReasonCode,
   AccountLicense,
+  CurrencyCode,
   LicenseStatus,
   PermanentPlatformOwnerEmail,
+  PlatformAdminOperation,
+  PlatformClientAccountSummary,
   PlatformOwnerRole,
   PlatformStaff,
   PlatformStaffPermissions,
+  RegistrationRequestMetadata,
   SubscriptionPackage,
   SubscriptionPlanId,
+  UserProfile,
+  Workspace,
 } from '../types/rasd';
 
 /**
@@ -662,3 +670,1478 @@ export function checkPlatformStaffPermission(
   if (!staffRecord.permissions || typeof staffRecord.permissions !== 'object') return false;
   return staffRecord.permissions[permissionKey] === true;
 }
+
+// ============================================================================
+// نظام طلبات تسجيل العملاء وبوابة الموافقة (المرحلة الثانية — استقبال الطلبات)
+// ============================================================================
+
+/**
+ * علامة المسمى الوظيفي المبدئية للحسابات الجديدة التي سجلت ذاتيًا وتنتظر موافقة إدارة المنصة.
+ * متوافقة 100% مع قواعد /firestore.rules الحالية (string <= 100 chars) لضمان بقاء الحساب الجديد
+ * في حالة انتظار الموافقة حتى قبل نشر مجموعة /account_licenses في قواعد الإنتاج، ودون المساس بالحسابات الحالية.
+ */
+export const PENDING_REGISTRATION_JOB_TITLE_MARKER = 'طلب تسجيل جديد - بانتظار الموافقة';
+
+/**
+ * تضمين البيانات الوصفية لطلب التسجيل داخل حقل notes في وثيقة الترخيص (/account_licenses)
+ * مع ضمان عدم تجاوز الحد الأقصى المسموح به في قواعد Firestore (1000 حرف).
+ */
+export function encodeRegistrationMetaIntoNotes(
+  humanNotes: string,
+  meta: Partial<RegistrationRequestMetadata>
+): string {
+  const cleanNotes = (humanNotes || '')
+    .replace(/\[REG_META:\{.*?\}\]/g, '')
+    .trim()
+    .slice(0, 350);
+  const compactMeta: Record<string, string> = {};
+  if (meta.applicantUid) compactMeta.applicantUid = String(meta.applicantUid).slice(0, 64);
+  if (meta.applicantName) compactMeta.applicantName = String(meta.applicantName).slice(0, 80);
+  if (meta.applicantEmail) compactMeta.applicantEmail = String(meta.applicantEmail).slice(0, 120);
+  if (meta.applicantPhone) compactMeta.applicantPhone = String(meta.applicantPhone).slice(0, 40);
+  if (meta.workspaceId) compactMeta.workspaceId = String(meta.workspaceId).slice(0, 64);
+  if (meta.workspaceName) compactMeta.workspaceName = String(meta.workspaceName).slice(0, 80);
+  if (meta.requestedPlanId) compactMeta.requestedPlanId = String(meta.requestedPlanId).slice(0, 32);
+  if (meta.requestedAtIso) compactMeta.requestedAtIso = String(meta.requestedAtIso).slice(0, 40);
+
+  const metaTag = `[REG_META:${JSON.stringify(compactMeta)}]`;
+  const combined = cleanNotes ? `${cleanNotes}\n${metaTag}` : metaTag;
+  return combined.slice(0, 950);
+}
+
+/**
+ * فك ترميز البيانات الوصفية لطلب التسجيل من حقل notes في وثيقة الترخيص
+ */
+export function decodeRegistrationMetaFromNotes(rawNotes: string | null | undefined): {
+  cleanNotes: string;
+  meta: Partial<RegistrationRequestMetadata>;
+} {
+  if (!rawNotes || typeof rawNotes !== 'string') {
+    return { cleanNotes: '', meta: {} };
+  }
+  const match = rawNotes.match(/\[REG_META:(\{.*?\})\]/);
+  if (!match) {
+    return { cleanNotes: rawNotes.trim(), meta: {} };
+  }
+  try {
+    const parsed = JSON.parse(match[1]) as Partial<RegistrationRequestMetadata>;
+    const cleanNotes = rawNotes.replace(/\[REG_META:\{.*?\}\]/g, '').trim();
+    return { cleanNotes, meta: parsed };
+  } catch {
+    return { cleanNotes: rawNotes.trim(), meta: {} };
+  }
+}
+
+/**
+ * فحص ما إذا كان الملف الشخصي أو سجل العضوية يحمل علامة طلب تسجيل جديد بانتظار الموافقة
+ */
+export function isPendingRegistrationProfileMarker(
+  jobTitle: string | null | undefined,
+  ownerMemberStatus?: string | null
+): boolean {
+  const cleanJob = typeof jobTitle === 'string' ? jobTitle.trim() : '';
+  if (cleanJob === PENDING_REGISTRATION_JOB_TITLE_MARKER) {
+    return true;
+  }
+  if (ownerMemberStatus === 'invited') {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * إنشاء وثيقة طلب تسجيل وترخيص مبدئي بحالة انتظار الموافقة (status = 'pending')
+ * متوافقة بالكامل مع دالة isValidAccountLicense في DRAFT_firestore.rules.
+ */
+export function buildPendingRegistrationLicense(params: {
+  workspaceId: string;
+  ownerId: string;
+  ownerEmail: string;
+  applicantName: string;
+  applicantPhone?: string;
+  workspaceName?: string;
+  requestedPlanId?: SubscriptionPlanId;
+  now?: unknown;
+}): AccountLicense {
+  const normalizedEmail = normalizeEmail(params.ownerEmail);
+  if (isPermanentPlatformOwnerEmail(normalizedEmail)) {
+    throw new Error(
+      'حسابات مالكي المنصة الدائمين معفاة من طلبات الانتظار وتحصل على ترخيص مالك دائم تلقائيًا.'
+    );
+  }
+
+  const requestedPlan: SubscriptionPlanId =
+    params.requestedPlanId && params.requestedPlanId !== 'owner_permanent'
+      ? params.requestedPlanId
+      : 'trial';
+
+  const nowDate = params.now ? parseDateInput(params.now) : new Date();
+  const period = calculateSubscriptionPeriod({
+    planId: requestedPlan,
+    startDate: nowDate,
+  });
+
+  const pkg = DEFAULT_SUBSCRIPTION_PACKAGES[requestedPlan] || DEFAULT_SUBSCRIPTION_PACKAGES.trial;
+  const cleanName = (params.applicantName || normalizedEmail.split('@')[0] || 'عميل جديد').trim();
+  const cleanWsName = (params.workspaceName || `مساحة عمل ${cleanName}`).trim();
+
+  const humanSummary = `طلب تسجيل عميل جديد (${cleanName}) — بانتظار مراجعة واعتماد إدارة المنصة.`;
+  const encodedNotes = encodeRegistrationMetaIntoNotes(humanSummary, {
+    applicantUid: params.ownerId,
+    applicantName: cleanName,
+    applicantEmail: normalizedEmail,
+    applicantPhone: (params.applicantPhone || '').trim(),
+    workspaceId: params.workspaceId,
+    workspaceName: cleanWsName,
+    requestedPlanId: requestedPlan,
+    requestedAtIso: nowDate.toISOString(),
+  });
+
+  return {
+    id: params.workspaceId,
+    workspaceId: params.workspaceId,
+    ownerId: params.ownerId,
+    ownerEmail: normalizedEmail,
+    planId: requestedPlan,
+    status: 'pending',
+    startsAt: period.startsAtTimestamp,
+    expiresAt: period.expiresAtTimestamp,
+    maxMembers: pkg.defaultMaxMembers,
+    notes: encodedNotes,
+    createdAt: period.startsAtTimestamp,
+    updatedAt: period.startsAtTimestamp,
+  };
+}
+
+/**
+ * استخلاص ملخص موحد لطلب التسجيل لعرضه للمستخدم أو لإدارة المنصة
+ */
+export function buildRegistrationRequestSummary(params: {
+  license?: AccountLicense | null;
+  userProfile?: Partial<UserProfile> | null;
+  workspace?: Partial<Workspace> | null;
+  memberStatus?: string | null;
+  fallbackUid?: string;
+  fallbackEmail?: string;
+  fallbackName?: string;
+  sourceOverride?: RegistrationRequestMetadata['source'];
+}): RegistrationRequestMetadata {
+  const { license, userProfile, workspace } = params;
+  const decoded = decodeRegistrationMetaFromNotes(license?.notes);
+
+  const applicantUid =
+    license?.ownerId ||
+    decoded.meta.applicantUid ||
+    userProfile?.uid ||
+    workspace?.ownerId ||
+    params.fallbackUid ||
+    '';
+
+  const applicantEmail = normalizeEmail(
+    license?.ownerEmail ||
+      decoded.meta.applicantEmail ||
+      userProfile?.email ||
+      params.fallbackEmail ||
+      ''
+  );
+
+  const applicantName = (
+    decoded.meta.applicantName ||
+    userProfile?.displayName ||
+    workspace?.ownerName ||
+    params.fallbackName ||
+    applicantEmail.split('@')[0] ||
+    'مستخدم رصد'
+  ).trim();
+
+  const applicantPhone = (decoded.meta.applicantPhone || userProfile?.phone || '').trim();
+  const workspaceId =
+    license?.workspaceId ||
+    decoded.meta.workspaceId ||
+    userProfile?.activeWorkspaceId ||
+    workspace?.id ||
+    (applicantUid ? `ws_${applicantUid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}` : '');
+
+  const workspaceName = (
+    decoded.meta.workspaceName ||
+    workspace?.name ||
+    `مساحة عمل ${applicantName}`
+  ).trim();
+
+  const requestedPlanId: SubscriptionPlanId =
+    license?.planId ||
+    (decoded.meta.requestedPlanId as SubscriptionPlanId | undefined) ||
+    (isPermanentPlatformOwnerEmail(applicantEmail) ? 'owner_permanent' : 'trial');
+
+  const status: LicenseStatus = isPermanentPlatformOwnerEmail(applicantEmail)
+    ? 'active'
+    : license?.status ||
+      (params.memberStatus === 'suspended'
+        ? 'suspended'
+        : isPendingRegistrationProfileMarker(userProfile?.jobTitle, params.memberStatus)
+        ? 'pending'
+        : 'active');
+
+  let requestedAtIso = decoded.meta.requestedAtIso || '';
+  if (!requestedAtIso && license?.createdAt) {
+    try {
+      requestedAtIso = parseDateInput(license.createdAt).toISOString();
+    } catch {
+      requestedAtIso = new Date().toISOString();
+    }
+  }
+  if (!requestedAtIso) {
+    requestedAtIso = new Date().toISOString();
+  }
+
+  const source: RegistrationRequestMetadata['source'] =
+    params.sourceOverride ||
+    (license ? 'account_licenses' : 'workspace_member_marker');
+
+  return {
+    applicantUid,
+    applicantName,
+    applicantEmail,
+    applicantPhone,
+    workspaceId,
+    workspaceName,
+    requestedPlanId,
+    status,
+    requestedAtIso,
+    source,
+    notes:
+      decoded.cleanNotes ||
+      (status === 'pending'
+        ? 'طلب تسجيل عميل جديد بانتظار مراجعة واعتماد إدارة المنصة.'
+        : status === 'suspended'
+        ? 'تم إيقاف الحساب مؤقتًا من قِبل إدارة المنصة.'
+        : 'الحساب معتمد ونشط.'),
+  };
+}
+
+export interface AccountAccessGateEvaluation {
+  gateStatus: Exclude<AccountApprovalGateStatus, 'checking'>;
+  canAccessWorkScreens: boolean;
+  isPermanentOwner: boolean;
+  isExistingGrandfatheredAccount: boolean;
+  isNewPendingAccount: boolean;
+  reasonCode: AccountApprovalReasonCode;
+  statusLabelAr: string;
+  statusDescriptionAr: string;
+}
+
+/**
+ * تقييم بوابة الدخول لحساب المستخدم (المرحلة الثانية — نظام طلبات التسجيل والموافقة):
+ * 1. الحسابان الدائمان لمالكي المنصة (am1075022@gmail.com و ahah26@gmail.com / ahah26h@gmail.com):
+ *    صلاحيات كاملة ومجانية مدى الحياة دون انتظار موافقة.
+ * 2. الحسابات الجديدة المسجلة ذاتيًا:
+ *    تدخل في حالة انتظار الموافقة (pending_approval) وتُمنع من شاشات العمل حتى اعتمادها.
+ * 3. الحسابات الحالية القائمة قبل هذه المرحلة (وأعضاء الفرق المدعوون لمساحات قائمة):
+ *    يُسمح لها بالعمل الطبيعي (legacy_active / approved) دون حجب أو ترحيل بيانات ودون فرض انتهاء الاشتراك في هذه المرحلة.
+ */
+export function evaluateAccountAccessGate(params: {
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined;
+  isNewSelfRegistration: boolean;
+  existingUserProfile?: {
+    uid?: string;
+    email?: string;
+    displayName?: string;
+    phone?: string;
+    jobTitle?: string;
+    activeWorkspaceId?: string;
+  } | null;
+  existingOwnerMember?: {
+    role?: string;
+    status?: string;
+  } | null;
+  isInvitedTeamMember?: boolean;
+  invitedMemberStatus?: 'active' | 'invited' | 'suspended' | null;
+  accountLicense?: AccountLicense | null;
+  /** في المرحلة الحالية (2-B) يظل false لعدم فرض انتهاء الاشتراك على الحسابات الحالية */
+  enforceSubscriptionExpiryOnExisting?: boolean;
+  referenceDate?: unknown;
+}): AccountAccessGateEvaluation {
+  const ownerVerification = verifyPlatformOwnerIdentity(params.authCandidate);
+
+  // 1. المالكون الدائمون للمنصة (معفون دائمًا ومجانيون مدى الحياة)
+  if (ownerVerification.isVerifiedOwner) {
+    return {
+      gateStatus: 'approved',
+      canAccessWorkScreens: true,
+      isPermanentOwner: true,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: false,
+      reasonCode: 'permanent_owner',
+      statusLabelAr: 'مالك منصة دائم (معتمد مدى الحياة)',
+      statusDescriptionAr:
+        'حساب مالك منصة دائم وموثق بصلاحيات إدارية وميدانية كاملة ومجانية مدى الحياة.',
+    };
+  }
+
+  // 2. إذا وجدت وثيقة ترخيص صريحة في /account_licenses/{workspaceId}
+  if (params.accountLicense) {
+    if (params.accountLicense.status === 'pending') {
+      return {
+        gateStatus: 'pending_approval',
+        canAccessWorkScreens: false,
+        isPermanentOwner: false,
+        isExistingGrandfatheredAccount: false,
+        isNewPendingAccount: true,
+        reasonCode: 'existing_pending_request',
+        statusLabelAr: 'بانتظار موافقة إدارة المنصة',
+        statusDescriptionAr:
+          'تم استلام طلب تسجيل حسابك بنجاح، وهو قيد المراجعة والاعتماد من قِبل إدارة منصة رَصْد.',
+      };
+    }
+
+    if (params.accountLicense.status === 'suspended') {
+      return {
+        gateStatus: 'suspended',
+        canAccessWorkScreens: false,
+        isPermanentOwner: false,
+        isExistingGrandfatheredAccount: false,
+        isNewPendingAccount: false,
+        reasonCode: 'account_suspended',
+        statusLabelAr: 'الحساب موقوف مؤقتًا',
+        statusDescriptionAr:
+          'تم إيقاف هذا الحساب مؤقتًا من قِبل إدارة المنصة مع حفظ جميع بياناته. يرجى التواصل مع الإدارة لإعادة التفعيل.',
+      };
+    }
+
+    const licenseState = evaluateLicenseState(
+      params.accountLicense,
+      params.referenceDate ?? new Date()
+    );
+
+    if (licenseState.isExpired && params.enforceSubscriptionExpiryOnExisting === true) {
+      return {
+        gateStatus: 'suspended',
+        canAccessWorkScreens: false,
+        isPermanentOwner: false,
+        isExistingGrandfatheredAccount: false,
+        isNewPendingAccount: false,
+        reasonCode: 'account_suspended',
+        statusLabelAr: 'انتهت مدة الاشتراك',
+        statusDescriptionAr: 'انتهت فترة الاشتراك المحددة للحساب مع بقاء جميع البيانات محفوظة.',
+      };
+    }
+
+    return {
+      gateStatus: 'approved',
+      canAccessWorkScreens: true,
+      isPermanentOwner: false,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: false,
+      reasonCode: licenseState.isExpired ? 'expired_license_not_enforced_yet' : 'active_license',
+      statusLabelAr: 'حساب معتمد ونشط',
+      statusDescriptionAr: 'الحساب معتمد ومصرح له بالوصول إلى شاشات العمل.',
+    };
+  }
+
+  // 3. عضو فريق مدعو إلى مساحة عمل قائمة
+  if (params.isInvitedTeamMember) {
+    if (params.invitedMemberStatus === 'suspended') {
+      return {
+        gateStatus: 'suspended',
+        canAccessWorkScreens: false,
+        isPermanentOwner: false,
+        isExistingGrandfatheredAccount: false,
+        isNewPendingAccount: false,
+        reasonCode: 'account_suspended',
+        statusLabelAr: 'عضوية الفريق موقوفة',
+        statusDescriptionAr: 'تم إيقاف عضويتك في مساحة العمل من قِبل مدير الفريق.',
+      };
+    }
+
+    return {
+      gateStatus: 'approved',
+      canAccessWorkScreens: true,
+      isPermanentOwner: false,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: false,
+      reasonCode: 'invited_team_member',
+      statusLabelAr: 'عضو فريق معتمد',
+      statusDescriptionAr: 'عضو فريق مرتبط بمساحة عمل قائمة.',
+    };
+  }
+
+  // 4. تسجيل ذاتي لحساب عميل جديد لم يكن موجودًا من قبل
+  if (params.isNewSelfRegistration) {
+    return {
+      gateStatus: 'pending_approval',
+      canAccessWorkScreens: false,
+      isPermanentOwner: false,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: true,
+      reasonCode: 'new_account_pending_approval',
+      statusLabelAr: 'بانتظار موافقة إدارة المنصة',
+      statusDescriptionAr:
+        'تم تسجيل حسابك الجديد وإرسال طلب التفعيل إلى إدارة المنصة. ستُفتح شاشات العمل فور الموافقة على الطلب.',
+    };
+  }
+
+  // 5. حساب سجل طلبًا سابقًا ولا يزال يحمل علامة انتظار الموافقة
+  if (
+    isPendingRegistrationProfileMarker(
+      params.existingUserProfile?.jobTitle,
+      params.existingOwnerMember?.status
+    )
+  ) {
+    return {
+      gateStatus: 'pending_approval',
+      canAccessWorkScreens: false,
+      isPermanentOwner: false,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: true,
+      reasonCode: 'existing_pending_request',
+      statusLabelAr: 'بانتظار موافقة إدارة المنصة',
+      statusDescriptionAr:
+        'طلب تسجيل حسابك لا يزال قيد المراجعة وبانتظار موافقة إدارة المنصة قبل فتح شاشات العمل.',
+    };
+  }
+
+  // 6. حساب موقوف صراحةً في سجل العضوية
+  if (params.existingOwnerMember?.status === 'suspended') {
+    return {
+      gateStatus: 'suspended',
+      canAccessWorkScreens: false,
+      isPermanentOwner: false,
+      isExistingGrandfatheredAccount: false,
+      isNewPendingAccount: false,
+      reasonCode: 'account_suspended',
+      statusLabelAr: 'الحساب موقوف مؤقتًا',
+      statusDescriptionAr: 'تم إيقاف الحساب مؤقتًا مع الاحتفاظ الكامل بالبيانات.',
+    };
+  }
+
+  // 7. الحسابات الحالية القائمة قبل هذه المرحلة (يُسمح لها بالعمل دون منع أو ترحيل بيانات ودون فرض انتهاء الاشتراك)
+  return {
+    gateStatus: 'legacy_active',
+    canAccessWorkScreens: true,
+    isPermanentOwner: false,
+    isExistingGrandfatheredAccount: true,
+    isNewPendingAccount: false,
+    reasonCode: 'grandfathered_existing_account',
+    statusLabelAr: 'حساب حالي نشط',
+    statusDescriptionAr:
+      'حساب عميل حالي قائم يعمل بكامل صلاحياته المعتادة دون تغيير بياناته أو فرض انتهاء الاشتراك في هذه المرحلة.',
+  };
+}
+
+// ============================================================================
+// المرحلة الثالثة (2-C): لوحة إدارة منصة «رَصْد» والتحقق الصارم من الصلاحيات الإدارية
+// ============================================================================
+
+export interface PlatformOperationAuthResult {
+  allowed: boolean;
+  actorRole: 'permanent_owner' | 'platform_staff' | 'unauthorized';
+  ownerRole: PlatformOwnerRole | null;
+  operation: PlatformAdminOperation;
+  denialReason:
+    | null
+    | 'unauthenticated'
+    | 'not_owner_or_active_staff'
+    | 'owner_only_operation'
+    | 'owner_only_pending_request'
+    | 'staff_missing_permission'
+    | 'staff_missing_package_permission'
+    | 'cannot_modify_permanent_owner';
+  messageAr: string;
+}
+
+/**
+ * بوابة التحقق الصارم من صلاحية تنفيذ أي عملية في لوحة إدارة منصة «رَصْد»
+ * - قبول أو رفض طلبات تسجيل العملاء الجدد (decide_registration_request) حصري للمالكين الدائمين فقط.
+ * - إدارة مساعدي المنصة وصلاحياتهم (manage_platform_staff) حصرية للمالكين الدائمين فقط.
+ * - لا يجوز لأي عملية (سواء من مالك أو مساعد) تعليق أو رفض أو المساس بصلاحيات حسابَي المالكين الدائمين.
+ * - مساعد المنصة النشط يعمل فقط ضمن حدود التفويض المحدد له (canViewRequests, canApproveAndRenew, canManagePackages).
+ */
+export function authorizePlatformOperation(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  operation: PlatformAdminOperation;
+  targetOwnerEmail?: string | null;
+  targetCurrentStatus?: LicenseStatus | null;
+  changingPackageOrMaxMembers?: boolean;
+}): PlatformOperationAuthResult {
+  const { actorAuth, actorStaffRecord, operation, targetOwnerEmail, targetCurrentStatus } = params;
+
+  if (!actorAuth || !actorAuth.uid) {
+    return {
+      allowed: false,
+      actorRole: 'unauthorized',
+      ownerRole: null,
+      operation,
+      denialReason: 'unauthenticated',
+      messageAr: 'رفض أمني: يجب تسجيل الدخول بحساب موثق للوصول إلى عمليات إدارة المنصة.',
+    };
+  }
+
+  // حماية سيادية لحسابَي المالكين الدائمين ضد الإيقاف أو الرفض أو تقليص الصلاحيات
+  if (
+    targetOwnerEmail &&
+    isPermanentPlatformOwnerEmail(targetOwnerEmail) &&
+    (operation === 'suspend_subscription' || operation === 'decide_registration_request')
+  ) {
+    return {
+      allowed: false,
+      actorRole: 'unauthorized',
+      ownerRole: null,
+      operation,
+      denialReason: 'cannot_modify_permanent_owner',
+      messageAr:
+        'رفض أمني إلزامي: حسابا المالكين الدائمين للمنصة يتمتعان بصلاحيات كاملة ومجانية مدى الحياة ولا يجوز تعليقهما أو رفضهما.',
+    };
+  }
+
+  // 1. فحص ما إذا كان المنفذ أحد المالكين الدائمين الموثقين
+  const ownerCheck = verifyPlatformOwnerIdentity(actorAuth);
+  if (ownerCheck.isVerifiedOwner) {
+    return {
+      allowed: true,
+      actorRole: 'permanent_owner',
+      ownerRole: ownerCheck.ownerRole,
+      operation,
+      denialReason: null,
+      messageAr: 'مصرح به بصلاحية مالك المنصة الدائم.',
+    };
+  }
+
+  // 2. فحص ما إذا كان المنفذ مساعد منصة نشطًا ومطابقًا لمعرف الجلسة الموثقة
+  const isStaffMatch =
+    actorStaffRecord &&
+    actorStaffRecord.status === 'active' &&
+    actorStaffRecord.uid === actorAuth.uid;
+
+  if (!isStaffMatch) {
+    return {
+      allowed: false,
+      actorRole: 'unauthorized',
+      ownerRole: null,
+      operation,
+      denialReason: 'not_owner_or_active_staff',
+      messageAr: 'رفض أمني: هذا الحساب غير مخول بالوصول إلى لوحة إدارة منصة رَصْد.',
+    };
+  }
+
+  // 3. منع مساعد المنصة من المساس بحسابات المالكين الدائمين تحت أي ظرف
+  if (targetOwnerEmail && isPermanentPlatformOwnerEmail(targetOwnerEmail)) {
+    return {
+      allowed: false,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: 'cannot_modify_permanent_owner',
+      messageAr: 'رفض أمني: لا يملك مساعد المنصة صلاحية تعديل حسابات المالكين الدائمين.',
+    };
+  }
+
+  // 4. العمليات الحصرية للمالكين الدائمين فقط (قبول/رفض طلبات التسجيل الأولية، وإدارة مساعدي المنصة)
+  if (operation === 'decide_registration_request' || operation === 'manage_platform_staff') {
+    return {
+      allowed: false,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: 'owner_only_operation',
+      messageAr:
+        operation === 'decide_registration_request'
+          ? 'رفض أمني: قبول أو رفض طلبات تسجيل العملاء الجدد حصري لمالكي المنصة الدائمين فقط.'
+          : 'رفض أمني: إضافة أو تعديل صلاحيات مساعدي المنصة حصري لمالكي المنصة الدائمين فقط.',
+    };
+  }
+
+  // منع التفاف مساعد المنصة على طلب تسجيل في حالة pending عبر إجراءات الاشتراك
+  if (targetCurrentStatus === 'pending') {
+    return {
+      allowed: false,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: 'owner_only_pending_request',
+      messageAr:
+        'رفض أمني: الحساب لا يزال في مرحلة طلب التسجيل الأولي (بانتظار الموافقة)، واعتماده حصري لمالكي المنصة الدائمين فقط.',
+    };
+  }
+
+  // 5. التحقق من الأذونات المفوضة لمساعد المنصة بحسب العملية
+  if (operation === 'view_admin_dashboard') {
+    const canView =
+      checkPlatformStaffPermission(actorStaffRecord, 'canViewRequests') ||
+      checkPlatformStaffPermission(actorStaffRecord, 'canApproveAndRenew') ||
+      checkPlatformStaffPermission(actorStaffRecord, 'canManagePackages');
+    if (!canView) {
+      return {
+        allowed: false,
+        actorRole: 'platform_staff',
+        ownerRole: null,
+        operation,
+        denialReason: 'staff_missing_permission',
+        messageAr: 'رفض أمني: لا يملك حساب المساعد أي صلاحية مفوضة لعرض لوحة الإدارة.',
+      };
+    }
+    return {
+      allowed: true,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: null,
+      messageAr: 'مصرح به كمساعد منصة مفوض.',
+    };
+  }
+
+  if (operation === 'manage_packages') {
+    if (!checkPlatformStaffPermission(actorStaffRecord, 'canManagePackages')) {
+      return {
+        allowed: false,
+        actorRole: 'platform_staff',
+        ownerRole: null,
+        operation,
+        denialReason: 'staff_missing_package_permission',
+        messageAr: 'رفض أمني: لا يملك مساعد المنصة تفويض إدارة الباقات وحدود الفرق (canManagePackages).',
+      };
+    }
+    return {
+      allowed: true,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: null,
+      messageAr: 'مصرح به لإدارة الباقات بموجب التفويض.',
+    };
+  }
+
+  if (
+    operation === 'activate_subscription' ||
+    operation === 'renew_subscription' ||
+    operation === 'suspend_subscription' ||
+    operation === 'reactivate_subscription'
+  ) {
+    if (!checkPlatformStaffPermission(actorStaffRecord, 'canApproveAndRenew')) {
+      return {
+        allowed: false,
+        actorRole: 'platform_staff',
+        ownerRole: null,
+        operation,
+        denialReason: 'staff_missing_permission',
+        messageAr:
+          'رفض أمني: لا يملك مساعد المنصة تفويض تفعيل أو تجديد أو تعليق الاشتراكات (canApproveAndRenew).',
+      };
+    }
+    if (
+      params.changingPackageOrMaxMembers &&
+      !checkPlatformStaffPermission(actorStaffRecord, 'canManagePackages')
+    ) {
+      return {
+        allowed: false,
+        actorRole: 'platform_staff',
+        ownerRole: null,
+        operation,
+        denialReason: 'staff_missing_package_permission',
+        messageAr:
+          'رفض أمني: تغيير نوع الباقة أو الحد الأقصى لأعضاء الفريق يتطلب تفويض إدارة الباقات (canManagePackages).',
+      };
+    }
+    return {
+      allowed: true,
+      actorRole: 'platform_staff',
+      ownerRole: null,
+      operation,
+      denialReason: null,
+      messageAr: 'مصرح به لإدارة اشتراك العميل بموجب التفويض.',
+    };
+  }
+
+  return {
+    allowed: false,
+    actorRole: 'unauthorized',
+    ownerRole: null,
+    operation,
+    denialReason: 'staff_missing_permission',
+    messageAr: 'رفض أمني: عملية غير مصرح بها.',
+  };
+}
+
+/**
+ * فرض التحقق الأمني برمجيًا ورمي خطأ صريح عند عدم توفر الصلاحية (لا يعتمد على إخفاء أزرار الواجهة)
+ */
+export function assertPlatformOperationAuthorized(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  operation: PlatformAdminOperation;
+  targetOwnerEmail?: string | null;
+  targetCurrentStatus?: LicenseStatus | null;
+  changingPackageOrMaxMembers?: boolean;
+}): PlatformOperationAuthResult {
+  const res = authorizePlatformOperation(params);
+  if (!res.allowed) {
+    throw new Error(res.messageAr);
+  }
+  return res;
+}
+
+export interface RegistrationDecisionResult {
+  decision: 'approve' | 'reject';
+  updatedLicense: AccountLicense;
+  userProfilePatch: { jobTitle: string };
+  ownerMemberPatch: { status: 'active' | 'suspended' };
+  auditSummary: string;
+}
+
+/**
+ * بناء انتقال قبول أو رفض طلب تسجيل عميل جديد (حصري للمالكين الدائمين فقط)
+ */
+export function buildRegistrationDecisionTransition(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  request: RegistrationRequestMetadata;
+  decision: 'approve' | 'reject';
+  approvedPlanId?: SubscriptionPlanId;
+  customDurationDays?: number | null;
+  maxMembers?: number;
+  decisionNotes?: string;
+  packagesMap?: Record<SubscriptionPlanId, SubscriptionPackage>;
+  now?: unknown;
+}): RegistrationDecisionResult {
+  assertPlatformOperationAuthorized({
+    actorAuth: params.actorAuth,
+    actorStaffRecord: params.actorStaffRecord,
+    operation: 'decide_registration_request',
+    targetOwnerEmail: params.request.applicantEmail,
+    targetCurrentStatus: 'pending',
+  });
+
+  const pkgs = params.packagesMap || DEFAULT_SUBSCRIPTION_PACKAGES;
+  const nowDate = params.now ? parseDateInput(params.now) : new Date();
+  const nowTimestamp = Timestamp.fromDate(nowDate);
+  const normalizedApplicantEmail = normalizeEmail(params.request.applicantEmail);
+
+  if (isPermanentPlatformOwnerEmail(normalizedApplicantEmail)) {
+    throw new Error(
+      'حسابات مالكي المنصة الدائمين معتمدة تلقائيًا مدى الحياة ولا تخضع لقرارات قبول أو رفض طلبات التسجيل.'
+    );
+  }
+
+  const chosenPlanId: SubscriptionPlanId =
+    params.approvedPlanId && params.approvedPlanId !== 'owner_permanent'
+      ? params.approvedPlanId
+      : params.request.requestedPlanId && params.request.requestedPlanId !== 'owner_permanent'
+      ? params.request.requestedPlanId
+      : 'monthly';
+
+  const pkg = pkgs[chosenPlanId] || DEFAULT_SUBSCRIPTION_PACKAGES.monthly;
+  const effectiveMaxMembers = Math.max(
+    1,
+    Math.min(10, Math.round(params.maxMembers ?? pkg.defaultMaxMembers))
+  );
+
+  if (params.decision === 'approve') {
+    const period = calculateSubscriptionPeriod({
+      planId: chosenPlanId,
+      startDate: nowDate,
+      customDurationDays: params.customDurationDays ?? pkg.durationDays,
+    });
+
+    const humanNote =
+      (params.decisionNotes || '').trim() ||
+      `تمت الموافقة على طلب التسجيل وتفعيل (${pkg.nameAr}) بواسطة مالك المنصة.`;
+
+    const encodedNotes = encodeRegistrationMetaIntoNotes(humanNote, {
+      applicantUid: params.request.applicantUid,
+      applicantName: params.request.applicantName,
+      applicantEmail: normalizedApplicantEmail,
+      applicantPhone: params.request.applicantPhone,
+      workspaceId: params.request.workspaceId,
+      workspaceName: params.request.workspaceName,
+      requestedPlanId: chosenPlanId,
+      requestedAtIso: params.request.requestedAtIso,
+    });
+
+    const updatedLicense: AccountLicense = {
+      id: params.request.workspaceId,
+      workspaceId: params.request.workspaceId,
+      ownerId: params.request.applicantUid,
+      ownerEmail: normalizedApplicantEmail,
+      planId: chosenPlanId,
+      status: 'active',
+      startsAt: period.startsAtTimestamp,
+      expiresAt: period.expiresAtTimestamp,
+      maxMembers: effectiveMaxMembers,
+      notes: encodedNotes,
+      createdAt: nowTimestamp,
+      updatedAt: nowTimestamp,
+    };
+
+    return {
+      decision: 'approve',
+      updatedLicense,
+      userProfilePatch: { jobTitle: 'مدير مساحة العمل' },
+      ownerMemberPatch: { status: 'active' },
+      auditSummary: `[إدارة المنصة] قبول طلب تسجيل العميل (${params.request.applicantName} - ${normalizedApplicantEmail}) وتفعيل ${pkg.nameAr} بحد ${effectiveMaxMembers} أعضاء`,
+    };
+  }
+
+  // في حالة الرفض (reject)
+  const period = calculateSubscriptionPeriod({
+    planId: chosenPlanId,
+    startDate: nowDate,
+  });
+
+  const rejectReason =
+    (params.decisionNotes || '').trim() || 'تم رفض طلب التسجيل من قِبل مالك المنصة.';
+
+  const encodedNotes = encodeRegistrationMetaIntoNotes(rejectReason, {
+    applicantUid: params.request.applicantUid,
+    applicantName: params.request.applicantName,
+    applicantEmail: normalizedApplicantEmail,
+    applicantPhone: params.request.applicantPhone,
+    workspaceId: params.request.workspaceId,
+    workspaceName: params.request.workspaceName,
+    requestedPlanId: chosenPlanId,
+    requestedAtIso: params.request.requestedAtIso,
+  });
+
+  const updatedLicense: AccountLicense = {
+    id: params.request.workspaceId,
+    workspaceId: params.request.workspaceId,
+    ownerId: params.request.applicantUid,
+    ownerEmail: normalizedApplicantEmail,
+    planId: chosenPlanId,
+    status: 'suspended',
+    startsAt: period.startsAtTimestamp,
+    expiresAt: period.expiresAtTimestamp,
+    maxMembers: effectiveMaxMembers,
+    notes: encodedNotes,
+    createdAt: nowTimestamp,
+    updatedAt: nowTimestamp,
+  };
+
+  return {
+    decision: 'reject',
+    updatedLicense,
+    userProfilePatch: { jobTitle: 'طلب تسجيل مرفوض' },
+    ownerMemberPatch: { status: 'suspended' },
+    auditSummary: `[إدارة المنصة] رفض طلب تسجيل العميل (${params.request.applicantName} - ${normalizedApplicantEmail}) — السبب: ${rejectReason}`,
+  };
+}
+
+export interface ClientSubscriptionMutationResult {
+  action: 'activate' | 'renew' | 'suspend' | 'reactivate';
+  updatedLicense: AccountLicense;
+  ownerMemberStatusPatch: 'active' | 'suspended';
+  evaluation: EvaluatedLicenseState;
+  dataPreserved: true;
+  auditSummary: string;
+}
+
+/**
+ * بناء انتقالات إدارة اشتراك العميل (تفعيل، تجديد، تعليق، إعادة تفعيل)
+ * مع التحقق الصارم من صلاحية المنفذ (مالك دائم أو مساعد مفوض) والحفاظ الكامل على بيانات العميل.
+ */
+export function buildClientSubscriptionMutation(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  action: 'activate' | 'renew' | 'suspend' | 'reactivate';
+  workspaceId: string;
+  ownerId: string;
+  ownerEmail: string;
+  ownerName?: string;
+  existingLicense?: AccountLicense | null;
+  planId?: SubscriptionPlanId;
+  customDurationDays?: number | null;
+  maxMembers?: number;
+  notes?: string;
+  packagesMap?: Record<SubscriptionPlanId, SubscriptionPackage>;
+  now?: unknown;
+}): ClientSubscriptionMutationResult {
+  const operationMap: Record<typeof params.action, PlatformAdminOperation> = {
+    activate: 'activate_subscription',
+    renew: 'renew_subscription',
+    suspend: 'suspend_subscription',
+    reactivate: 'reactivate_subscription',
+  };
+
+  const normalizedOwnerEmail = normalizeEmail(params.ownerEmail);
+  if (isPermanentPlatformOwnerEmail(normalizedOwnerEmail)) {
+    if (params.action === 'suspend') {
+      throw new Error(
+        'رفض أمني إلزامي: لا يجوز تعليق أو إيقاف حساب أحد مالكي المنصة الدائمين.'
+      );
+    }
+    const permLic = buildPermanentOwnerLicense({
+      workspaceId: params.workspaceId,
+      ownerId: params.ownerId,
+      ownerEmail: normalizedOwnerEmail,
+      now: params.now,
+    });
+    return {
+      action: params.action,
+      updatedLicense: permLic,
+      ownerMemberStatusPatch: 'active',
+      evaluation: evaluateLicenseState(permLic, params.now),
+      dataPreserved: true,
+      auditSummary: `[إدارة المنصة] تأكيد العضوية الدائمة المجانية مدى الحياة لمالك المنصة (${normalizedOwnerEmail})`,
+    };
+  }
+
+  const pkgs = params.packagesMap || DEFAULT_SUBSCRIPTION_PACKAGES;
+  const existing = params.existingLicense || null;
+
+  const targetPlanId: SubscriptionPlanId =
+    params.planId && params.planId !== 'owner_permanent'
+      ? params.planId
+      : existing?.planId && existing.planId !== 'owner_permanent'
+      ? existing.planId
+      : 'monthly';
+
+  const pkg = pkgs[targetPlanId] || DEFAULT_SUBSCRIPTION_PACKAGES.monthly;
+  const targetMaxMembers = Math.max(
+    1,
+    Math.min(10, Math.round(params.maxMembers ?? existing?.maxMembers ?? pkg.defaultMaxMembers))
+  );
+
+  const isChangingPlanOrMembers = Boolean(
+    existing &&
+      ((params.planId && params.planId !== existing.planId) ||
+        (params.maxMembers !== undefined && targetMaxMembers !== existing.maxMembers))
+  );
+
+  assertPlatformOperationAuthorized({
+    actorAuth: params.actorAuth,
+    actorStaffRecord: params.actorStaffRecord,
+    operation: operationMap[params.action],
+    targetOwnerEmail: normalizedOwnerEmail,
+    targetCurrentStatus: existing?.status || null,
+    changingPackageOrMaxMembers: isChangingPlanOrMembers,
+  });
+
+  const nowDate = params.now ? parseDateInput(params.now) : new Date();
+  const nowTimestamp = Timestamp.fromDate(nowDate);
+  const createdTimestamp = existing?.createdAt
+    ? Timestamp.fromDate(parseDateInput(existing.createdAt, nowDate))
+    : nowTimestamp;
+  const clientLabel = params.ownerName
+    ? `${params.ownerName} (${normalizedOwnerEmail})`
+    : normalizedOwnerEmail;
+
+  if (params.action === 'activate') {
+    const period = calculateSubscriptionPeriod({
+      planId: targetPlanId,
+      startDate: nowDate,
+      customDurationDays: params.customDurationDays ?? pkg.durationDays,
+    });
+    const cleanNote =
+      (params.notes || '').trim() ||
+      `تم تفعيل اشتراك العميل على (${pkg.nameAr}) بحد ${targetMaxMembers} أعضاء.`;
+    const updatedLicense: AccountLicense = {
+      id: params.workspaceId,
+      workspaceId: params.workspaceId,
+      ownerId: params.ownerId,
+      ownerEmail: normalizedOwnerEmail,
+      planId: targetPlanId,
+      status: 'active',
+      startsAt: period.startsAtTimestamp,
+      expiresAt: period.expiresAtTimestamp,
+      maxMembers: targetMaxMembers,
+      notes: cleanNote.slice(0, 950),
+      createdAt: createdTimestamp,
+      updatedAt: nowTimestamp,
+    };
+    return {
+      action: 'activate',
+      updatedLicense,
+      ownerMemberStatusPatch: 'active',
+      evaluation: evaluateLicenseState(updatedLicense, nowDate),
+      dataPreserved: true,
+      auditSummary: `[إدارة المنصة] تفعيل اشتراك العميل ${clientLabel} — الباقة: ${pkg.nameAr} — الحد: ${targetMaxMembers} أعضاء`,
+    };
+  }
+
+  if (params.action === 'renew') {
+    const renewal = calculateSubscriptionRenewal({
+      planId: targetPlanId,
+      currentStartsAt: existing?.startsAt ?? nowDate,
+      currentExpiresAt: existing?.expiresAt ?? nowDate,
+      renewalDate: nowDate,
+      customDurationDays: params.customDurationDays ?? pkg.durationDays,
+    });
+    const cleanNote =
+      (params.notes || '').trim() ||
+      `تم تجديد الاشتراك على (${pkg.nameAr}) حتى ${renewal.expiresAtIso.slice(0, 10)}.`;
+    const updatedLicense: AccountLicense = {
+      id: params.workspaceId,
+      workspaceId: params.workspaceId,
+      ownerId: params.ownerId,
+      ownerEmail: normalizedOwnerEmail,
+      planId: targetPlanId,
+      status: 'active',
+      startsAt: renewal.startsAtTimestamp,
+      expiresAt: renewal.expiresAtTimestamp,
+      maxMembers: targetMaxMembers,
+      notes: cleanNote.slice(0, 950),
+      createdAt: createdTimestamp,
+      updatedAt: nowTimestamp,
+    };
+    return {
+      action: 'renew',
+      updatedLicense,
+      ownerMemberStatusPatch: 'active',
+      evaluation: evaluateLicenseState(updatedLicense, nowDate),
+      dataPreserved: true,
+      auditSummary: `[إدارة المنصة] تجديد اشتراك العميل ${clientLabel} — الباقة: ${pkg.nameAr} — ينتهي في: ${
+        renewal.isLifetime ? 'مدى الحياة' : renewal.expiresAtIso.slice(0, 10)
+      }`,
+    };
+  }
+
+  if (params.action === 'suspend') {
+    const startsTs = existing?.startsAt
+      ? Timestamp.fromDate(parseDateInput(existing.startsAt, nowDate))
+      : nowTimestamp;
+    const expiresTs = existing?.expiresAt
+      ? Timestamp.fromDate(parseDateInput(existing.expiresAt, nowDate))
+      : nowTimestamp;
+    const suspendReason =
+      (params.notes || '').trim() ||
+      'تم تعليق الاشتراك مؤقتًا من قِبل إدارة المنصة مع حفظ جميع بيانات العميل.';
+    const updatedLicense: AccountLicense = {
+      id: params.workspaceId,
+      workspaceId: params.workspaceId,
+      ownerId: params.ownerId,
+      ownerEmail: normalizedOwnerEmail,
+      planId: targetPlanId,
+      status: 'suspended',
+      startsAt: startsTs,
+      expiresAt: expiresTs,
+      maxMembers: targetMaxMembers,
+      notes: suspendReason.slice(0, 950),
+      createdAt: createdTimestamp,
+      updatedAt: nowTimestamp,
+    };
+    return {
+      action: 'suspend',
+      updatedLicense,
+      ownerMemberStatusPatch: 'suspended',
+      evaluation: evaluateLicenseState(updatedLicense, nowDate),
+      dataPreserved: true,
+      auditSummary: `[إدارة المنصة] تعليق اشتراك العميل ${clientLabel} مع حفظ البيانات — السبب: ${suspendReason}`,
+    };
+  }
+
+  // reactivate
+  const existingExpiresDate = existing?.expiresAt
+    ? parseDateInput(existing.expiresAt, nowDate)
+    : nowDate;
+  const needsFreshPeriod = existingExpiresDate.getTime() <= nowDate.getTime();
+  const reactivatedPeriod = needsFreshPeriod
+    ? calculateSubscriptionPeriod({
+        planId: targetPlanId,
+        startDate: nowDate,
+        customDurationDays: params.customDurationDays ?? pkg.durationDays,
+      })
+    : {
+        startsAtTimestamp: existing?.startsAt
+          ? Timestamp.fromDate(parseDateInput(existing.startsAt, nowDate))
+          : nowTimestamp,
+        expiresAtTimestamp: Timestamp.fromDate(existingExpiresDate),
+      };
+
+  const reactivateNote =
+    (params.notes || '').trim() || 'تمت إعادة تفعيل اشتراك العميل واستئناف الصلاحيات التشغيلية.';
+  const updatedLicense: AccountLicense = {
+    id: params.workspaceId,
+    workspaceId: params.workspaceId,
+    ownerId: params.ownerId,
+    ownerEmail: normalizedOwnerEmail,
+    planId: targetPlanId,
+    status: 'active',
+    startsAt: reactivatedPeriod.startsAtTimestamp,
+    expiresAt: reactivatedPeriod.expiresAtTimestamp,
+    maxMembers: targetMaxMembers,
+    notes: reactivateNote.slice(0, 950),
+    createdAt: createdTimestamp,
+    updatedAt: nowTimestamp,
+  };
+
+  return {
+    action: 'reactivate',
+    updatedLicense,
+    ownerMemberStatusPatch: 'active',
+    evaluation: evaluateLicenseState(updatedLicense, nowDate),
+    dataPreserved: true,
+    auditSummary: `[إدارة المنصة] إعادة تفعيل اشتراك العميل ${clientLabel} (${pkg.nameAr})`,
+  };
+}
+
+/**
+ * التحقق وبناء تحديث باقة اشتراك (مع حماية باقة المالك الدائم والتحقق من حدود الأعضاء 1-10)
+ */
+export function validateAndBuildSubscriptionPackageUpdate(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  planId: SubscriptionPlanId;
+  existingPackage?: SubscriptionPackage;
+  patch: {
+    nameAr?: string;
+    descriptionAr?: string;
+    durationDays?: number | null;
+    defaultMaxMembers?: number;
+    priceAmount?: number;
+    currency?: CurrencyCode;
+    isActive?: boolean;
+  };
+}): { updatedPackage: SubscriptionPackage; auditSummary: string } {
+  assertPlatformOperationAuthorized({
+    actorAuth: params.actorAuth,
+    actorStaffRecord: params.actorStaffRecord,
+    operation: 'manage_packages',
+  });
+
+  if (params.planId === 'owner_permanent') {
+    throw new Error(
+      'رفض أمني إلزامي: باقة المالك الدائم (owner_permanent) محمية ولا تقبل التعديل أو التعطيل.'
+    );
+  }
+
+  const basePkg = params.existingPackage || DEFAULT_SUBSCRIPTION_PACKAGES[params.planId];
+  if (!basePkg) {
+    throw new Error(`معرف الباقة غير موجود: ${params.planId}`);
+  }
+
+  const maxMembers =
+    params.patch.defaultMaxMembers !== undefined
+      ? Math.round(Number(params.patch.defaultMaxMembers))
+      : basePkg.defaultMaxMembers;
+
+  if (!Number.isFinite(maxMembers) || maxMembers < 1 || maxMembers > 10) {
+    throw new Error('الحد الأقصى لأعضاء الفريق (maxMembers) يجب أن يكون بين 1 و 10 أعضاء.');
+  }
+
+  let durationDays: number | null = basePkg.durationDays;
+  if (basePkg.isLifetime || params.planId === 'lifetime') {
+    durationDays = null;
+  } else if (params.patch.durationDays !== undefined && params.patch.durationDays !== null) {
+    const parsedDuration = Math.round(Number(params.patch.durationDays));
+    if (!Number.isFinite(parsedDuration) || parsedDuration < 1 || parsedDuration > 36500) {
+      throw new Error('مدة الباقة بالأيام يجب أن تكون رقمًا صحيحًا بين يوم واحد و 36500 يوم.');
+    }
+    durationDays = parsedDuration;
+  }
+
+  const priceAmount =
+    params.patch.priceAmount !== undefined
+      ? Math.max(0, Number(params.patch.priceAmount) || 0)
+      : basePkg.priceAmount;
+
+  const nameAr = (params.patch.nameAr ?? basePkg.nameAr).trim();
+  if (nameAr.length < 2 || nameAr.length > 120) {
+    throw new Error('اسم الباقة يجب أن يتراوح بين حرفين و 120 حرفًا.');
+  }
+
+  const descriptionAr = (params.patch.descriptionAr ?? basePkg.descriptionAr).trim().slice(0, 500);
+  const currency: CurrencyCode = params.patch.currency || basePkg.currency;
+  const isActive =
+    params.patch.isActive !== undefined ? Boolean(params.patch.isActive) : basePkg.isActive;
+
+  const updatedPackage: SubscriptionPackage = {
+    ...basePkg,
+    nameAr,
+    descriptionAr,
+    durationDays,
+    defaultMaxMembers: maxMembers,
+    priceAmount,
+    currency,
+    isActive,
+  };
+
+  return {
+    updatedPackage,
+    auditSummary: `[إدارة المنصة] تحديث باقة (${updatedPackage.nameAr}) — المدة: ${
+      updatedPackage.isLifetime ? 'مدى الحياة' : `${updatedPackage.durationDays} يوم`
+    } — حد الفريق: ${updatedPackage.defaultMaxMembers} أعضاء`,
+  };
+}
+
+/**
+ * التحقق وبناء سجل مساعد إدارة المنصة (PlatformStaff) — حصري للمالكين الدائمين فقط
+ */
+export function validateAndBuildPlatformStaffRecord(params: {
+  actorAuth: PlatformOwnerAuthCandidate | null | undefined;
+  actorStaffRecord?: PlatformStaff | null;
+  staffUid: string;
+  email: string;
+  displayName: string;
+  status: 'active' | 'suspended';
+  permissions: Partial<PlatformStaffPermissions>;
+}): { staffRecord: PlatformStaff; auditSummary: string } {
+  assertPlatformOperationAuthorized({
+    actorAuth: params.actorAuth,
+    actorStaffRecord: params.actorStaffRecord,
+    operation: 'manage_platform_staff',
+  });
+
+  const normalizedEmail = normalizeEmail(params.email);
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    throw new Error('يرجى إدخال بريد إلكتروني صالح لمساعد المنصة.');
+  }
+
+  if (isPermanentPlatformOwnerEmail(normalizedEmail)) {
+    throw new Error(
+      'هذا البريد يعود لأحد مالكي المنصة الدائمين الذين يملكون صلاحيات كاملة تلقائيًا ولا يُضاف كمساعد مقيد.'
+    );
+  }
+
+  const cleanUid = (params.staffUid || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
+  if (!cleanUid) {
+    throw new Error('معرف المستخدم (UID) لمساعد المنصة مطلوب وصالح.');
+  }
+
+  const cleanName = (params.displayName || normalizedEmail.split('@')[0] || 'مساعد منصة')
+    .trim()
+    .slice(0, 120);
+
+  const safePermissions: PlatformStaffPermissions = {
+    canViewRequests: Boolean(params.permissions.canViewRequests),
+    canApproveAndRenew: Boolean(params.permissions.canApproveAndRenew),
+    canManagePackages: Boolean(params.permissions.canManagePackages),
+  };
+
+  const staffRecord: PlatformStaff = {
+    id: cleanUid,
+    uid: cleanUid,
+    email: normalizedEmail,
+    displayName: cleanName,
+    status: params.status === 'suspended' ? 'suspended' : 'active',
+    permissions: safePermissions,
+    assignedByUid: String(params.actorAuth?.uid || ''),
+  };
+
+  const permsList: string[] = [];
+  if (safePermissions.canViewRequests) permsList.push('عرض الطلبات والعملاء');
+  if (safePermissions.canApproveAndRenew) permsList.push('تجديد وتعليق الاشتراكات');
+  if (safePermissions.canManagePackages) permsList.push('إدارة الباقات وحدود الفرق');
+
+  return {
+    staffRecord,
+    auditSummary: `[إدارة المنصة] ${
+      staffRecord.status === 'active' ? 'اعتماد/تحديث' : 'إيقاف'
+    } مساعد المنصة (${cleanName} - ${normalizedEmail}) — الصلاحيات المفوضة: [${
+      permsList.join('، ') || 'بلا صلاحيات'
+    }]`,
+  };
+}
+
+/**
+ * تجميع سجل موحد لعميل ومساحة عمله وحالة ترخيصه دون تنفيذ أي ترحيل جماعي على الحسابات الحالية
+ */
+export function buildPlatformClientAccountSummary(params: {
+  workspace?: Partial<Workspace> | null;
+  userProfile?: Partial<UserProfile> | null;
+  license?: AccountLicense | null;
+  packagesMap?: Record<SubscriptionPlanId, SubscriptionPackage>;
+  referenceDate?: unknown;
+}): PlatformClientAccountSummary {
+  const pkgs = params.packagesMap || DEFAULT_SUBSCRIPTION_PACKAGES;
+  const refDate = params.referenceDate ? parseDateInput(params.referenceDate) : new Date();
+
+  const ownerEmail = normalizeEmail(
+    params.license?.ownerEmail || params.userProfile?.email || ''
+  );
+  const isOwner = isPermanentPlatformOwnerEmail(ownerEmail);
+
+  const ownerId =
+    params.license?.ownerId ||
+    params.workspace?.ownerId ||
+    params.userProfile?.uid ||
+    '';
+
+  const workspaceId =
+    params.license?.workspaceId ||
+    params.workspace?.id ||
+    params.userProfile?.activeWorkspaceId ||
+    (ownerId ? `ws_${ownerId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}` : '');
+
+  const ownerName = (
+    params.workspace?.ownerName ||
+    params.userProfile?.displayName ||
+    ownerEmail.split('@')[0] ||
+    'عميل رصد'
+  ).trim();
+
+  const workspaceName = (params.workspace?.name || `مساحة عمل ${ownerName}`).trim();
+  const currentMembersCount =
+    typeof params.workspace?.memberCount === 'number'
+      ? params.workspace.memberCount
+      : Array.isArray(params.workspace?.memberUids)
+      ? params.workspace.memberUids.length
+      : 1;
+
+  if (isOwner) {
+    return {
+      workspaceId: workspaceId || `ws_${ownerEmail.split('@')[0]}`,
+      workspaceName,
+      ownerId: ownerId || `owner_${ownerEmail.split('@')[0]}`,
+      ownerName,
+      ownerEmail,
+      ownerPhone: params.userProfile?.phone || '',
+      regionName: params.workspace?.regionName || 'عدن',
+      defaultCurrency: params.workspace?.defaultCurrency || 'YER',
+      currentMembersCount,
+      maxMembers: 10,
+      planId: 'owner_permanent',
+      planNameAr: pkgs.owner_permanent.nameAr,
+      licenseStatus: 'active',
+      effectiveStatus: 'active',
+      isPermanentOwner: true,
+      isLifetime: true,
+      isGrandfatheredLegacy: false,
+      isExpired: false,
+      remainingDays: null,
+      startsAtIso: refDate.toISOString(),
+      expiresAtIso: LIFETIME_EXPIRY_ISO,
+      notes: 'حساب مالك منصة دائم — معفي من الاشتراكات ومدد الانتهاء بصلاحيات كاملة مدى الحياة.',
+      source: 'permanent_owner',
+    };
+  }
+
+  if (params.license) {
+    const evalState = evaluateLicenseState(params.license, refDate);
+    const pkg = pkgs[params.license.planId] || DEFAULT_SUBSCRIPTION_PACKAGES.monthly;
+    const decoded = decodeRegistrationMetaFromNotes(params.license.notes);
+    return {
+      workspaceId,
+      workspaceName: decoded.meta.workspaceName || workspaceName,
+      ownerId,
+      ownerName: decoded.meta.applicantName || ownerName,
+      ownerEmail,
+      ownerPhone: decoded.meta.applicantPhone || params.userProfile?.phone || '',
+      regionName: params.workspace?.regionName || 'عدن',
+      defaultCurrency: params.workspace?.defaultCurrency || 'YER',
+      currentMembersCount,
+      maxMembers: params.license.maxMembers,
+      planId: params.license.planId,
+      planNameAr: pkg.nameAr,
+      licenseStatus: params.license.status,
+      effectiveStatus: evalState.effectiveStatus,
+      isPermanentOwner: false,
+      isLifetime: evalState.isLifetime,
+      isGrandfatheredLegacy: false,
+      isExpired: evalState.isExpired,
+      remainingDays: evalState.remainingDays,
+      startsAtIso: evalState.startsAtIso,
+      expiresAtIso: evalState.expiresAtIso,
+      notes: decoded.cleanNotes || params.license.notes || '',
+      source: 'account_licenses',
+    };
+  }
+
+  // حساب عميل حالي قائم قبل نظام التراخيص (أو طلب تسجيل يحمل علامة الانتظار في users)
+  const isPendingMarker = isPendingRegistrationProfileMarker(params.userProfile?.jobTitle);
+  return {
+    workspaceId,
+    workspaceName,
+    ownerId,
+    ownerName,
+    ownerEmail,
+    ownerPhone: params.userProfile?.phone || '',
+    regionName: params.workspace?.regionName || 'عدن',
+    defaultCurrency: params.workspace?.defaultCurrency || 'YER',
+    currentMembersCount,
+    maxMembers: 10,
+    planId: isPendingMarker ? 'trial' : 'annual',
+    planNameAr: isPendingMarker
+      ? 'طلب تسجيل جديد (بانتظار الموافقة)'
+      : 'حساب عميل حالي قائم (قبل نظام التراخيص)',
+    licenseStatus: isPendingMarker ? 'pending' : 'active',
+    effectiveStatus: isPendingMarker ? 'pending' : 'active',
+    isPermanentOwner: false,
+    isLifetime: false,
+    isGrandfatheredLegacy: !isPendingMarker,
+    isExpired: false,
+    remainingDays: null,
+    startsAtIso: refDate.toISOString(),
+    expiresAtIso: LIFETIME_EXPIRY_ISO,
+    notes: isPendingMarker
+      ? 'طلب تسجيل عميل جديد بانتظار موافقة مالك المنصة.'
+      : 'حساب عميل حالي يعمل بكامل صلاحياته دون ترحيل قسري.',
+    source: 'legacy_workspace',
+  };
+}
+
+export interface TeamMemberLimitValidationResult {
+  allowed: boolean;
+  currentCount: number;
+  effectiveMaxMembers: number;
+  remainingSlots: number;
+  denialReason: null | 'license_not_active' | 'max_members_limit_reached';
+  messageAr: string;
+}
+
+/**
+ * التحقق البرمجي الصارم من الحد الأقصى لأعضاء الفريق (maxMembers من 1 إلى 10)
+ * حسب ترخيص مساحة العمل أو الباقة المعتمدة، مع إعفاء المالكين الدائمين والحسابات القائمة غير المقيدة بحد 10 أعضاء.
+ */
+export function validateTeamMemberAdditionLimit(params: {
+  currentMembersCount: number;
+  currentMemberUidsCount?: number;
+  accountLicense?: Pick<AccountLicense, 'maxMembers' | 'planId' | 'status' | 'ownerEmail'> | null;
+  isPermanentOwner?: boolean;
+}): TeamMemberLimitValidationResult {
+  const isOwnerExempt =
+    Boolean(params.isPermanentOwner) ||
+    isPermanentPlatformOwnerEmail(params.accountLicense?.ownerEmail);
+
+  const currentCount = Math.max(
+    0,
+    Math.round(Number(params.currentMembersCount) || 0),
+    Math.round(Number(params.currentMemberUidsCount) || 0)
+  );
+
+  if (
+    !isOwnerExempt &&
+    params.accountLicense &&
+    (params.accountLicense.status === 'suspended' || params.accountLicense.status === 'pending')
+  ) {
+    return {
+      allowed: false,
+      currentCount,
+      effectiveMaxMembers: Math.max(1, Math.min(10, Number(params.accountLicense.maxMembers) || 1)),
+      remainingSlots: 0,
+      denialReason: 'license_not_active',
+      messageAr:
+        'رفض أمني: لا يمكن إضافة أعضاء جدد للفريق بينما ترخيص مساحة العمل في حالة انتظار الموافقة أو موقوف مؤقتًا.',
+    };
+  }
+
+  const effectiveMaxMembers = isOwnerExempt
+    ? 10
+    : params.accountLicense && typeof params.accountLicense.maxMembers === 'number'
+      ? Math.max(1, Math.min(10, Math.round(params.accountLicense.maxMembers)))
+      : 10;
+
+  if (currentCount >= effectiveMaxMembers) {
+    return {
+      allowed: false,
+      currentCount,
+      effectiveMaxMembers,
+      remainingSlots: 0,
+      denialReason: 'max_members_limit_reached',
+      messageAr:
+        effectiveMaxMembers === 10
+          ? 'تم الوصول للحد الأقصى للفريق (10 أعضاء: المدير الأساسي + 9 مساعدين).'
+          : `تم الوصول للحد الأقصى المسموح به لأعضاء الفريق في باقتك الحالية (${effectiveMaxMembers} أعضاء). يرجى ترقية الباقة أو التواصل مع إدارة المنصة لزيادة السعة.`,
+    };
+  }
+
+  return {
+    allowed: true,
+    currentCount,
+    effectiveMaxMembers,
+    remainingSlots: effectiveMaxMembers - currentCount,
+    denialReason: null,
+    messageAr: `مسموح بإضافة عضو جديد (${currentCount}/${effectiveMaxMembers}).`,
+  };
+}
+
+
+
