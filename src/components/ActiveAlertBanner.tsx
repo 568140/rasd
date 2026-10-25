@@ -7,6 +7,7 @@ import {
   getMinutesUntilAden,
   sanitizeReminderMinutes,
   buildAppointmentNotificationPayload,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 import { pushService } from '../services/pushService';
@@ -234,7 +235,7 @@ export const ActiveAlertBanner: React.FC = () => {
     const newTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     handleDismiss();
     await postponeAppointment(activeAlert, activeAlert.scheduledDate, newTime, 'تأجيل 15 دقيقة من التنبيه العائم');
-    showToast(`تم تأجيل الموعد إلى ${newTime}`, 'success');
+    showToast(`تم تأجيل الموعد إلى ${formatTimeTo12Hour(newTime)}`, 'success');
   };
 
   return (

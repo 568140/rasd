@@ -60,6 +60,7 @@ import {
   getAdenTimeString,
   getMinutesUntilAden,
   sanitizeReminderMinutes,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 import { pushService } from '../services/pushService';
@@ -386,9 +387,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 name: sanitizeText(`مساحة عمل ${displayName}`, 120, 1, 'مساحة العمل الميدانية'),
                 ownerId: uid,
                 ownerName: displayName,
-                defaultCurrency: 'SAR',
+                defaultCurrency: 'YER',
                 taxRatePercent: 0,
-                regionName: 'الرياض',
+                regionName: 'عدن',
                 inviteCode,
                 memberUids: [uid],
                 memberCount: 1,
@@ -533,6 +534,17 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             fromCache: docSnap.metadata.fromCache,
           }));
           const active = list.find((w) => w.id === userProfile.activeWorkspaceId) || list[0] || null;
+          if (active) {
+            if (!active.defaultCurrency || active.defaultCurrency === 'SAR') {
+              active.defaultCurrency = 'YER';
+              if (active.ownerId === uid) {
+                updateDoc(doc(db, 'workspaces', active.id), {
+                  defaultCurrency: 'YER',
+                  updatedAt: serverTimestamp(),
+                }).catch(() => {});
+              }
+            }
+          }
           setWorkspace(active);
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'workspaces')
@@ -1629,7 +1641,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ownerId: workspace.ownerId,
           title: sanitizeText(`موعد مجدول: ${cleanTitle}`, 150, 1, 'موعد جديد'),
           message: sanitizeText(
-            `المكلف: ${cleanTpName} — ${cleanPropTitle} | التاريخ: ${scheduledDateStr} الساعة ${scheduledTimeStr} (${notifDesc})`,
+            `المكلف: ${cleanTpName} — ${cleanPropTitle} | التاريخ: ${scheduledDateStr} الساعة ${formatTimeTo12Hour(scheduledTimeStr)} (${notifDesc})`,
             500,
             1,
             'موعد مجدول'
@@ -1668,7 +1680,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'create',
           'appointment',
           id,
-          `جدولة موعد: ${cleanTitle} (${scheduledDateStr} ${scheduledTimeStr}) — ${notifDesc}`
+          `جدولة موعد: ${cleanTitle} (${scheduledDateStr} ${formatTimeTo12Hour(scheduledTimeStr)}) — ${notifDesc}`
         );
         showToast(`تمت جدولة الموعد بنجاح (${notifDesc})`, 'success');
         return id;
@@ -1755,7 +1767,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'postpone',
           'appointment',
           appointment.id,
-          `تأجيل الموعد (${appointment.title}) إلى ${newDate} ${newTime} — السبب: ${reason} — ${alertNote}`
+          `تأجيل الموعد (${appointment.title}) إلى ${newDate} ${formatTimeTo12Hour(newTime)} — السبب: ${reason} — ${alertNote}`
         );
         showToast(
           resolvedReminderMins === 0
@@ -1849,7 +1861,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           taxpayerId: sanitizeText(input.taxpayerId, 128, 1, 'general_tp'),
           taxpayerName: sanitizeText(input.taxpayerName, 150, 1, 'مكلف'),
           amount: Math.max(0, Number(input.amount) || 0),
-          currency: sanitizeText(input.currency || workspace.defaultCurrency, 10, 3, 'SAR'),
+          currency: sanitizeText(input.currency || workspace?.defaultCurrency, 10, 3, 'YER'),
           periodLabel: sanitizeText(input.periodLabel, 80, 2, '2026'),
           assessmentDate: sanitizeText(input.assessmentDate, 40, 8, new Date().toISOString().slice(0, 10)),
           status: resolvedStatus,
@@ -1978,7 +1990,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           assessmentId: sanitizeText(input.assessmentId || 'general_account', 128, 1, 'general_account'),
           transactionType: input.transactionType,
           amount: Math.max(0, Number(input.amount) || 0),
-          currency: sanitizeText(input.currency || workspace.defaultCurrency, 10, 3, 'SAR'),
+          currency: sanitizeText(input.currency || workspace?.defaultCurrency, 10, 3, 'YER'),
           transactionDate: sanitizeText(input.transactionDate, 40, 8, new Date().toISOString().slice(0, 10)),
           referenceNumber: finalRef,
           status: isOwner ? input.status : 'pending',

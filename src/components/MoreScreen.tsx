@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { usePWAInstall } from '../hooks/usePWAInstall';
-import { CurrencyCode, ScreenId } from '../types/rasd';
+import { CurrencyCode, ScreenId, CURRENCY_LIST } from '../types/rasd';
 import { FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from '../services/firebase';
 import { DIRTY_DOZEN_AND_RBAC_TESTS } from '../../firestore.rules.test';
 import { SoundSettingsPanel } from './SoundSettingsPanel';
@@ -62,9 +62,9 @@ export const MoreScreen: React.FC = () => {
 
   // Workspace Form State
   const [wsName, setWsName] = useState(workspace?.name || '');
-  const [wsCurrency, setWsCurrency] = useState<CurrencyCode>(workspace?.defaultCurrency || 'SAR');
+  const [wsCurrency, setWsCurrency] = useState<CurrencyCode>(workspace?.defaultCurrency || 'YER');
   const [wsTaxRate, setWsTaxRate] = useState(String(workspace?.taxRatePercent ?? 0));
-  const [wsRegion, setWsRegion] = useState(workspace?.regionName || 'الرياض');
+  const [wsRegion, setWsRegion] = useState(workspace?.regionName || 'عدن');
 
   const navItems: {
     id: ScreenId;
@@ -284,9 +284,9 @@ export const MoreScreen: React.FC = () => {
               type="button"
               onClick={() => {
                 setWsName(workspace?.name || '');
-                setWsCurrency(workspace?.defaultCurrency || 'SAR');
+                setWsCurrency(workspace?.defaultCurrency || 'YER');
                 setWsTaxRate(String(workspace?.taxRatePercent ?? 0));
-                setWsRegion(workspace?.regionName || 'الرياض');
+                setWsRegion(workspace?.regionName || 'عدن');
                 setSubPanel(subPanel === 'workspace' ? 'none' : 'workspace');
               }}
               className={`p-4 rounded-3xl bg-white dark:bg-[#0D1829] border text-right transition-colors cursor-pointer ${
@@ -467,9 +467,9 @@ export const MoreScreen: React.FC = () => {
                 onChange={(e) => setWsCurrency(e.target.value as CurrencyCode)}
                 className="w-full min-h-[42px] px-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
               >
-                {['SAR', 'AED', 'EGP', 'JOD', 'IQD', 'KWD', 'OMR', 'QAR', 'BHD', 'USD'].map((c) => (
-                  <option key={c} value={c}>
-                    {c}
+                {CURRENCY_LIST.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.label}
                   </option>
                 ))}
               </select>

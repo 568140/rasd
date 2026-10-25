@@ -28,12 +28,12 @@ export function useLiveAdenClock(intervalMs: number = 1000): LiveAdenClock {
   const todayStr = getAdenDateString(now);
   const timeStr = getAdenTimeString(now);
 
-  const secondsStr = new Intl.DateTimeFormat('en-GB', {
+  const secondsStr = new Intl.DateTimeFormat('ar-YE', {
     timeZone: ADEN_TIMEZONE,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
-    hour12: false,
+    hour12: true,
   }).format(now);
 
   const formattedDateArabic = new Intl.DateTimeFormat('ar-YE', {

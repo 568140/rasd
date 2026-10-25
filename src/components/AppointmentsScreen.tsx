@@ -26,6 +26,7 @@ import {
   validateReminderMinutesInput,
   buildAppointmentNotificationPayload,
   calculateAlertTimeAden,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { pushService } from '../services/pushService';
 import { alertSound } from '../services/alertSound';
@@ -522,9 +523,9 @@ export const AppointmentsScreen: React.FC = () => {
                     السبب الموثق: {p.reason}
                   </div>
                   <div className="text-slate-500 flex flex-wrap items-center gap-2">
-                    <span>من: <strong className="font-mono">{p.previousDate} ({p.previousTime})</strong></span>
+                    <span>من: <strong className="font-mono">{p.previousDate} ({formatTimeTo12Hour(p.previousTime)})</strong></span>
                     <span aria-hidden="true">&larr;</span>
-                    <span>إلى: <strong className="font-mono text-[#0D9488] dark:text-teal-400">{p.newDate} ({p.newTime})</strong></span>
+                    <span>إلى: <strong className="font-mono text-[#0D9488] dark:text-teal-400">{p.newDate} ({formatTimeTo12Hour(p.newTime)})</strong></span>
                     <span aria-hidden="true">·</span>
                     <span>الموظف: {p.createdByName}</span>
                   </div>
@@ -576,7 +577,7 @@ export const AppointmentsScreen: React.FC = () => {
                         : 'bg-[#F4F7FA] dark:bg-slate-900 text-[#0B192C] dark:text-slate-200 border border-slate-200/80 dark:border-slate-800'
                     }`}
                   >
-                    <div className="text-sm font-bold">{appt.scheduledTime}</div>
+                    <div className="text-sm font-bold">{formatTimeTo12Hour(appt.scheduledTime)}</div>
                     <div className="text-[11px] opacity-85 mt-0.5">{appt.scheduledDate}</div>
                   </div>
 
@@ -778,9 +779,16 @@ export const AppointmentsScreen: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    الوقت *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                      الوقت *
+                    </label>
+                    {scheduledTime && (
+                      <span className="text-[11px] font-bold text-[#0D9488] font-mono">
+                        ({formatTimeTo12Hour(scheduledTime)})
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     required
@@ -972,7 +980,7 @@ export const AppointmentsScreen: React.FC = () => {
               إعادة جدولة / تأجيل الموعد
             </h2>
             <p className="text-xs text-slate-500 mb-4">
-              الموعد الحالي: {postponingAppt.title} ({postponingAppt.scheduledDate} {postponingAppt.scheduledTime})
+              الموعد الحالي: {postponingAppt.title} ({postponingAppt.scheduledDate} {formatTimeTo12Hour(postponingAppt.scheduledTime)})
             </p>
 
             <form onSubmit={handlePostponeSubmit} className="space-y-3.5">
@@ -990,9 +998,16 @@ export const AppointmentsScreen: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    الوقت الجديد *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                      الوقت الجديد *
+                    </label>
+                    {newTime && (
+                      <span className="text-[11px] font-bold text-amber-700 dark:text-amber-400 font-mono">
+                        ({formatTimeTo12Hour(newTime)})
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     required

@@ -20,6 +20,7 @@ import {
   getMinutesUntilAden,
   sanitizeReminderMinutes,
   buildAppointmentNotificationPayload,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { pushService } from '../services/pushService';
 import { alertSound } from '../services/alertSound';
@@ -155,7 +156,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     }
     const newTime = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     await postponeAppointment(appt, appt.scheduledDate, newTime, 'تأجيل مؤقت 15 دقيقة من مركز التنبيهات');
-    showToast(`تم تأجيل الموعد إلى ${newTime}`, 'success');
+    showToast(`تم تأجيل الموعد إلى ${formatTimeTo12Hour(newTime)}`, 'success');
   };
 
   const handleNotificationClick = (notif: NotificationItem) => {
@@ -476,7 +477,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                       </div>
 
                       <span className="text-[11px] font-mono text-[#77716B] dark:text-[#ACA59C] shrink-0">
-                        {appt.scheduledTime}
+                        {formatTimeTo12Hour(appt.scheduledTime)}
                       </span>
                     </div>
 
@@ -542,10 +543,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                       : null;
                   const timeLabel =
                     createdDate && !Number.isNaN(createdDate.getTime())
-                      ? createdDate.toLocaleTimeString('en-GB', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
+                      ? formatTimeTo12Hour(createdDate)
                       : '';
 
                   return (

@@ -20,7 +20,13 @@ import {
   FileText,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { FinancialAssessment, FinancialTransaction, TransactionType } from '../types/rasd';
+import {
+  FinancialAssessment,
+  FinancialTransaction,
+  TransactionType,
+  CurrencyCode,
+  CURRENCY_LIST,
+} from '../types/rasd';
 import { getAdenDateString } from '../utils/dateUtils';
 
 const TX_TYPE_LABELS: Record<TransactionType, string> = {
@@ -64,7 +70,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
   const [assessPropId, setAssessPropId] = useState('');
   const [contractValue, setContractValue] = useState('');
   const [assessAmount, setAssessAmount] = useState('');
-  const [assessCurrency, setAssessCurrency] = useState(workspace?.defaultCurrency || 'SAR');
+  const [assessCurrency, setAssessCurrency] = useState<CurrencyCode>(workspace?.defaultCurrency || 'YER');
   const [periodLabel, setPeriodLabel] = useState('المطالبة المالية لعام 2026');
   const [assessmentDate, setAssessmentDate] = useState(() => getAdenDateString());
   const [assessNotes, setAssessNotes] = useState('');
@@ -75,7 +81,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
   const [txAssessmentId, setTxAssessmentId] = useState('general_account');
   const [txType, setTxType] = useState<TransactionType>('payment');
   const [txAmount, setTxAmount] = useState('');
-  const [txCurrency, setTxCurrency] = useState(workspace?.defaultCurrency || 'SAR');
+  const [txCurrency, setTxCurrency] = useState<CurrencyCode>(workspace?.defaultCurrency || 'YER');
   const [txDate, setTxDate] = useState(() => getAdenDateString());
   const [referenceNumber, setReferenceNumber] = useState('');
   const [txNotes, setTxNotes] = useState('');
@@ -197,7 +203,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
     setAssessPropId(p.id);
     setContractValue('');
     setAssessAmount('');
-    setAssessCurrency(workspace?.defaultCurrency || 'SAR');
+    setAssessCurrency(workspace?.defaultCurrency || 'YER');
     setPeriodLabel('المطالبة المالية لعام 2026');
     setAssessmentDate(getAdenDateString());
     setAssessNotes('');
@@ -215,7 +221,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
     setTxAssessmentId('general_account');
     setTxType('payment');
     setTxAmount('');
-    setTxCurrency(workspace?.defaultCurrency || 'SAR');
+    setTxCurrency(workspace?.defaultCurrency || 'YER');
     setTxDate(getAdenDateString());
     setReferenceNumber(`REC-${Date.now().toString().slice(-6)}`);
     setTxNotes('');
@@ -352,7 +358,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
             قيمة العقد الأصلية
           </div>
           <div className="text-lg sm:text-xl font-bold font-mono text-slate-700 dark:text-slate-200 mt-1">
-            {totalContractValues.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+            {totalContractValues.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
           </div>
           <div className="text-[10px] text-slate-400 mt-1">قيمة ثابتة لا تعدل بالتحصيل</div>
         </div>
@@ -363,7 +369,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
             إجمالي المطالبة المعتمدة
           </div>
           <div className="text-lg sm:text-xl font-bold font-mono text-white mt-1">
-            {totalApprovedAssessments.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+            {totalApprovedAssessments.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
           </div>
           <div className="text-[10px] text-sky-300 mt-1">إجمالي الالتزام المقر</div>
         </div>
@@ -374,7 +380,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
             إجمالي التحصيلات المعتمدة
           </div>
           <div className="text-lg sm:text-xl font-bold font-mono text-white mt-1">
-            {totalApprovedCollections.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+            {totalApprovedCollections.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
           </div>
           <div className="text-[10px] text-teal-200 mt-1">مجموع الدفعات المسددة</div>
         </div>
@@ -385,7 +391,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
             صافي الرصيد المتبقي
           </div>
           <div className="text-lg sm:text-xl font-bold font-mono text-slate-950 mt-1">
-            {totalRemainingBalance.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+            {totalRemainingBalance.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
           </div>
           <div className="text-[10px] text-amber-900 mt-1">المطالبة - التحصيل</div>
         </div>
@@ -786,7 +792,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
                 </select>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                     قيمة العقد الأصلية
@@ -815,6 +821,22 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
                     placeholder="مثال: 150000"
                     className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    العملة *
+                  </label>
+                  <select
+                    value={assessCurrency}
+                    onChange={(e) => setAssessCurrency(e.target.value as CurrencyCode)}
+                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                  >
+                    {CURRENCY_LIST.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -924,7 +946,7 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                     مبلغ التحصيل *
@@ -939,6 +961,22 @@ export const FinancialsScreen: React.FC<{ initialTab?: 'assessments' | 'transact
                     placeholder="مثال: 50000"
                     className="w-full min-h-[42px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold focus:outline-none focus:border-teal-500"
                   />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    العملة *
+                  </label>
+                  <select
+                    value={txCurrency}
+                    onChange={(e) => setTxCurrency(e.target.value as CurrencyCode)}
+                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                  >
+                    {CURRENCY_LIST.map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">

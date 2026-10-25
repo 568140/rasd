@@ -81,7 +81,7 @@ service cloud.firestore {
         isValidId(data.ownerId) &&
         data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 120 &&
         data.defaultCurrency is string && data.defaultCurrency.size() >= 3 && data.defaultCurrency.size() <= 10 &&
-        data.defaultCurrency in ['SAR', 'AED', 'EGP', 'JOD', 'IQD', 'KWD', 'OMR', 'QAR', 'BHD', 'USD'] &&
+        data.defaultCurrency in ['YER', 'SAR', 'AED', 'EGP', 'JOD', 'IQD', 'KWD', 'OMR', 'QAR', 'BHD', 'USD'] &&
         data.taxRatePercent is number && data.taxRatePercent >= 0 && data.taxRatePercent <= 100 &&
         data.regionName is string && data.regionName.size() <= 120 &&
         isValidId(data.inviteCode) && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 64 &&

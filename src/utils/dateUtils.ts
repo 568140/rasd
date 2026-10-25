@@ -34,6 +34,46 @@ export function getAdenTimeString(date: Date = new Date()): string {
 }
 
 /**
+ * Formats a 24-hour time string (e.g. "14:30", "09:05") or a Date object into a 12-hour Arabic display format (e.g. "02:30 م", "09:05 ص").
+ */
+export function formatTimeTo12Hour(timeStrOrDate?: string | Date | null): string {
+  if (!timeStrOrDate) return '';
+  try {
+    if (timeStrOrDate instanceof Date) {
+      if (isNaN(timeStrOrDate.getTime())) return '';
+      const hours = timeStrOrDate.getHours();
+      const minutes = timeStrOrDate.getMinutes();
+      const period = hours >= 12 ? 'م' : 'ص';
+      const h12 = hours % 12 === 0 ? 12 : hours % 12;
+      return `${String(h12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
+    }
+
+    const trimmed = String(timeStrOrDate).trim();
+    if (!trimmed) return '';
+
+    // If it's already formatted with Arabic or English 12-hour markers
+    if (trimmed.includes('ص') || trimmed.includes('م') || /am|pm/i.test(trimmed)) {
+      return trimmed;
+    }
+
+    const match = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (!match) return trimmed;
+
+    const hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      return trimmed;
+    }
+
+    const period = hours >= 12 ? 'م' : 'ص';
+    const h12 = hours % 12 === 0 ? 12 : hours % 12;
+    return `${String(h12).padStart(2, '0')}:${String(minutes).padStart(2, '0')} ${period}`;
+  } catch {
+    return String(timeStrOrDate);
+  }
+}
+
+/**
  * Converts a scheduled date string (YYYY-MM-DD) and time string (HH:mm) into
  * an absolute UTC Epoch timestamp (milliseconds), correctly interpreting the date/time as Asia/Aden (+03:00).
  */
@@ -286,7 +326,7 @@ export function buildAppointmentNotificationPayload(
   const scheduleDetails = [
     hasProperty ? `العقار: ${propertyLabel}` : '',
     dateStr ? `التاريخ: ${dateStr}` : '',
-    timeStr ? `الساعة: ${timeStr}` : '',
+    timeStr ? `الساعة: ${formatTimeTo12Hour(timeStr)}` : '',
   ]
     .filter(Boolean)
     .join(' — ');
@@ -364,8 +404,9 @@ export function formatAdenDateTimeDisplay(dateStr: string, timeStr?: string): st
       day: 'numeric',
       hour: timeStr ? '2-digit' : undefined,
       minute: timeStr ? '2-digit' : undefined,
+      hour12: true,
     });
   } catch {
-    return `${dateStr} ${timeStr || ''}`.trim();
+    return `${dateStr} ${timeStr ? formatTimeTo12Hour(timeStr) : ''}`.trim();
   }
 }

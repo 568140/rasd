@@ -61,7 +61,32 @@ export interface UserProfile extends SyncMeta {
   updatedAt?: unknown;
 }
 
-export type CurrencyCode = 'SAR' | 'AED' | 'EGP' | 'JOD' | 'IQD' | 'KWD' | 'OMR' | 'QAR' | 'BHD' | 'USD';
+export type CurrencyCode =
+  | 'YER'
+  | 'SAR'
+  | 'AED'
+  | 'EGP'
+  | 'JOD'
+  | 'IQD'
+  | 'KWD'
+  | 'OMR'
+  | 'QAR'
+  | 'BHD'
+  | 'USD';
+
+export const CURRENCY_LIST: { code: CurrencyCode; label: string; symbol: string }[] = [
+  { code: 'YER', label: 'الريال اليمني (YER)', symbol: 'ر.ي' },
+  { code: 'SAR', label: 'الريال السعودي (SAR)', symbol: 'ر.س' },
+  { code: 'USD', label: 'الدولار الأمريكي (USD)', symbol: '$' },
+  { code: 'AED', label: 'الدرهم الإماراتي (AED)', symbol: 'د.إ' },
+  { code: 'EGP', label: 'الجنيه المصري (EGP)', symbol: 'ج.م' },
+  { code: 'JOD', label: 'الدينار الأردني (JOD)', symbol: 'د.أ' },
+  { code: 'IQD', label: 'الدينار العراقي (IQD)', symbol: 'د.ع' },
+  { code: 'KWD', label: 'الدينار الكويتي (KWD)', symbol: 'د.ك' },
+  { code: 'OMR', label: 'الريال العماني (OMR)', symbol: 'ر.ع' },
+  { code: 'QAR', label: 'الريال القطري (QAR)', symbol: 'ر.ق' },
+  { code: 'BHD', label: 'الدينار البحريني (BHD)', symbol: 'د.ب' },
+];
 
 export interface Workspace extends SyncMeta {
   name: string;

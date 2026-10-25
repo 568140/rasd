@@ -82,7 +82,7 @@
         "defaultCurrency": {
           "type": "string",
           "description": "Default currency code for financial records",
-          "enum": ["SAR", "AED", "EGP", "JOD", "IQD", "KWD", "OMR", "QAR", "BHD", "USD"],
+          "enum": ["YER", "SAR", "AED", "EGP", "JOD", "IQD", "KWD", "OMR", "QAR", "BHD", "USD"],
           "minLength": 3,
           "maxLength": 10
         },

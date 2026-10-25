@@ -42,11 +42,13 @@ import {
   UnitType,
   VisitPurpose,
   VisitStatus,
+  CURRENCY_LIST,
 } from '../types/rasd';
 import {
   MIN_REMINDER_MINUTES,
   MAX_REMINDER_MINUTES,
   validateReminderMinutesInput,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 
@@ -190,7 +192,7 @@ export const TaxpayersScreen: React.FC = () => {
     showToast,
   } = useRasd();
 
-  const defaultCurrency = workspace?.defaultCurrency || 'SAR';
+  const defaultCurrency = workspace?.defaultCurrency || 'YER';
 
   // Directory Mode State (Unified Taxpayers & Properties Directory)
   const [directoryViewMode, setDirectoryViewMode] = useState<'taxpayers' | 'properties'>('taxpayers');
@@ -1893,7 +1895,7 @@ export const TaxpayersScreen: React.FC = () => {
                           {v.propertyTitle}
                         </span>
                         <span className="font-mono text-[11px] text-[#0284C7]">
-                          {v.visitDate} ({v.visitTime})
+                          {v.visitDate} ({formatTimeTo12Hour(v.visitTime)})
                         </span>
                       </div>
                       <div className="text-[11px] text-[#0D9488] font-bold">
@@ -1945,7 +1947,7 @@ export const TaxpayersScreen: React.FC = () => {
                           </div>
                         </div>
                         <span className="font-mono font-bold text-[#0284C7] shrink-0">
-                          {a.scheduledDate} · {a.scheduledTime}
+                          {a.scheduledDate} · {formatTimeTo12Hour(a.scheduledTime)}
                         </span>
                       </div>
 
@@ -1997,7 +1999,7 @@ export const TaxpayersScreen: React.FC = () => {
                         className="p-2.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/25 border border-amber-200/60 dark:border-amber-800/40"
                       >
                         من <span className="font-mono">{p.previousDate}</span> إلى{' '}
-                        <span className="font-mono font-bold">{p.newDate} ({p.newTime})</span> — السبب:{' '}
+                        <span className="font-mono font-bold">{p.newDate} ({formatTimeTo12Hour(p.newTime)})</span> — السبب:{' '}
                         <strong>{p.reason}</strong>
                       </div>
                     ))}
@@ -2472,12 +2474,17 @@ export const TaxpayersScreen: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-xs font-semibold mb-1">العملة</label>
-                    <input
-                      type="text"
+                    <select
                       value={collectionCurrency}
                       onChange={(e) => setCollectionCurrency(e.target.value as any)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                    />
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                    >
+                      {CURRENCY_LIST.map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
@@ -2618,7 +2625,14 @@ export const TaxpayersScreen: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">وقت الزيارة</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold">وقت الزيارة</label>
+                      {visitTime && (
+                        <span className="text-[11px] font-bold text-[#0284C7] font-mono">
+                          ({formatTimeTo12Hour(visitTime)})
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="time"
                       value={visitTime}
@@ -2738,7 +2752,14 @@ export const TaxpayersScreen: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">الوقت *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold">الوقت *</label>
+                      {apptTime && (
+                        <span className="text-[11px] font-bold text-[#0284C7] font-mono">
+                          ({formatTimeTo12Hour(apptTime)})
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="time"
                       required
@@ -2841,7 +2862,14 @@ export const TaxpayersScreen: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">الوقت الجديد *</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-semibold">الوقت الجديد *</label>
+                      {newPostponeTime && (
+                        <span className="text-[11px] font-bold text-amber-600 font-mono">
+                          ({formatTimeTo12Hour(newPostponeTime)})
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="time"
                       required

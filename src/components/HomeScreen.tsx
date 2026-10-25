@@ -24,6 +24,7 @@ import {
   getMinutesUntilAden,
   evaluateAppointmentStatus,
   sanitizeReminderMinutes,
+  formatTimeTo12Hour,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 import { useLiveAdenClock } from '../hooks/useLiveAdenClock';
@@ -177,7 +178,7 @@ export const HomeScreen: React.FC = () => {
                   </span>
                   <span className="inline-flex items-center gap-1.5 font-mono">
                     <Clock className="w-3.5 h-3.5 text-[#77716B]" />
-                    <span>{priorityAppointment.scheduledTime}</span>
+                    <span>{formatTimeTo12Hour(priorityAppointment.scheduledTime)}</span>
                   </span>
                 </div>
 
@@ -573,7 +574,7 @@ export const HomeScreen: React.FC = () => {
                                 : 'bg-[#FFFEFC] dark:bg-[#22201F] text-[#292725] dark:text-[#F4F1EA] border border-[#E7E1D8] dark:border-[#383431]'
                             }`}
                           >
-                            <div>{appt.scheduledTime}</div>
+                            <div>{formatTimeTo12Hour(appt.scheduledTime)}</div>
                             <div className="text-[10px] font-normal opacity-85 mt-0.5">{appt.scheduledDate.slice(5)}</div>
                           </div>
                           <div className="min-w-0">
@@ -638,16 +639,16 @@ export const HomeScreen: React.FC = () => {
                       الملخص المالي المعتمد
                     </h2>
                     <span className="px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-[#F0ECE5] dark:bg-[#2B2826] text-[#5C554E] dark:text-[#D5CFC7]">
-                      {workspace?.defaultCurrency || 'SAR'}
+                      {workspace?.defaultCurrency || 'YER'}
                     </span>
                   </div>
                   <p className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-0.5 truncate">
                     {isFinanceCardCollapsed ? (
                       <span className="font-mono font-semibold text-[#52765D] dark:text-[#86B394]">
-                        المحصّل: {approvedPaymentsTotal.toLocaleString('en-US')} / {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                        المحصّل: {approvedPaymentsTotal.toLocaleString('en-US')} / {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
                       </span>
                     ) : (
-                      <>العملة الأساسية: <span className="font-mono font-semibold">{workspace?.defaultCurrency || 'SAR'}</span> · دفتر الأستاذ المالي</>
+                      <>العملة الأساسية: <span className="font-mono font-semibold">{workspace?.defaultCurrency || 'YER'}</span> · دفتر الأستاذ المالي</>
                     )}
                   </p>
                 </div>
@@ -675,7 +676,7 @@ export const HomeScreen: React.FC = () => {
                     <FileSpreadsheet className="w-4 h-4 text-[#743B46] dark:text-[#E5B9C0]" />
                   </div>
                   <div className="text-xl font-extrabold text-[#292725] dark:text-[#F4F1EA] tabular-nums mt-1.5 font-mono">
-                    {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                    {approvedAssessmentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
                   </div>
                   <div className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-1.5 flex items-center gap-2">
                     <span className="px-2 py-0.5 rounded-md bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] font-medium">
@@ -692,7 +693,7 @@ export const HomeScreen: React.FC = () => {
                     <CheckCircle2 className="w-4 h-4 text-[#52765D] dark:text-[#86B394]" />
                   </div>
                   <div className="text-xl font-extrabold text-[#52765D] dark:text-[#86B394] tabular-nums mt-1.5 font-mono">
-                    {approvedPaymentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'SAR'}
+                    {approvedPaymentsTotal.toLocaleString('en-US')} {workspace?.defaultCurrency || 'YER'}
                   </div>
                   <div className="mt-2.5">
                     <div className="flex items-center justify-between text-[11px] text-[#495E50] dark:text-[#B8D1C0] mb-1">

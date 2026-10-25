@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { FieldVisit, VisitPurpose, VisitStatus } from '../types/rasd';
-import { getAdenTodayString, getAdenTimeString } from '../utils/dateUtils';
+import { getAdenTodayString, getAdenTimeString, formatTimeTo12Hour } from '../utils/dateUtils';
 import {
   DEFAULT_GOVERNORATES,
   DEFAULT_DIRECTORATES,
@@ -544,7 +544,7 @@ export const FieldVisitsScreen: React.FC = () => {
                 <div className="flex items-start gap-3.5 min-w-0">
                   <div className="px-3 py-2 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center shrink-0 font-mono">
                     <div className="text-sm font-bold text-[#0B192C] dark:text-white">
-                      {v.visitTime}
+                      {formatTimeTo12Hour(v.visitTime)}
                     </div>
                     <div className="text-[11px] text-slate-500 mt-0.5">{v.visitDate}</div>
                   </div>
@@ -790,9 +790,16 @@ export const FieldVisitsScreen: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    الوقت *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                      الوقت *
+                    </label>
+                    {visitTime && (
+                      <span className="text-[11px] font-bold text-[#0284C7] dark:text-sky-400 font-mono">
+                        ({formatTimeTo12Hour(visitTime)})
+                      </span>
+                    )}
+                  </div>
                   <input
                     type="time"
                     required
