@@ -382,3 +382,84 @@ export interface AuditLog extends SyncMeta {
   memberUids: string[];
   createdAt?: unknown;
 }
+
+// ============================================================================
+// نظام إدارة المنصة والاشتراكات والتراخيص (المرحلة الأولى — تأسيس الأنواع)
+// ============================================================================
+
+export type PermanentPlatformOwnerEmail =
+  | 'am1075022@gmail.com'
+  | 'ahah26@gmail.com'
+  | 'ahah26h@gmail.com';
+
+export type PlatformOwnerRole = 'primary_owner' | 'backup_owner';
+
+export type LicenseStatus = 'pending' | 'active' | 'expired' | 'suspended';
+
+export type SubscriptionPlanId =
+  | 'owner_permanent'
+  | 'lifetime'
+  | 'trial'
+  | 'monthly'
+  | 'quarterly'
+  | 'semi_annual'
+  | 'annual'
+  | 'custom';
+
+export type SubscriptionBillingCycle =
+  | 'monthly'
+  | 'quarterly'
+  | 'semi_annual'
+  | 'annual'
+  | 'lifetime'
+  | 'custom';
+
+export interface SubscriptionPackage {
+  id: SubscriptionPlanId;
+  nameAr: string;
+  descriptionAr: string;
+  billingCycle: SubscriptionBillingCycle;
+  /** عدد أيام الباقة، أو null للباقات الدائمة / مدى الحياة */
+  durationDays: number | null;
+  isLifetime: boolean;
+  isFreeOwnerPlan?: boolean;
+  defaultMaxMembers: number;
+  priceAmount: number;
+  currency: CurrencyCode;
+  isActive: boolean;
+}
+
+export interface AccountLicense extends SyncMeta {
+  /** مطابق لمعرف الوثيقة في /account_licenses/{workspaceId} */
+  workspaceId: string;
+  ownerId: string;
+  ownerEmail: string;
+  planId: SubscriptionPlanId;
+  status: LicenseStatus;
+  startsAt: unknown;
+  expiresAt: unknown;
+  maxMembers: number;
+  notes: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type PlatformStaffStatus = 'active' | 'suspended';
+
+export interface PlatformStaffPermissions {
+  canViewRequests: boolean;
+  canApproveAndRenew: boolean;
+  canManagePackages: boolean;
+}
+
+export interface PlatformStaff extends SyncMeta {
+  uid: string;
+  email: string;
+  displayName: string;
+  status: PlatformStaffStatus;
+  permissions: PlatformStaffPermissions;
+  assignedByUid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+

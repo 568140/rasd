@@ -35,6 +35,7 @@ import {
   sanitizeText,
   translateFirebaseError,
 } from '../services/firebase';
+import { verifyPlatformOwnerIdentity } from '../services/licenseService';
 import {
   Appointment,
   AppointmentPostponement,
@@ -715,9 +716,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Computed Permissions
   const isPlatformAdmin = useMemo(() => {
-    const email = (firebaseUser?.email || userProfile?.email || '').trim().toLowerCase();
-    return email === 'ahah26h@gmail.com' || email === 'am1075022@gmail.com';
-  }, [firebaseUser?.email, userProfile?.email]);
+    return verifyPlatformOwnerIdentity(firebaseUser).isVerifiedOwner;
+  }, [firebaseUser]);
 
   const isOwner = useMemo(() => {
     if (!firebaseUser) return false;
