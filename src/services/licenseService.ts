@@ -145,11 +145,29 @@ export const DEFAULT_SUBSCRIPTION_PACKAGES: Record<SubscriptionPlanId, Subscript
   },
 };
 
+export interface VerifiedSessionTokenMetaCandidate {
+  syncedAtIso?: string;
+  signInProvider?: string | null;
+  tokenEmail?: string | null;
+  tokenEmailVerified?: boolean;
+  hasVerifiedGoogleTokenIdentity?: boolean;
+  oauthProfileEmail?: string | null;
+  oauthProfileEmailVerified?: boolean;
+  googleProviderEmail?: string | null;
+  emailSyncStatus?:
+    | 'top_level_email_present'
+    | 'synced_to_top_level_via_update_email'
+    | 'verified_via_google_id_token'
+    | 'unverified_or_missing';
+  updateEmailErrorCode?: string | null;
+}
+
 export interface PlatformOwnerAuthCandidate {
   uid?: string | null;
   email?: string | null;
   emailVerified?: boolean | null;
-  providerData?: Array<{ providerId?: string | null } | null> | null;
+  providerData?: Array<{ providerId?: string | null; email?: string | null; displayName?: string | null } | null> | null;
+  __rasdVerifiedAuthSessionMeta?: VerifiedSessionTokenMetaCandidate | null;
 }
 
 export interface PlatformOwnerVerificationResult {
@@ -170,6 +188,21 @@ export interface PlatformOwnerVerificationResult {
 
 export interface OwnerSessionDiagnosticInfo {
   isAuthenticated: boolean;
+  authCurrentUserEmailRaw: string | null;
+  firebaseEmailRaw: string | null;
+  googleProviderEmailRaw: string | null;
+  hasGoogleProviderInProviderData: boolean;
+  isOriginalFirebaseUserInstance: boolean;
+  isSameAsAuthCurrentUser: boolean;
+  verifiedTokenSignInProvider: string | null;
+  effectiveVerifiedEmail: string | null;
+  emailSyncStatus:
+    | 'top_level_email_present'
+    | 'synced_to_top_level_via_update_email'
+    | 'verified_via_google_id_token'
+    | 'unverified_or_missing';
+  updateEmailErrorCode: string | null;
+  topLevelEmailVerifiedRaw: boolean;
   normalizedEmail: string;
   isPermanentOwnerEmailMatch: boolean;
   matchedOwnerRole: PlatformOwnerRole | null;
@@ -177,6 +210,7 @@ export interface OwnerSessionDiagnosticInfo {
   isVerifiedOwner: boolean;
   authProviderIds: string[];
   rejectionReason: PlatformOwnerVerificationResult['rejectionReason'];
+  rejectionReasonAr: string | null;
   requiresEmailVerificationForAdmin: boolean;
   statusSummaryAr: string;
 }
@@ -215,8 +249,86 @@ export function getPermanentOwnerRole(email: string | null | undefined): Platfor
 }
 
 /**
+ * استخراج بيانات التوثيق الموقعة من خادم Firebase Auth المرتبطة بكائن المستخدم الأصلي إن وُجدت
+ */
+function extractVerifiedSessionMeta(
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined
+): VerifiedSessionTokenMetaCandidate | null {
+  if (!authCandidate || typeof authCandidate !== 'object') return null;
+  const meta = (authCandidate as Record<string, unknown>).__rasdVerifiedAuthSessionMeta;
+  if (!meta || typeof meta !== 'object') return null;
+  return meta as VerifiedSessionTokenMetaCandidate;
+}
+
+/**
+ * التحقق مما إذا كانت الجلسة الحالية تحمل إثبات توثيق رقمي من رمز Firebase ID Token لمزوّد Google
+ * (لا يعتمد على providerData وحده أبدًا، بل يشترط وجود نتيجة getIdTokenResult الموقعة من الخادم)
+ */
+function evaluateServerVerifiedSessionToken(
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined
+): {
+  isServerVerifiedGoogleSession: boolean;
+  isServerVerifiedTokenEmail: boolean;
+  verifiedSessionEmail: string;
+  meta: VerifiedSessionTokenMetaCandidate | null;
+} {
+  const meta = extractVerifiedSessionMeta(authCandidate);
+  if (!meta) {
+    return {
+      isServerVerifiedGoogleSession: false,
+      isServerVerifiedTokenEmail: false,
+      verifiedSessionEmail: '',
+      meta: null,
+    };
+  }
+
+  const isServerVerifiedGoogleSession =
+    meta.signInProvider === 'google.com' &&
+    Boolean(
+      meta.hasVerifiedGoogleTokenIdentity ||
+        meta.tokenEmailVerified ||
+        meta.oauthProfileEmailVerified
+    );
+
+  const isServerVerifiedTokenEmail = Boolean(
+    meta.tokenEmailVerified && typeof meta.tokenEmail === 'string' && meta.tokenEmail.trim()
+  );
+
+  let verifiedSessionEmail = '';
+  if (isServerVerifiedTokenEmail) {
+    verifiedSessionEmail = normalizeEmail(meta.tokenEmail);
+  } else if (isServerVerifiedGoogleSession) {
+    verifiedSessionEmail = normalizeEmail(
+      meta.tokenEmail || meta.oauthProfileEmail || meta.googleProviderEmail
+    );
+  }
+
+  return {
+    isServerVerifiedGoogleSession,
+    isServerVerifiedTokenEmail,
+    verifiedSessionEmail,
+    meta,
+  };
+}
+
+/**
+ * استخراج البريد الإلكتروني الموثوق للمستخدم من المستوى الأعلى (user.email) أو من رمز الجلسة الموثق رقميًا
+ * (دون الاعتماد على providerData غير الموثق)
+ */
+export function resolveVerifiedOrTopLevelUserEmail(
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined
+): string {
+  if (!authCandidate) return '';
+  const topLevel = normalizeEmail(authCandidate.email);
+  if (topLevel) return topLevel;
+  const { verifiedSessionEmail } = evaluateServerVerifiedSessionToken(authCandidate);
+  return verifiedSessionEmail;
+}
+
+/**
  * التحقق الصارم من هوية مالك المنصة بالاعتماد الحصري على جلسة Firebase Auth الموثقة (request.auth / firebaseUser)
- * دون الاعتماد على حقل البريد القابل للتعديل في وثيقة Firestore (/users) ودون منح صلاحيات لنص البريد وحده قبل توثيقه.
+ * دون الاعتماد على حقل البريد القابل للتعديل في وثيقة Firestore (/users) ودون منح صلاحيات لنص البريد وحده قبل توثيقه
+ * ودون منح صلاحيات اعتمادًا على providerData وحده.
  */
 export function verifyPlatformOwnerIdentity(
   authCandidate: PlatformOwnerAuthCandidate | null | undefined
@@ -234,7 +346,15 @@ export function verifyPlatformOwnerIdentity(
     };
   }
 
-  const normalizedEmail = normalizeEmail(authCandidate.email);
+  const topLevelEmail = normalizeEmail(authCandidate.email);
+  const {
+    isServerVerifiedGoogleSession,
+    isServerVerifiedTokenEmail,
+    verifiedSessionEmail,
+  } = evaluateServerVerifiedSessionToken(authCandidate);
+
+  // إذا كان user.email في المستوى الأعلى فارغًا، لا يُقبل أي بريد بديل إلا إذا ثبت توثيقه من رمز جلسة Firebase الموقّع (getIdTokenResult)
+  const normalizedEmail = topLevelEmail || verifiedSessionEmail;
   if (!normalizedEmail) {
     return {
       isVerifiedOwner: false,
@@ -245,19 +365,6 @@ export function verifyPlatformOwnerIdentity(
       isFreeLifetime: false,
       planId: null,
       rejectionReason: 'missing_email',
-    };
-  }
-
-  if (authCandidate.emailVerified !== true) {
-    return {
-      isVerifiedOwner: false,
-      ownerRole: null,
-      normalizedEmail,
-      isExemptFromSubscription: false,
-      hasFullPlatformPrivileges: false,
-      isFreeLifetime: false,
-      planId: null,
-      rejectionReason: 'unverified_email_token',
     };
   }
 
@@ -275,6 +382,24 @@ export function verifyPlatformOwnerIdentity(
     };
   }
 
+  const isEmailCryptographicallyVerified =
+    authCandidate.emailVerified === true ||
+    isServerVerifiedGoogleSession ||
+    isServerVerifiedTokenEmail;
+
+  if (!isEmailCryptographicallyVerified) {
+    return {
+      isVerifiedOwner: false,
+      ownerRole: null,
+      normalizedEmail,
+      isExemptFromSubscription: false,
+      hasFullPlatformPrivileges: false,
+      isFreeLifetime: false,
+      planId: null,
+      rejectionReason: 'unverified_email_token',
+    };
+  }
+
   return {
     isVerifiedOwner: true,
     ownerRole,
@@ -288,19 +413,38 @@ export function verifyPlatformOwnerIdentity(
 }
 
 /**
- * فحص تشخيصي آمن لحالة جلسة المالك وتوثيق البريد الفعلي دون كشف أي أسرار أو منح صلاحيات غير موثقة
+ * فحص تشخيصي آمن لحالة جلسة المالك ومقارنة auth.currentUser.email و firebaseUser.email و providerData (google.com)
+ * دون كشف أي أسرار أو رموز دخول أو منح صلاحيات غير موثقة
  */
 export function inspectOwnerSessionDiagnostic(
-  authCandidate: PlatformOwnerAuthCandidate | null | undefined
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined,
+  currentAuthUser?: PlatformOwnerAuthCandidate | null
 ): OwnerSessionDiagnosticInfo {
   const verification = verifyPlatformOwnerIdentity(authCandidate);
+  const {
+    isServerVerifiedGoogleSession,
+    isServerVerifiedTokenEmail,
+    verifiedSessionEmail,
+    meta,
+  } = evaluateServerVerifiedSessionToken(authCandidate);
+
   const isAuthenticated = Boolean(
     authCandidate && typeof authCandidate.uid === 'string' && authCandidate.uid.trim()
   );
-  const normalizedEmail = normalizeEmail(authCandidate?.email);
-  const matchedOwnerRole = getPermanentOwnerRole(normalizedEmail);
-  const isPermanentOwnerEmailMatch = matchedOwnerRole !== null;
-  const emailVerified = authCandidate?.emailVerified === true;
+
+  const firebaseEmailRaw =
+    authCandidate && typeof authCandidate.email === 'string' && authCandidate.email.trim()
+      ? authCandidate.email.trim()
+      : null;
+
+  const effectiveCurrentAuth = currentAuthUser !== undefined ? currentAuthUser : authCandidate;
+  const authCurrentUserEmailRaw =
+    effectiveCurrentAuth &&
+    typeof effectiveCurrentAuth.email === 'string' &&
+    effectiveCurrentAuth.email.trim()
+      ? effectiveCurrentAuth.email.trim()
+      : null;
+
   const rawProviders = Array.isArray(authCandidate?.providerData)
     ? authCandidate!.providerData
     : [];
@@ -308,24 +452,96 @@ export function inspectOwnerSessionDiagnostic(
     .map((p) => (p && typeof p.providerId === 'string' ? p.providerId.trim() : ''))
     .filter(Boolean);
 
+  const googleProviderEntry =
+    rawProviders.find((p) => p && p.providerId === 'google.com') || null;
+  const hasGoogleProviderInProviderData = Boolean(googleProviderEntry);
+  const googleProviderEmailRaw =
+    googleProviderEntry &&
+    typeof googleProviderEntry.email === 'string' &&
+    googleProviderEntry.email.trim()
+      ? googleProviderEntry.email.trim()
+      : null;
+
+  const isOriginalFirebaseUserInstance = Boolean(
+    authCandidate &&
+      typeof (authCandidate as { reload?: unknown }).reload === 'function' &&
+      typeof (authCandidate as { getIdTokenResult?: unknown }).getIdTokenResult === 'function'
+  );
+
+  const isSameAsAuthCurrentUser = Boolean(
+    authCandidate && effectiveCurrentAuth && authCandidate === effectiveCurrentAuth
+  );
+
+  const topLevelEmailVerifiedRaw = authCandidate?.emailVerified === true;
+  const emailVerified =
+    topLevelEmailVerifiedRaw || isServerVerifiedGoogleSession || isServerVerifiedTokenEmail;
+
+  const normalizedEmail =
+    normalizeEmail(authCandidate?.email) ||
+    verifiedSessionEmail ||
+    normalizeEmail(googleProviderEmailRaw);
+
+  const matchedOwnerRole = getPermanentOwnerRole(normalizedEmail);
+  const isPermanentOwnerEmailMatch = matchedOwnerRole !== null;
+
+  const effectiveVerifiedEmail = verification.normalizedEmail || null;
+  const verifiedTokenSignInProvider = meta?.signInProvider || null;
+  const emailSyncStatus: OwnerSessionDiagnosticInfo['emailSyncStatus'] =
+    meta?.emailSyncStatus ||
+    (firebaseEmailRaw ? 'top_level_email_present' : 'unverified_or_missing');
+  const updateEmailErrorCode = meta?.updateEmailErrorCode || null;
+
   const requiresEmailVerificationForAdmin =
-    isAuthenticated && isPermanentOwnerEmailMatch && !emailVerified;
+    isAuthenticated && isPermanentOwnerEmailMatch && !verification.isVerifiedOwner;
+
+  let rejectionReasonAr: string | null = null;
+  if (verification.rejectionReason === 'unauthenticated_user') {
+    rejectionReasonAr = 'لا توجد جلسة مصادقة نشطة في Firebase Auth.';
+  } else if (verification.rejectionReason === 'missing_email') {
+    if (hasGoogleProviderInProviderData && googleProviderEmailRaw) {
+      rejectionReasonAr =
+        'حقل firebaseUser.email فارغ (null) بينما البريد موجود في providerData (google.com) — يرجى الضغط على «تحديث الجلسة» لمزامنة رمز جلسة Google الموثق.';
+    } else {
+      rejectionReasonAr =
+        'كائن المستخدم في Firebase Auth لا يحتوي على بريد إلكتروني أساسي (firebaseUser.email فارغ).';
+    }
+  } else if (verification.rejectionReason === 'not_in_permanent_owners_list') {
+    rejectionReasonAr = 'البريد الإلكتروني الحالي ليس ضمن قائمة مالكي المنصة الدائمين المعتمدين.';
+  } else if (verification.rejectionReason === 'unverified_email_token') {
+    rejectionReasonAr =
+      'البريد الإلكتروني مطابق لمالك المنصة الدائم، لكن الجلسة الحالية غير موثقة بعد (emailVerified === false — يلزم توثيق البريد أو الدخول الموثّق عبر Google).';
+  }
 
   let statusSummaryAr = 'حساب مستخدم عادي غير مدرج ضمن المالكين الدائمين للمنصة.';
   if (!isAuthenticated) {
     statusSummaryAr = 'لم يتم تسجيل الدخول في جلسة المصادقة الحالية.';
   } else if (verification.isVerifiedOwner) {
+    const syncNote =
+      !firebaseEmailRaw && isServerVerifiedGoogleSession
+        ? ' (تم التحقق الرقمي من البريد عبر رمز جلسة Google الموقّع رغم كون حقل user.email الأساسي فارغًا في Firebase Auth)'
+        : '';
     statusSummaryAr =
-      matchedOwnerRole === 'primary_owner'
-        ? 'جلسة مالك دائم رئيسي موثّقة بالكامل (email_verified: true) — الصلاحيات الإدارية مفعّلة.'
-        : 'جلسة مالك دائم احتياطي موثّقة بالكامل (email_verified: true) — الصلاحيات الإدارية مفعّلة.';
+      (matchedOwnerRole === 'primary_owner'
+        ? 'جلسة مالك دائم رئيسي موثّقة بالكامل — الصلاحيات الإدارية مفعّلة.'
+        : 'جلسة مالك دائم احتياطي موثّقة بالكامل — الصلاحيات الإدارية مفعّلة.') + syncNote;
   } else if (requiresEmailVerificationForAdmin) {
     statusSummaryAr =
-      'البريد المسجل مطابق لحساب مالك دائم معتمد، لكن البريد غير موثّق في جلسة المصادقة الحالية (email_verified: false). حُجبت الصلاحيات الإدارية مؤقتًا لحين توثيق البريد أو الدخول الموثّق عبر Google.';
+      'البريد المسجل مطابق لحساب مالك دائم معتمد، لكن الجلسة الحالية غير موثقة بعد. يمكنك الضغط على «تحديث الجلسة» أو تسجيل الدخول الموثّق عبر Google لتفعيل الصلاحيات فورًا.';
   }
 
   return {
     isAuthenticated,
+    authCurrentUserEmailRaw,
+    firebaseEmailRaw,
+    googleProviderEmailRaw,
+    hasGoogleProviderInProviderData,
+    isOriginalFirebaseUserInstance,
+    isSameAsAuthCurrentUser,
+    verifiedTokenSignInProvider,
+    effectiveVerifiedEmail,
+    emailSyncStatus,
+    updateEmailErrorCode,
+    topLevelEmailVerifiedRaw,
     normalizedEmail,
     isPermanentOwnerEmailMatch,
     matchedOwnerRole,
@@ -333,6 +549,7 @@ export function inspectOwnerSessionDiagnostic(
     isVerifiedOwner: verification.isVerifiedOwner,
     authProviderIds,
     rejectionReason: verification.rejectionReason,
+    rejectionReasonAr,
     requiresEmailVerificationForAdmin,
     statusSummaryAr,
   };
@@ -1903,7 +2120,13 @@ export function validateAndBuildSubscriptionPackageUpdate(params: {
     throw new Error('اسم الباقة يجب أن يتراوح بين حرفين و 120 حرفًا.');
   }
 
-  const descriptionAr = (params.patch.descriptionAr ?? basePkg.descriptionAr).trim().slice(0, 500);
+  const rawDescriptionAr =
+    params.patch.descriptionAr !== undefined ? params.patch.descriptionAr : basePkg.descriptionAr;
+  const descriptionAr = String(rawDescriptionAr ?? '').trim();
+  if (descriptionAr.length < 2 || descriptionAr.length > 500) {
+    throw new Error('وصف الباقة يجب أن يتراوح بين حرفين و 500 حرف.');
+  }
+
   const currency: CurrencyCode = params.patch.currency || basePkg.currency;
   const isActive =
     params.patch.isActive !== undefined ? Boolean(params.patch.isActive) : basePkg.isActive;
@@ -1921,10 +2144,55 @@ export function validateAndBuildSubscriptionPackageUpdate(params: {
 
   return {
     updatedPackage,
-    auditSummary: `[إدارة المنصة] تحديث باقة (${updatedPackage.nameAr}) — المدة: ${
+    auditSummary: `[إدارة المنصة] تحديث باقة (${updatedPackage.nameAr}) — الحالة: ${
+      updatedPackage.isActive ? 'مفعلة' : 'معطلة'
+    } — المدة: ${
       updatedPackage.isLifetime ? 'مدى الحياة' : `${updatedPackage.durationDays} يوم`
     } — حد الفريق: ${updatedPackage.defaultMaxMembers} أعضاء`,
   };
+}
+
+/**
+ * التحقق من أن معرف حساب مساعد المنصة (UID) ليس معرفًا اصطناعيًا مشتقًا من البريد الإلكتروني
+ */
+export function isSyntheticOrInvalidStaffUid(
+  rawUid: string | null | undefined,
+  email?: string | null
+): { isInvalidOrSynthetic: boolean; reasonAr: string | null } {
+  const trimmed = (rawUid || '').trim();
+  if (!trimmed) {
+    return {
+      isInvalidOrSynthetic: true,
+      reasonAr: 'يرجى إدخال معرف الحساب الحقيقي (Firebase UID) لموظف المنصة وعدم تركه فارغًا.',
+    };
+  }
+  if (!/^[a-zA-Z0-9_-]{3,128}$/.test(trimmed)) {
+    return {
+      isInvalidOrSynthetic: true,
+      reasonAr: 'صيغة معرف الحساب (UID) غير صالحة؛ يجب أن يتكون من أحرف أو أرقام إنجليزية (3 إلى 128 خانة) مطابقة لحساب Firebase.',
+    };
+  }
+  const lowerUid = trimmed.toLowerCase();
+  const emailPrefix = normalizeEmail(email || '')
+    .split('@')[0]
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .toLowerCase();
+
+  if (
+    lowerUid.startsWith('synthetic_') ||
+    lowerUid.startsWith('fake_') ||
+    lowerUid.startsWith('temp_') ||
+    lowerUid.startsWith('placeholder_') ||
+    (emailPrefix.length >= 2 && lowerUid === `staff_${emailPrefix}`)
+  ) {
+    return {
+      isInvalidOrSynthetic: true,
+      reasonAr:
+        'رفض أمني: لا يُسمح بحفظ معرف UID اصطناعي مشتق من البريد الإلكتروني. يجب إدخال معرف حساب Firebase الحقيقي للمستخدم.',
+    };
+  }
+
+  return { isInvalidOrSynthetic: false, reasonAr: null };
 }
 
 /**
@@ -1938,6 +2206,8 @@ export function validateAndBuildPlatformStaffRecord(params: {
   displayName: string;
   status: 'active' | 'suspended';
   permissions: Partial<PlatformStaffPermissions>;
+  verifiedUserRecord?: { uid: string; email?: string | null } | null;
+  requireVerifiedUserMatch?: boolean;
 }): { staffRecord: PlatformStaff; auditSummary: string } {
   assertPlatformOperationAuthorized({
     actorAuth: params.actorAuth,
@@ -1956,14 +2226,43 @@ export function validateAndBuildPlatformStaffRecord(params: {
     );
   }
 
-  const cleanUid = (params.staffUid || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 120);
-  if (!cleanUid) {
-    throw new Error('معرف المستخدم (UID) لمساعد المنصة مطلوب وصالح.');
+  const uidCheck = isSyntheticOrInvalidStaffUid(params.staffUid, normalizedEmail);
+  if (uidCheck.isInvalidOrSynthetic) {
+    throw new Error(uidCheck.reasonAr || 'معرف المستخدم (UID) لمساعد المنصة غير صالح.');
+  }
+
+  const cleanUid = params.staffUid.trim();
+
+  if (params.requireVerifiedUserMatch) {
+    if (!params.verifiedUserRecord || !params.verifiedUserRecord.uid) {
+      throw new Error(
+        `تعذر التحقق من وجود حساب Firebase حقيقي في المنصة يطابق المعرف (${cleanUid}) أو البريد (${normalizedEmail}). يجب أن يسجل الموظف دخوله في المنصة أولًا قبل تفويضه.`
+      );
+    }
+    if (params.verifiedUserRecord.uid !== cleanUid) {
+      throw new Error(
+        `معرف الحساب المدخل (${cleanUid}) لا يطابق معرف حساب Firebase الحقيقي المسجل لهذا البريد (${params.verifiedUserRecord.uid}).`
+      );
+    }
+    const verifiedRecordEmail = normalizeEmail(params.verifiedUserRecord.email || '');
+    if (
+      verifiedRecordEmail &&
+      verifiedRecordEmail !== 'user@rasd.app' &&
+      verifiedRecordEmail !== 'owner@rasd.app' &&
+      verifiedRecordEmail !== normalizedEmail
+    ) {
+      throw new Error(
+        `معرف الحساب (${cleanUid}) مسجل في قاعدة البيانات لبريد إلكتروني آخر (${verifiedRecordEmail}) ولا يطابق (${normalizedEmail}).`
+      );
+    }
   }
 
   const cleanName = (params.displayName || normalizedEmail.split('@')[0] || 'مساعد منصة')
     .trim()
     .slice(0, 120);
+  if (cleanName.length < 2) {
+    throw new Error('يرجى إدخال اسم واضح لمساعد المنصة (حرفين على الأقل).');
+  }
 
   const safePermissions: PlatformStaffPermissions = {
     canViewRequests: Boolean(params.permissions.canViewRequests),

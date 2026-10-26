@@ -11,7 +11,8 @@ import {
   Bytes,
   Firestore,
 } from 'firebase/firestore';
-import { db, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from './firebase';
+import { auth, db, FIREBASE_PROJECT_ID, FIRESTORE_DATABASE_ID } from './firebase';
+import { resolveVerifiedOrTopLevelUserEmail } from './licenseService';
 
 /**
  * المجموعات التشغيلية المشمولة في النسخة الاحتياطية القياسية لمساحة العمل أو المنصة
@@ -1584,10 +1585,16 @@ export async function exportFirestoreBackup(options: {
     }
   }
 
+  const resolvedCreatorEmail =
+    (options.currentUserEmail || '').trim() ||
+    (auth.currentUser && auth.currentUser.uid === options.currentUserUid
+      ? resolveVerifiedOrTopLevelUserEmail(auth.currentUser)
+      : '');
+
   const payload = buildBackupPayloadFromRawData({
     rawCollections,
     createdByUid: options.currentUserUid,
-    createdByEmail: options.currentUserEmail,
+    createdByEmail: resolvedCreatorEmail,
     scopeMode: options.scopeMode,
     targetWorkspaceId: options.scopeMode === 'single_workspace' ? options.workspaceId : null,
     includePlatformGovernance: shouldIncludeGovernance,

@@ -72,7 +72,11 @@ class PushService {
 
     this.registrationPromise = (async () => {
       try {
-        const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        const reg = await navigator.serviceWorker.register('/sw.js', {
+          scope: '/',
+          updateViaCache: 'none',
+        });
+        void reg.update().catch(() => {});
         await navigator.serviceWorker.ready;
         this.registration = reg;
         return reg;

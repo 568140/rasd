@@ -10,6 +10,7 @@ import {
   buildClientSubscriptionMutation,
   validateAndBuildSubscriptionPackageUpdate,
   validateAndBuildPlatformStaffRecord,
+  isSyntheticOrInvalidStaffUid,
   buildPlatformClientAccountSummary,
   evaluateAccountAccessGate,
   inspectOwnerSessionDiagnostic,
@@ -288,8 +289,42 @@ assert.throws(
     }),
   /باقة المالك الدائم \(owner_permanent\) محمية/
 );
+// منع حفظ باقة بوصف فارغ أو قصير جدًا، والتحقق من تحديث مفتاح تفعيل/تعطيل الباقة (isActive)
+assert.throws(
+  () =>
+    validateAndBuildSubscriptionPackageUpdate({
+      actorAuth: ownerAuth,
+      actorStaffRecord: null,
+      planId: 'monthly',
+      patch: {
+        nameAr: 'الباقة الشهرية',
+        descriptionAr: 'أ',
+        durationDays: 30,
+        defaultMaxMembers: 5,
+      },
+    }),
+  /وصف الباقة يجب أن يتراوح بين حرفين و 500 حرف/
+);
+
+const { updatedPackage: toggledMonthlyPkg, auditSummary: toggleAuditSummary } =
+  validateAndBuildSubscriptionPackageUpdate({
+    actorAuth: ownerAuth,
+    actorStaffRecord: null,
+    planId: 'monthly',
+    patch: {
+      nameAr: 'الباقة الشهرية المحدثة',
+      descriptionAr: 'وصف باقة شهرية محدث يدعم حتى 7 أعضاء فريق',
+      durationDays: 30,
+      defaultMaxMembers: 7,
+      isActive: false,
+    },
+  });
+assert.equal(toggledMonthlyPkg.descriptionAr, 'وصف باقة شهرية محدث يدعم حتى 7 أعضاء فريق');
+assert.equal(toggledMonthlyPkg.isActive, false);
+assert.ok(toggleAuditSummary.includes('معطلة'));
+
 console.log(
-  '✅ 6. إدارة الباقات ومددها وحدود أعضاء الفريق (1..10) محمية وتتحقق من المدخلات وتمنع المساس بباقة المالك الدائم.'
+  '✅ 6. إدارة الباقات ومددها وحدود أعضاء الفريق (1..10) ووصف الباقة وتفعيلها/تعطيلها محمية وتتحقق من المدخلات وتمنع المساس بباقة المالك الدائم.'
 );
 
 // 7. فحص إدارة مساعدي المنصة وصلاحياتهم دون تجاوز التفويض
@@ -322,10 +357,44 @@ assert.throws(
   /يعود لأحد مالكي المنصة الدائمين/
 );
 
-// إنشاء مساعد بصلاحية عرض فقط والتحقق من منعه من التجديد أو تعديل الباقات
+// منع حفظ UID اصطناعي مشتق من البريد أو غير صالح عند إضافة مساعد منصة
+assert.equal(isSyntheticOrInvalidStaffUid('staff_viewer', 'viewer@rasd.ye').isInvalidOrSynthetic, true);
+assert.equal(isSyntheticOrInvalidStaffUid('synthetic_123', 'viewer@rasd.ye').isInvalidOrSynthetic, true);
+assert.equal(isSyntheticOrInvalidStaffUid('', 'viewer@rasd.ye').isInvalidOrSynthetic, true);
+assert.equal(isSyntheticOrInvalidStaffUid('firebase_real_uid_987654', 'viewer@rasd.ye').isInvalidOrSynthetic, false);
+
+assert.throws(
+  () =>
+    validateAndBuildPlatformStaffRecord({
+      actorAuth: ownerAuth,
+      staffUid: 'staff_viewer',
+      email: 'viewer@rasd.ye',
+      displayName: 'مساعد بمعرف اصطناعي',
+      status: 'active',
+      permissions: { canViewRequests: true, canApproveAndRenew: false, canManagePackages: false },
+    }),
+  /رفض أمني/
+);
+
+assert.throws(
+  () =>
+    validateAndBuildPlatformStaffRecord({
+      actorAuth: ownerAuth,
+      staffUid: 'firebase_real_uid_987654',
+      email: 'viewer@rasd.ye',
+      displayName: 'مساعد غير مسجل في قاعدة البيانات',
+      status: 'active',
+      permissions: { canViewRequests: true, canApproveAndRenew: false, canManagePackages: false },
+      requireVerifiedUserMatch: true,
+      verifiedUserRecord: null,
+    }),
+  /تعذر التحقق من وجود حساب Firebase حقيقي في المنصة/
+);
+
+// إنشاء مساعد بصلاحية عرض فقط مع UID حقيقي موثق والتحقق من منعه من التجديد أو تعديل الباقات
 const { staffRecord: viewOnlyStaff } = validateAndBuildPlatformStaffRecord({
   actorAuth: ownerAuth,
-  staffUid: 'staff_view_only',
+  staffUid: 'firebase_uid_viewer_01',
   email: 'viewer@rasd.ye',
   displayName: 'مراقب طلبات',
   status: 'active',
@@ -334,10 +403,15 @@ const { staffRecord: viewOnlyStaff } = validateAndBuildPlatformStaffRecord({
     canApproveAndRenew: false,
     canManagePackages: false,
   },
+  requireVerifiedUserMatch: true,
+  verifiedUserRecord: {
+    uid: 'firebase_uid_viewer_01',
+    email: 'viewer@rasd.ye',
+  },
 });
 assert.equal(
   authorizePlatformOperation({
-    actorAuth: { uid: 'staff_view_only', email: 'viewer@rasd.ye', emailVerified: true },
+    actorAuth: { uid: 'firebase_uid_viewer_01', email: 'viewer@rasd.ye', emailVerified: true },
     actorStaffRecord: viewOnlyStaff,
     operation: 'view_admin_dashboard',
   }).allowed,
@@ -345,7 +419,7 @@ assert.equal(
 );
 assert.equal(
   authorizePlatformOperation({
-    actorAuth: { uid: 'staff_view_only', email: 'viewer@rasd.ye', emailVerified: true },
+    actorAuth: { uid: 'firebase_uid_viewer_01', email: 'viewer@rasd.ye', emailVerified: true },
     actorStaffRecord: viewOnlyStaff,
     operation: 'renew_subscription',
   }).allowed,
@@ -353,7 +427,7 @@ assert.equal(
 );
 assert.equal(
   authorizePlatformOperation({
-    actorAuth: { uid: 'staff_view_only', email: 'viewer@rasd.ye', emailVerified: true },
+    actorAuth: { uid: 'firebase_uid_viewer_01', email: 'viewer@rasd.ye', emailVerified: true },
     actorStaffRecord: viewOnlyStaff,
     operation: 'manage_packages',
   }).allowed,
@@ -362,7 +436,7 @@ assert.equal(
 assert.throws(
   () =>
     assertPlatformOperationAuthorized({
-      actorAuth: { uid: 'staff_view_only', email: 'viewer@rasd.ye', emailVerified: true },
+      actorAuth: { uid: 'firebase_uid_viewer_01', email: 'viewer@rasd.ye', emailVerified: true },
       actorStaffRecord: viewOnlyStaff,
       operation: 'renew_subscription',
     }),
@@ -407,33 +481,130 @@ console.log(
   '✅ 8. الحسابات الحالية (isGrandfatheredLegacy) تعمل وتظهر في لوحة الإدارة دون أي ترحيل قسري أو تعطيل.'
 );
 
-// 9. اختبار فحص حالة توثيق البريد الفعلية لحساب المالك وعدم منح الصلاحيات الإدارية لنص البريد غير الموثق
+// 9. اختبار فحص حالة توثيق البريد الفعلية لحساب المالك وعدم منح الصلاحيات الإدارية لنص البريد غير الموثق أو providerData وحده
 const unverifiedOwnerDiag = inspectOwnerSessionDiagnostic({
   uid: 'uid_owner_unverified',
-  email: 'ahah26h@gmail.com',
+  email: 'am1075022@gmail.com',
   emailVerified: false,
-  providerData: [{ providerId: 'password' }],
+  providerData: [{ providerId: 'google.com', email: 'am1075022@gmail.com' }],
 });
 assert.equal(unverifiedOwnerDiag.isPermanentOwnerEmailMatch, true);
-assert.equal(unverifiedOwnerDiag.matchedOwnerRole, 'backup_owner');
+assert.equal(unverifiedOwnerDiag.matchedOwnerRole, 'primary_owner');
 assert.equal(unverifiedOwnerDiag.emailVerified, false);
-assert.equal(unverifiedOwnerDiag.isVerifiedOwner, false);
+assert.equal(unverifiedOwnerDiag.isVerifiedOwner, false, 'يجب عدم منح صلاحية المالك بالاعتماد على providerData وحده عندما تكون emailVerified === false');
 assert.equal(unverifiedOwnerDiag.requiresEmailVerificationForAdmin, true);
 assert.equal(unverifiedOwnerDiag.rejectionReason, 'unverified_email_token');
+assert.ok(unverifiedOwnerDiag.rejectionReasonAr && unverifiedOwnerDiag.rejectionReasonAr.includes('emailVerified'));
 
-const verifiedOwnerDiag = inspectOwnerSessionDiagnostic({
-  uid: 'uid_owner_verified',
-  email: 'ahah26h@gmail.com',
+const verifiedPrimaryOwnerDiag = inspectOwnerSessionDiagnostic({
+  uid: 'uid_primary_owner_verified',
+  email: 'am1075022@gmail.com',
   emailVerified: true,
-  providerData: [{ providerId: 'google.com' }],
+  providerData: [{ providerId: 'google.com', email: 'am1075022@gmail.com' }],
 });
-assert.equal(verifiedOwnerDiag.isPermanentOwnerEmailMatch, true);
-assert.equal(verifiedOwnerDiag.emailVerified, true);
-assert.equal(verifiedOwnerDiag.isVerifiedOwner, true);
-assert.equal(verifiedOwnerDiag.requiresEmailVerificationForAdmin, false);
-assert.equal(verifiedOwnerDiag.rejectionReason, null);
+assert.equal(verifiedPrimaryOwnerDiag.isPermanentOwnerEmailMatch, true);
+assert.equal(verifiedPrimaryOwnerDiag.matchedOwnerRole, 'primary_owner');
+assert.equal(verifiedPrimaryOwnerDiag.emailVerified, true);
+assert.equal(verifiedPrimaryOwnerDiag.isVerifiedOwner, true);
+assert.equal(verifiedPrimaryOwnerDiag.requiresEmailVerificationForAdmin, false);
+assert.equal(verifiedPrimaryOwnerDiag.rejectionReason, null);
+assert.equal(verifiedPrimaryOwnerDiag.rejectionReasonAr, null);
+
+const regularUserDiag = inspectOwnerSessionDiagnostic({
+  uid: 'uid_regular_client',
+  email: 'client@office.ye',
+  emailVerified: true,
+  providerData: [{ providerId: 'google.com', email: 'client@office.ye' }],
+});
+assert.equal(regularUserDiag.isPermanentOwnerEmailMatch, false);
+assert.equal(regularUserDiag.isVerifiedOwner, false);
+assert.equal(regularUserDiag.requiresEmailVerificationForAdmin, false);
+assert.equal(regularUserDiag.rejectionReason, 'not_in_permanent_owners_list');
 console.log(
-  '✅ 9. فحص توثيق جلسة المالك الدائم يكتشف البريد غير الموثق ويوفر مسار التوثيق الآمن دون منح صلاحيات لنص البريد وحده.'
+  '✅ 9. فحص توثيق جلسة المالك الدائم (am1075022@gmail.com وahah26@gmail.com) يرفض منح الصلاحيات لـ providerData وحده أو للبريد غير الموثق، ويبقي المستخدمين العاديين بدون صلاحيات إدارية.'
+);
+
+// 10. اختبار الحالة الفعلية للمعاينة: عندما يكون firebaseUser.email === null و emailVerified === false عند الدخول عبر Google
+// 10-A: وجود البريد في providerData وحده بدون رمز جلسة Google موقّع (getIdTokenResult) يُرفض أمنيًا بـ missing_email
+const nullTopEmailUnverifiedProviderOnly = inspectOwnerSessionDiagnostic({
+  uid: 'uid_google_null_top_email_unverified',
+  email: null,
+  emailVerified: false,
+  providerData: [{ providerId: 'google.com', email: 'am1075022@gmail.com' }],
+});
+assert.equal(
+  nullTopEmailUnverifiedProviderOnly.isVerifiedOwner,
+  false,
+  'يجب رفض منح صلاحية المالك إذا كان user.email === null ولم يتم التحقق من رمز جلسة Google الموقّع'
+);
+assert.equal(nullTopEmailUnverifiedProviderOnly.rejectionReason, 'missing_email');
+assert.equal(nullTopEmailUnverifiedProviderOnly.googleProviderEmailRaw, 'am1075022@gmail.com');
+
+// 10-B: بعد مزامنة الجلسة والتحقق من رمز الهوية الموقّع من Google (signInProvider === google.com + hasVerifiedGoogleTokenIdentity === true)
+const nullTopEmailWithVerifiedGoogleToken = inspectOwnerSessionDiagnostic({
+  uid: 'uid_google_null_top_email_verified_token',
+  email: null,
+  emailVerified: false,
+  providerData: [{ providerId: 'google.com', email: 'am1075022@gmail.com' }],
+  __rasdVerifiedAuthSessionMeta: {
+    syncedAtIso: new Date().toISOString(),
+    signInProvider: 'google.com',
+    tokenEmail: null,
+    tokenEmailVerified: false,
+    hasVerifiedGoogleTokenIdentity: true,
+    oauthProfileEmail: 'am1075022@gmail.com',
+    oauthProfileEmailVerified: true,
+    googleProviderEmail: 'am1075022@gmail.com',
+    emailSyncStatus: 'verified_via_google_id_token',
+    updateEmailErrorCode: 'auth/email-already-in-use',
+  },
+});
+assert.equal(nullTopEmailWithVerifiedGoogleToken.isVerifiedOwner, true);
+assert.equal(nullTopEmailWithVerifiedGoogleToken.matchedOwnerRole, 'primary_owner');
+assert.equal(nullTopEmailWithVerifiedGoogleToken.effectiveVerifiedEmail, 'am1075022@gmail.com');
+assert.equal(nullTopEmailWithVerifiedGoogleToken.emailVerified, true);
+assert.equal(nullTopEmailWithVerifiedGoogleToken.rejectionReason, null);
+
+// 10-C: مستخدم عادي يسجل عبر Google و user.email === null مع رمز جلسة Google موقّع يظل مرفوضًا
+const nullTopEmailRegularGoogleUser = inspectOwnerSessionDiagnostic({
+  uid: 'uid_google_regular_null_top_email',
+  email: null,
+  emailVerified: false,
+  providerData: [{ providerId: 'google.com', email: 'regular.user@gmail.com' }],
+  __rasdVerifiedAuthSessionMeta: {
+    syncedAtIso: new Date().toISOString(),
+    signInProvider: 'google.com',
+    tokenEmail: null,
+    tokenEmailVerified: false,
+    hasVerifiedGoogleTokenIdentity: true,
+    oauthProfileEmail: 'regular.user@gmail.com',
+    oauthProfileEmailVerified: true,
+    googleProviderEmail: 'regular.user@gmail.com',
+    emailSyncStatus: 'verified_via_google_id_token',
+    updateEmailErrorCode: null,
+  },
+});
+assert.equal(nullTopEmailRegularGoogleUser.isVerifiedOwner, false);
+assert.equal(nullTopEmailRegularGoogleUser.rejectionReason, 'not_in_permanent_owners_list');
+console.log(
+  '✅ 10. معالجة حالة firebaseUser.email = null عند الدخول عبر Google: التحقق الصارم من رمز جلسة Google الموقّع يفعّل المالك الدائم (am1075022@gmail.com) ويرفض providerData وحده أو المستخدمين العاديين.'
+);
+
+// 11. التحقق من تطابق firestore.rules و DRAFT_firestore.rules ودعم hasVerifiedOwnerTokenClaim لجميع المالكين الثلاثة
+const prodRules = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf8');
+const draftRules = fs.readFileSync(path.resolve(process.cwd(), 'DRAFT_firestore.rules'), 'utf8');
+assert.equal(prodRules, draftRules, 'يجب أن يتطابق ملف firestore.rules مع DRAFT_firestore.rules بنسبة 100%');
+assert.ok(prodRules.includes('function isGoogleAuthenticatedToken()'));
+assert.ok(prodRules.includes('function hasVerifiedOwnerTokenClaim()'));
+assert.ok(prodRules.includes("hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'email')"));
+assert.ok(prodRules.includes("hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'google.com')"));
+assert.ok(prodRules.includes("'am1075022@gmail.com'"));
+assert.ok(prodRules.includes("'ahah26@gmail.com'"));
+assert.ok(prodRules.includes("'ahah26h@gmail.com'"));
+console.log(
+  '✅ 11. قواعد firestore.rules و DRAFT_firestore.rules متطابقة وتدعم التحقق الآمن من المالكين الثلاثة عبر رمز Google الموقّع.'
 );
 
 console.log('\n🎉 اكتملت جميع اختبارات المرحلة 2-C (لوحة إدارة منصة «رَصْد») بنجاح تام!');
+
+

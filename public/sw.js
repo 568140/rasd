@@ -2,7 +2,7 @@
  * RASD Unified Service Worker (Workbox injectManifest + Web Push & Notification Click Handling)
  */
 
-const CACHE_NAME = 'rasd-cache-v5';
+const CACHE_NAME = 'rasd-cache-v6';
 const PRECACHE_MANIFEST = self.__WB_MANIFEST || [];
 const PRECACHE_URLS = Array.from(
   new Set([
@@ -64,9 +64,14 @@ self.addEventListener('fetch', (event) => {
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
 
-  // Never intercept backend API endpoints or Firebase/Google dynamic RPCs
+  // Never intercept backend API endpoints, Vite dev modules, or Firebase/Google dynamic RPCs
   if (
     url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/@') ||
+    url.pathname.startsWith('/node_modules/') ||
+    url.pathname.endsWith('.tsx') ||
+    url.pathname.endsWith('.ts') ||
     url.hostname.includes('firestore.googleapis.com') ||
     url.hostname.includes('identitytoolkit.googleapis.com') ||
     url.hostname.includes('securetoken.googleapis.com')

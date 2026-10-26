@@ -122,6 +122,33 @@
         Object.assign(PatchedWebSocket, PatchedWebSocket.prototype);
 
         window.WebSocket = PatchedWebSocket;
+
+        // Evict stale Service Worker caches (rasd-cache-v1..v5) so updated UI bundles load immediately
+        if ('caches' in window) {
+          caches
+            .keys()
+            .then(function (keys) {
+              const staleKeys = keys.filter(function (k) {
+                return k !== 'rasd-cache-v6' && (k.indexOf('rasd-cache-') === 0 || k.indexOf('workbox-') === 0);
+              });
+              if (staleKeys.length > 0) {
+                Promise.all(
+                  staleKeys.map(function (k) {
+                    return caches.delete(k);
+                  })
+                ).then(function () {
+                  if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.getRegistrations().then(function (regs) {
+                      regs.forEach(function (r) {
+                        r.update();
+                      });
+                    });
+                  }
+                });
+              }
+            })
+            .catch(function () {});
+        }
       })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />

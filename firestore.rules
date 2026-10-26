@@ -63,14 +63,88 @@ service cloud.firestore {
       return email is string && (
         email == 'am1075022@gmail.com' ||
         email == 'ahah26@gmail.com' ||
-        email == 'ahah26h@gmail.com'
+        email == 'ahah26h@gmail.com' ||
+        email.lower() == 'am1075022@gmail.com' ||
+        email.lower() == 'ahah26@gmail.com' ||
+        email.lower() == 'ahah26h@gmail.com'
+      );
+    }
+
+    function hasTopLevelTokenEmail() {
+      return isSignedIn() &&
+        'email' in request.auth.token &&
+        request.auth.token.email is string &&
+        request.auth.token.email.size() > 0;
+    }
+
+    function isTopLevelEmailVerified() {
+      return isSignedIn() &&
+        'email_verified' in request.auth.token &&
+        request.auth.token.email_verified == true;
+    }
+
+    function matchesAuthTokenEmail(candidateEmail) {
+      return candidateEmail is string &&
+        hasTopLevelTokenEmail() && (
+          candidateEmail == request.auth.token.email ||
+          candidateEmail.lower() == request.auth.token.email.lower()
+        );
+    }
+
+    function matchesAuthTokenEmailOrMissing(candidateEmail) {
+      return candidateEmail is string && (
+        !hasTopLevelTokenEmail() ||
+        matchesAuthTokenEmail(candidateEmail)
+      );
+    }
+
+    // التحقق من هوية المالك الدائم الموثقة من رمز الجلسة الموقّع رقميًا من Firebase Auth (JWT)
+    // يدعم:
+    // 1. البريد الموثق في المستوى الأعلى للرمز ('email_verified' in request.auth.token && request.auth.token.email_verified == true)
+    // 2. تسجيل الدخول الموثق عبر مزود Google (sign_in_provider == 'google.com') حتى عند غياب البريد من المستوى الأعلى
+    //    بفحص request.auth.token.email أو قوائم الهويات الموقعة داخل request.auth.token.firebase.identities
+    function isGoogleAuthenticatedToken() {
+      return isSignedIn() &&
+        'firebase' in request.auth.token &&
+        request.auth.token.firebase is map &&
+        'sign_in_provider' in request.auth.token.firebase &&
+        request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+
+    function hasPermanentOwnerInIdentityList(identitiesMap, providerKey) {
+      return identitiesMap is map &&
+        providerKey in identitiesMap &&
+        identitiesMap[providerKey] is list && (
+          'am1075022@gmail.com' in identitiesMap[providerKey] ||
+          'ahah26@gmail.com' in identitiesMap[providerKey] ||
+          'ahah26h@gmail.com' in identitiesMap[providerKey]
+        );
+    }
+
+    function hasVerifiedOwnerTokenClaim() {
+      return isSignedIn() && (
+        (
+          isTopLevelEmailVerified() &&
+          hasTopLevelTokenEmail() &&
+          isPermanentOwnerEmail(request.auth.token.email)
+        ) || (
+          isGoogleAuthenticatedToken() && (
+            (hasTopLevelTokenEmail() && isPermanentOwnerEmail(request.auth.token.email)) ||
+            (
+              'identities' in request.auth.token.firebase && (
+                hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'email') ||
+                hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'google.com')
+              )
+            )
+          )
+        )
       );
     }
 
     function isAdmin() {
       return isVerifiedUser() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email_verified == true && isPermanentOwnerEmail(request.auth.token.email))
+        hasVerifiedOwnerTokenClaim()
       );
     }
 
@@ -540,6 +614,9 @@ service cloud.firestore {
     // Collection 0C: /account_licenses/{workspaceId} (المجموعة الموحدة لتراخيص واشتراكات الحسابات)
     match /account_licenses/{workspaceId} {
       allow get: if isSignedIn() && isValidId(workspaceId) && (
+        resource == null ||
+        workspaceId == 'ws_' + request.auth.uid ||
+        (resource != null && existing().ownerId == request.auth.uid) ||
         isWorkspaceMember(workspaceId) ||
         isWorkspaceOwner(workspaceId) ||
         isAdmin() ||
@@ -560,7 +637,7 @@ service cloud.firestore {
         incoming().workspaceId == workspaceId && (
           isAdmin() || (
             incoming().ownerId == request.auth.uid &&
-            (request.auth.token.email == null || incoming().ownerEmail == request.auth.token.email) &&
+            matchesAuthTokenEmailOrMissing(incoming().ownerEmail) &&
             !isPermanentOwnerEmail(incoming().ownerEmail) &&
             incoming().planId != 'owner_permanent' &&
             incoming().status == 'pending' &&
@@ -581,6 +658,24 @@ service cloud.firestore {
         isValidId(workspaceId) &&
         isValidAccountLicense(incoming()) && (
           isAdmin() || (
+            // السماح لصاحب الطلب المعلق بتحديث ملاحظات بيانات طلبه الوصفية فقط مع بقاء الحالة pending وجميع الحقول الأمنية ثابتة
+            existing().ownerId == request.auth.uid &&
+            existing().status == 'pending' &&
+            incoming().status == 'pending' &&
+            !isPermanentOwnerEmail(existing().ownerEmail) &&
+            !isPermanentOwnerEmail(incoming().ownerEmail) &&
+            existing().planId != 'owner_permanent' &&
+            incoming().planId == existing().planId &&
+            incoming().workspaceId == existing().workspaceId &&
+            incoming().ownerId == existing().ownerId &&
+            incoming().ownerEmail == existing().ownerEmail &&
+            incoming().maxMembers == existing().maxMembers &&
+            incoming().startsAt == existing().startsAt &&
+            incoming().expiresAt == existing().expiresAt &&
+            (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
+            incoming().updatedAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'createdAt', 'updatedAt'])
+          ) || (
             // قبول أو رفض طلب التسجيل الأولي (existing().status == 'pending') حصري للمالكين الدائمين (isAdmin) فقط
             hasStaffPermission('canApproveAndRenew') &&
             existing().status != 'pending' &&
@@ -591,9 +686,9 @@ service cloud.firestore {
             incoming().workspaceId == existing().workspaceId &&
             incoming().ownerId == existing().ownerId &&
             incoming().ownerEmail == existing().ownerEmail &&
-            incoming().createdAt == existing().createdAt &&
+            (incoming().createdAt == existing().createdAt || incoming().createdAt == request.time) &&
             incoming().updatedAt == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['planId', 'status', 'startsAt', 'expiresAt', 'maxMembers', 'notes', 'updatedAt']) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['planId', 'status', 'startsAt', 'expiresAt', 'maxMembers', 'notes', 'createdAt', 'updatedAt']) &&
             (
               (incoming().planId == existing().planId && incoming().maxMembers == existing().maxMembers) ||
               hasStaffPermission('canManagePackages')
@@ -639,7 +734,7 @@ service cloud.firestore {
         (!isPermanentOwnerEmail(incoming().email) || isAdmin()) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time && (
-          (userId == request.auth.uid && (request.auth.token.email == null || incoming().email == request.auth.token.email)) ||
+          (userId == request.auth.uid && matchesAuthTokenEmailOrMissing(incoming().email)) ||
           isWorkspaceOwner(incoming().activeWorkspaceId) ||
           isAdmin()
         );
@@ -724,24 +819,24 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(memberId) && (
         resource == null ||
         memberId == 'ws_' + request.auth.uid + '_' + request.auth.uid ||
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew') ||
         (resource != null && (
           request.auth.uid in existing().memberUids ||
           existing().userId == request.auth.uid ||
           existing().ownerId == request.auth.uid ||
-          existing().email == request.auth.token.email
-        )) ||
-        isAdmin() ||
-        hasStaffPermission('canViewRequests') ||
-        hasStaffPermission('canApproveAndRenew')
+          matchesAuthTokenEmail(existing().email)
+        ))
       );
       allow list: if isSignedIn() && (
+        isAdmin() ||
+        hasStaffPermission('canViewRequests') ||
+        hasStaffPermission('canApproveAndRenew') ||
         request.auth.uid in existing().memberUids ||
         existing().userId == request.auth.uid ||
         existing().ownerId == request.auth.uid ||
-        existing().email == request.auth.token.email ||
-        isAdmin() ||
-        hasStaffPermission('canViewRequests') ||
-        hasStaffPermission('canApproveAndRenew')
+        matchesAuthTokenEmail(existing().email)
       );
       allow create: if isVerifiedUser() &&
         isValidId(memberId) &&
@@ -781,7 +876,7 @@ service cloud.firestore {
             isWorkspaceLicenseActive(existing().workspaceId) &&
             existing().role != 'owner' &&
             existing().status == 'invited' &&
-            existing().email == request.auth.token.email &&
+            matchesAuthTokenEmail(existing().email) &&
             incoming().workspaceId == existing().workspaceId &&
             incoming().ownerId == existing().ownerId &&
             incoming().role == existing().role &&
@@ -807,7 +902,7 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(memberId) && (
         (isWorkspaceLicenseActive(existing().workspaceId) && isWorkspaceOwner(existing().workspaceId)) ||
         isAdmin() ||
-        (existing().email == request.auth.token.email && existing().status == 'invited')
+        (matchesAuthTokenEmail(existing().email) && existing().status == 'invited')
       );
     }
 

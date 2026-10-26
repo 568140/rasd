@@ -22,11 +22,14 @@ import {
   ArrowRight,
   Download,
   Database,
+  ShieldAlert,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import {
   authorizePlatformOperation,
+  isSyntheticOrInvalidStaffUid,
   PERMANENT_PLATFORM_OWNER_EMAILS,
+  resolveVerifiedOrTopLevelUserEmail,
 } from '../services/licenseService';
 import {
   exportFirestoreBackup,
@@ -119,6 +122,7 @@ export const PlatformAdminScreen: React.FC = () => {
     subscriptionPackages,
     platformStaffList,
     platformAdminAuditLogs,
+    platformFirestoreSyncStatus,
     refreshPlatformAdminData,
     decideRegistrationRequest,
     mutateClientSubscription,
@@ -172,6 +176,7 @@ export const PlatformAdminScreen: React.FC = () => {
     canApproveAndRenew: false,
     canManagePackages: false,
   });
+  const [auditLogFilter, setAuditLogFilter] = useState<'all' | 'denied_only' | 'admin_ops'>('all');
 
   // Programmatic Permission Evaluations (Aligned strictly with licenseService.ts & firestore.rules)
   const canDecideRequests = useMemo(
@@ -357,8 +362,22 @@ export const PlatformAdminScreen: React.FC = () => {
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
-      await refreshPlatformAdminData();
-      showToast('تم تحديث بيانات لوحة إدارة المنصة بنجاح.', 'info');
+      const syncResult = await refreshPlatformAdminData();
+      if (syncResult && syncResult.hasPermissionDenied) {
+        showToast(
+          `رفض خادم Firestore قراءة (${syncResult.deniedCollections.join(
+            '، '
+          )}) بسبب permission-denied. تحقق من نشر قواعد Firestore المحدثة.`,
+          'error'
+        );
+      } else {
+        showToast('تم تحديث بيانات لوحة إدارة المنصة من Firestore بنجاح.', 'info');
+      }
+    } catch (err) {
+      showToast(
+        err instanceof Error ? err.message : 'تعذر تحديث بيانات لوحة الإدارة من الخادم.',
+        'error'
+      );
     } finally {
       setIsRefreshing(false);
     }
@@ -483,16 +502,26 @@ export const PlatformAdminScreen: React.FC = () => {
   const handleSavePackage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingPlanId) return;
+    const trimmedName = pkgNameAr.trim();
+    const trimmedDesc = pkgDescAr.trim();
+    if (trimmedName.length < 2 || trimmedName.length > 80) {
+      showToast('اسم الباقة مطلوب ويجب أن يتراوح بين حرفين و80 حرفًا.', 'error');
+      return;
+    }
+    if (trimmedDesc.length < 2 || trimmedDesc.length > 500) {
+      showToast('وصف الباقة مطلوب ويجب أن يتراوح بين حرفين و500 حرف.', 'error');
+      return;
+    }
     try {
       const targetPkg = subscriptionPackages[editingPlanId];
       await updateSubscriptionPackageConfig(editingPlanId, {
-        nameAr: pkgNameAr,
-        descriptionAr: pkgDescAr,
+        nameAr: trimmedName,
+        descriptionAr: trimmedDesc,
         durationDays: targetPkg.isLifetime ? null : Math.max(1, parseInt(pkgDurationDays, 10) || 30),
         defaultMaxMembers: Math.max(1, Math.min(10, parseInt(pkgMaxMembers, 10) || 5)),
         priceAmount: Math.max(0, parseFloat(pkgPrice) || 0),
         currency: pkgCurrency,
-        isActive: pkgIsActive,
+        isActive: Boolean(pkgIsActive),
       });
       setEditingPlanId(null);
     } catch (err) {
@@ -502,11 +531,33 @@ export const PlatformAdminScreen: React.FC = () => {
 
   const handleSaveStaff = async (e: React.FormEvent) => {
     e.preventDefault();
+    const trimmedUid = staffUidInput.trim();
+    const trimmedEmail = staffEmailInput.trim().toLowerCase();
+    const trimmedName = staffNameInput.trim();
+
+    if (!trimmedUid) {
+      showToast(
+        'لا يمكن الحفظ بدون معرف حساب Firebase حقيقي (UID). يرجى إدخال UID الفعلي للمستخدم المسجل في المنصة أو اختياره من القائمة.',
+        'error'
+      );
+      return;
+    }
+
+    const staffUidCheck = isSyntheticOrInvalidStaffUid(trimmedUid, trimmedEmail);
+    if (staffUidCheck.isInvalidOrSynthetic) {
+      showToast(
+        staffUidCheck.reasonAr ||
+          'معرف الحساب (UID) المدخل اصطناعي أو غير صالح. يجب إدخال UID حقيقي يطابق حساب Firebase مسجل في /users.',
+        'error'
+      );
+      return;
+    }
+
     try {
       await upsertPlatformStaffMember({
-        staffUid: staffUidInput.trim() || `staff_${staffEmailInput.split('@')[0]?.replace(/[^a-zA-Z0-9_-]/g, '') || '1'}`,
-        email: staffEmailInput,
-        displayName: staffNameInput,
+        staffUid: trimmedUid,
+        email: trimmedEmail,
+        displayName: trimmedName,
         status: staffStatusInput,
         permissions: staffPermsInput,
       });
@@ -613,18 +664,81 @@ export const PlatformAdminScreen: React.FC = () => {
         </span>
       </div>
 
-      {/* Security & Production Rules Readiness Disclosure */}
-      <div className="rounded-3xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 p-4 text-xs space-y-1.5">
-        <div className="font-extrabold text-amber-900 dark:text-amber-200 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>إفصاح الأمان وقواعد Firestore (حماية الإنتاج دون نشر):</span>
+      {/* Live Firestore Server Permission & Security Rules Verification Status */}
+      <div
+        className={`rounded-3xl p-4 text-xs space-y-2 border ${
+          platformFirestoreSyncStatus.hasServerPermissionDenied
+            ? 'bg-rose-50/90 dark:bg-rose-950/40 border-rose-300 dark:border-rose-800'
+            : 'bg-amber-50/90 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800/80'
+        }`}
+      >
+        <div
+          className={`font-extrabold flex items-center justify-between gap-2 flex-wrap ${
+            platformFirestoreSyncStatus.hasServerPermissionDenied
+              ? 'text-rose-900 dark:text-rose-200'
+              : 'text-amber-900 dark:text-amber-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>
+              {platformFirestoreSyncStatus.hasServerPermissionDenied
+                ? 'تشخيص صلاحيات خادم Firestore الفعلية: الخادم رفض بعض الاستعلامات (permission-denied)'
+                : 'حالة قواعد Firestore والتحقق الفعلي من الخادم (دون الاعتماد على localStorage):'}
+            </span>
+          </div>
+          {platformFirestoreSyncStatus.lastCheckedAtIso && (
+            <span className="font-mono text-[11px] opacity-80" dir="ltr">
+              آخر فحص للخادم: {platformFirestoreSyncStatus.lastCheckedAtIso.slice(11, 19)} UTC
+            </span>
+          )}
         </div>
-        <p className="text-amber-800 dark:text-amber-300 leading-relaxed">
-          • <strong>التحقق البرمجي وقواعد المسودة:</strong> جميع الإجراءات أدناه محمية برمجيًا عبر <code>assertPlatformOperationAuthorized</code> وفي <code>DRAFT_firestore.rules</code> وليست مجرد إخفاء للأزرار.
-        </p>
-        <p className="text-amber-800 dark:text-amber-300 leading-relaxed">
-          • <strong>ما يتطلب نشر قواعد الأمان لاحقًا:</strong> التزامًا بعدم تعديل أو نشر <code>/firestore.rules</code> الحالي (771 سطرًا)، فإن المجموعات الجديدة (<code>/account_licenses</code>، <code>/platform_staff</code>، <code>/subscription_packages</code>) وتفويض مساعدي المنصة على مستوى قاعدة البيانات لن تُفرض في خادم Firestore الحي إلا بعد موافقتك على نشر <code>DRAFT_firestore.rules</code>.
-        </p>
+
+        {platformFirestoreSyncStatus.hasServerPermissionDenied ? (
+          <div className="space-y-1.5 text-rose-800 dark:text-rose-300 leading-relaxed">
+            <p>
+              • <strong>المجموعات التي رفضها خادم Firestore بـ <code>permission-denied</code>:</strong>{' '}
+              <code className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/60 font-mono">
+                {platformFirestoreSyncStatus.permissionDeniedCollections.join(' ، ')}
+              </code>
+            </p>
+            {platformFirestoreSyncStatus.readableCollections.length > 0 && (
+              <p>
+                • <strong>المجموعات المقروءة بنجاح من الخادم:</strong>{' '}
+                <code className="px-1.5 py-0.5 rounded bg-emerald-100/70 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-200 font-mono">
+                  {platformFirestoreSyncStatus.readableCollections.join(' ، ')}
+                </code>
+              </p>
+            )}
+            <p>
+              • <strong>السبب الجذري على الخادم:</strong>{' '}
+              {platformFirestoreSyncStatus.serverDenialRootCauseAr}
+            </p>
+            <p>
+              • <strong>عدم استخدام <code>localStorage</code> كبديل:</strong> تعرض هذه اللوحة البيانات الحقيقية المقروءة من Firestore فقط، ولا يتم تخزين أو قراءة بيانات الإدارة من المتصفح لإخفاء خطأ الصلاحيات.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-1.5 text-amber-800 dark:text-amber-300 leading-relaxed">
+            <p>
+              • <strong>ملف القواعد المحلي مقابل الخادم الحي:</strong> يتضمن ملف <code>/firestore.rules</code> في المشروع (1,164 سطرًا) قواعد مجموعات الحوكمة (<code>/account_licenses</code>، <code>/subscription_packages</code>، <code>/platform_staff</code>)، غير أن التحقق من الصلاحيات يعتمد حصريًا على استجابة خادم Firestore الفعلية ولا يفترض نشرًا غير متحقق منه.
+            </p>
+            <p>
+              • <strong>حالة القراءة الفعلية من Firestore:</strong>{' '}
+              {platformFirestoreSyncStatus.readableCollections.length > 0 ? (
+                <>
+                  استجاب الخادم بنجاح للمجموعات:{' '}
+                  <code className="px-1.5 py-0.5 rounded bg-emerald-100/80 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-200 font-mono">
+                    {platformFirestoreSyncStatus.readableCollections.join(' ، ')}
+                  </code>
+                </>
+              ) : (
+                'جاري التحقق من استجابة الخادم للمجموعات الإدارية...'
+              )}{' '}
+              (دون استخدام <code>localStorage</code> كبديل عن بيانات الخادم).
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Navigation Tabs (44px+ Touch Hitboxes) */}
@@ -1257,7 +1371,7 @@ export const PlatformAdminScreen: React.FC = () => {
                           onClick={() => startEditingPackage(planId)}
                           className="w-full min-h-[42px] rounded-2xl bg-[#EFECE6] hover:bg-[#E5E0D6] dark:bg-[#2B2826] text-xs font-extrabold cursor-pointer"
                         >
-                          تعديل المدة وحدود أعضاء الفريق
+                          تعديل بيانات الباقة والمدة وحدود الفريق
                         </button>
                       ) : (
                         <form onSubmit={handleSavePackage} className="space-y-2.5 pt-1">
@@ -1266,9 +1380,26 @@ export const PlatformAdminScreen: React.FC = () => {
                             <input
                               type="text"
                               required
+                              minLength={2}
+                              maxLength={80}
                               value={pkgNameAr}
                               onChange={(e) => setPkgNameAr(e.target.value)}
                               className="w-full min-h-[40px] px-3 rounded-xl bg-white dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[11px] font-bold mb-1">
+                              وصف الباقة (2–500 حرف)
+                            </label>
+                            <textarea
+                              rows={2}
+                              required
+                              minLength={2}
+                              maxLength={500}
+                              value={pkgDescAr}
+                              onChange={(e) => setPkgDescAr(e.target.value)}
+                              placeholder="أدخل وصفًا واضحًا لمزايا الباقة ومدتها وحدود أعضاء الفريق..."
+                              className="w-full p-2.5 rounded-xl bg-white dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] text-xs leading-relaxed"
                             />
                           </div>
                           <div className="grid grid-cols-2 gap-2">
@@ -1326,6 +1457,17 @@ export const PlatformAdminScreen: React.FC = () => {
                               </select>
                             </div>
                           </div>
+                          <label className="min-h-[42px] px-3 py-2 rounded-xl bg-[#F7F4EE] dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] flex items-center justify-between gap-2 cursor-pointer">
+                            <span className="text-[11px] font-bold text-[#292725] dark:text-[#F4F1EA]">
+                              حالة الباقة ({pkgIsActive ? 'نشطة ومتاحة للاختيار' : 'معطلة ومخفية عن التسجيل الجديد'})
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={pkgIsActive}
+                              onChange={(e) => setPkgIsActive(e.target.checked)}
+                              className="w-4 h-4 accent-[#743B46]"
+                            />
+                          </label>
                           <div className="flex items-center justify-end gap-2 pt-1">
                             <button
                               type="button"
@@ -1398,7 +1540,7 @@ export const PlatformAdminScreen: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold mb-1">البريد الإلكتروني</label>
+                    <label className="block text-xs font-bold mb-1">البريد الإلكتروني المسجل</label>
                     <input
                       type="email"
                       required
@@ -1410,17 +1552,55 @@ export const PlatformAdminScreen: React.FC = () => {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold mb-1">معرف الحساب (UID في Firebase)</label>
+                    <label className="block text-xs font-bold mb-1">
+                      معرف الحساب الفعلي في Firebase (UID) *
+                    </label>
                     <input
                       type="text"
+                      required
                       dir="ltr"
                       value={staffUidInput}
                       onChange={(e) => setStaffUidInput(e.target.value)}
-                      placeholder="uid_staff_..."
+                      placeholder="UID حقيقي مطابق لوثيقة /users/{uid}"
                       className="w-full min-h-[42px] px-3 rounded-xl bg-[#F7F4EE] dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] text-xs font-mono text-left"
                     />
                   </div>
                 </div>
+
+                {platformClientAccounts.filter((c) => !c.isPermanentOwner && c.ownerId && c.ownerEmail).length > 0 && (
+                  <div className="p-3 rounded-2xl bg-[#F7F4EE]/70 dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#77716B] dark:text-[#ACA59C]">
+                      اختيار سريع من الحسابات المسجلة فعليًا في <code>/users</code> (لضمان تطابق UID الفعلي):
+                    </span>
+                    <select
+                      value=""
+                      onChange={(e) => {
+                        const selectedUid = e.target.value;
+                        if (!selectedUid) return;
+                        const found = platformClientAccounts.find((c) => c.ownerId === selectedUid);
+                        if (found) {
+                          setStaffUidInput(found.ownerId);
+                          setStaffEmailInput(found.ownerEmail);
+                          setStaffNameInput(found.ownerName);
+                        }
+                      }}
+                      className="min-h-[36px] px-3 rounded-xl bg-white dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] text-xs"
+                    >
+                      <option value="">— اختر حسابًا مسجلًا لتعبئة UID والبريد تلقائيًا —</option>
+                      {platformClientAccounts
+                        .filter((c) => !c.isPermanentOwner && c.ownerId && c.ownerEmail)
+                        .map((c) => (
+                          <option key={c.ownerId} value={c.ownerId}>
+                            {c.ownerName} ({c.ownerEmail}) — UID: {c.ownerId}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+
+                <p className="text-[11px] text-[#77716B] dark:text-[#ACA59C]">
+                  * يتم التحقق من وجود وثيقة مطابقة في <code>/users/&#123;uid&#125;</code> على خادم Firestore قبل الحفظ، ويُمنع توليد أو حفظ أي UID اصطناعي.
+                </p>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
                   <label className="min-h-[48px] p-3 rounded-2xl bg-[#F7F4EE] dark:bg-[#1B1918] border border-[#E7E1D8] dark:border-[#383431] flex items-center gap-2.5 cursor-pointer">
@@ -1528,22 +1708,42 @@ export const PlatformAdminScreen: React.FC = () => {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() =>
-                            upsertPlatformStaffMember({
-                              staffUid: staff.uid,
-                              email: staff.email,
-                              displayName: staff.displayName,
-                              status: staff.status === 'active' ? 'suspended' : 'active',
-                              permissions: staff.permissions,
-                            })
-                          }
+                          onClick={async () => {
+                            try {
+                              await upsertPlatformStaffMember({
+                                staffUid: staff.uid,
+                                email: staff.email,
+                                displayName: staff.displayName,
+                                status: staff.status === 'active' ? 'suspended' : 'active',
+                                permissions: staff.permissions,
+                              });
+                            } catch (err) {
+                              showToast(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'تعذر تحديث حالة مساعد المنصة في Firestore.',
+                                'error'
+                              );
+                            }
+                          }}
                           className="min-h-[42px] px-3.5 rounded-xl bg-stone-100 dark:bg-stone-800 text-xs font-bold cursor-pointer"
                         >
                           {staff.status === 'active' ? 'إيقاف التفويض' : 'إعادة تفعيل التفويض'}
                         </button>
                         <button
                           type="button"
-                          onClick={() => removePlatformStaffMember(staff.uid)}
+                          onClick={async () => {
+                            try {
+                              await removePlatformStaffMember(staff.uid);
+                            } catch (err) {
+                              showToast(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'تعذر حذف مساعد المنصة من Firestore.',
+                                'error'
+                              );
+                            }
+                          }}
                           className="min-h-[42px] px-3 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-1 cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1578,11 +1778,15 @@ export const PlatformAdminScreen: React.FC = () => {
                 onClick={async () => {
                   if (!firebaseUser) return;
                   try {
+                    const verifiedActorEmail =
+                      ownerSessionDiagnostic.effectiveVerifiedEmail ||
+                      resolveVerifiedOrTopLevelUserEmail(firebaseUser) ||
+                      '';
                     const { payload, integrity } = await exportFirestoreBackup({
                       scopeMode: 'all_accessible_workspaces',
                       workspaceId: null,
                       currentUserUid: firebaseUser.uid,
-                      currentUserEmail: firebaseUser.email || '',
+                      currentUserEmail: verifiedActorEmail,
                       includePlatformGovernance: true,
                     });
                     const filename = downloadBackupJsonFile(payload);
@@ -1605,42 +1809,181 @@ export const PlatformAdminScreen: React.FC = () => {
             </div>
           )}
 
-          {platformAdminAuditLogs.length === 0 ? (
-            <div className="p-8 rounded-3xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] text-center space-y-2">
-              <FileText className="w-8 h-8 text-[#77716B] mx-auto" />
-              <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
-                لا توجد عمليات إدارية مسجلة في هذه الجلسة بعد
+          {/* فلتر نوع السجلات الإدارية والأمنية */}
+          <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-2xl bg-white dark:bg-[#1C1A19] border border-[#E7E1D8] dark:border-[#383431]">
+            <div className="flex items-center gap-2 text-xs font-bold text-[#77716B] dark:text-[#ACA59C]">
+              <span>تصفية السجلات:</span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setAuditLogFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                    auditLogFilter === 'all'
+                      ? 'bg-[#743B46] text-white'
+                      : 'bg-[#F2EFE9] dark:bg-[#2B2826] text-[#292725] dark:text-[#F4F1EA]'
+                  }`}
+                >
+                  الكل ({platformAdminAuditLogs.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditLogFilter('denied_only')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer ${
+                    auditLogFilter === 'denied_only'
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300'
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>
+                    محاولات الوصول المرفوضة (
+                    {
+                      platformAdminAuditLogs.filter(
+                        (l) =>
+                          l.operation === 'permission_denied_attempt' ||
+                          l.summary.includes('محاولة وصول مرفوضة')
+                      ).length
+                    }
+                    )
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditLogFilter('admin_ops')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                    auditLogFilter === 'admin_ops'
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                  }`}
+                >
+                  العمليات الإدارية (
+                  {
+                    platformAdminAuditLogs.filter(
+                      (l) =>
+                        l.operation !== 'permission_denied_attempt' &&
+                        !l.summary.includes('محاولة وصول مرفوضة')
+                    ).length
+                  }
+                  )
+                </button>
               </div>
-              <p className="text-xs text-[#77716B] dark:text-[#ACA59C]">
-                يتم توثيق جميع عمليات قبول/رفض الطلبات، وتجديد/تعليق الاشتراكات، وتعديل الباقات ومساعدي المنصة هنا وفي مجموعة <code>/audit_logs</code>.
-              </p>
             </div>
-          ) : (
-            platformAdminAuditLogs.map((entry) => (
-              <div
-                key={entry.id}
-                className="rounded-3xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] p-4 flex flex-wrap items-start justify-between gap-3"
-              >
-                <div className="space-y-1">
-                  <div className="text-xs font-extrabold text-[#292725] dark:text-[#F4F1EA]">
-                    {entry.summary}
+          </div>
+
+          {(() => {
+            const displayedLogs = platformAdminAuditLogs.filter((entry) => {
+              const isDenied =
+                entry.operation === 'permission_denied_attempt' ||
+                entry.summary.includes('محاولة وصول مرفوضة');
+              if (auditLogFilter === 'denied_only') return isDenied;
+              if (auditLogFilter === 'admin_ops') return !isDenied;
+              return true;
+            });
+
+            if (displayedLogs.length === 0) {
+              return (
+                <div className="p-8 rounded-3xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] text-center space-y-2">
+                  <FileText className="w-8 h-8 text-[#77716B] mx-auto" />
+                  <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+                    {auditLogFilter === 'denied_only'
+                      ? 'لا توجد محاولات وصول مرفوضة مسجلة في هذه الجلسة'
+                      : 'لا توجد عمليات إدارية مسجلة بعد'}
                   </div>
-                  <div className="text-[11px] font-mono text-[#77716B] dark:text-[#ACA59C]">
-                    المنفذ: {entry.actorName} ({entry.actorEmail}) · الصفة:{' '}
-                    {entry.actorRole === 'permanent_owner' ? 'مالك دائم' : 'مساعد مفوض'}
+                  <p className="text-xs text-[#77716B] dark:text-[#ACA59C]">
+                    يتم توثيق محاولات الوصول المرفوضة والعمليات الإدارية تلقائيًا لمساعدة المالكين في تشخيص المشاكل بأمان دون تخزين أي بيانات حساسة.
+                  </p>
+                </div>
+              );
+            }
+
+            return displayedLogs.map((entry) => {
+              const isDenied =
+                entry.operation === 'permission_denied_attempt' ||
+                entry.summary.includes('محاولة وصول مرفوضة');
+
+              return (
+                <div
+                  key={entry.id}
+                  className={`rounded-3xl border p-4.5 space-y-2.5 transition-shadow ${
+                    isDenied
+                      ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/60 shadow-xs'
+                      : 'bg-[#FFFEFC] dark:bg-[#22201F] border-[#E7E1D8] dark:border-[#383431]'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1.5 flex-1 min-w-[240px]">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {isDenied ? (
+                          <span className="px-2.5 py-0.5 rounded-lg bg-rose-100 dark:bg-rose-900/80 text-rose-800 dark:text-rose-200 text-[11px] font-extrabold flex items-center gap-1.5">
+                            <ShieldAlert className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                            <span>محاولة وصول مرفوضة (Permission Denied)</span>
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded-lg bg-amber-100 dark:bg-amber-900/80 text-amber-800 dark:text-amber-200 text-[11px] font-extrabold">
+                            عملية إدارية
+                          </span>
+                        )}
+                        <span className="text-xs font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+                          {entry.summary}
+                        </span>
+                      </div>
+
+                      {isDenied ? (
+                        <div className="rounded-2xl bg-white/80 dark:bg-black/30 border border-rose-200/80 dark:border-rose-900/40 p-3 text-xs space-y-1.5">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
+                            <div>
+                              <span className="text-[#77716B] dark:text-[#ACA59C]">البريد الإلكتروني: </span>
+                              <strong className="text-rose-900 dark:text-rose-200">
+                                {entry.actorEmail || entry.targetOwnerEmail || 'غير محدد في الجلسة'}
+                              </strong>
+                            </div>
+                            <div>
+                              <span className="text-[#77716B] dark:text-[#ACA59C]">معرف المستخدم (UID): </span>
+                              <strong className="text-[#292725] dark:text-[#F4F1EA]">
+                                {entry.actorUid || 'غير محدد'}
+                              </strong>
+                            </div>
+                            <div className="sm:col-span-2">
+                              <span className="text-[#77716B] dark:text-[#ACA59C]">المسار / المجموعة المستهدفة: </span>
+                              <span className="text-stone-800 dark:text-stone-200 font-bold">
+                                {entry.entityId || entry.targetWorkspaceId}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-emerald-700 dark:text-emerald-400 font-bold flex items-center gap-1 pt-0.5">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>سجل تشخيصي آمن — لا يتضمن أي كلمات مرور أو رموز دخول أو بيانات حساسة.</span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] font-mono text-[#77716B] dark:text-[#ACA59C]">
+                          المنفذ: {entry.actorName} ({entry.actorEmail || 'جلسة معتمدة'}) · الصفة:{' '}
+                          {entry.actorRole === 'permanent_owner' ? 'مالك دائم' : 'مساعد مفوض'}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="text-left space-y-1 shrink-0">
+                      <div className="text-[11px] font-mono tabular-nums text-[#77716B]">
+                        {entry.createdAtIso.replace('T', ' ').slice(0, 19)}
+                      </div>
+                      <div
+                        className={`text-[10px] font-bold ${
+                          isDenied
+                            ? 'text-rose-700 dark:text-rose-300'
+                            : 'text-emerald-700 dark:text-emerald-300'
+                        }`}
+                      >
+                        {entry.persistedToFirestore
+                          ? 'موثق في Firestore (/audit_logs)'
+                          : 'محفوظ في سجل التدقيق الأمني'}
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="text-left space-y-1">
-                  <div className="text-[11px] font-mono tabular-nums text-[#77716B]">
-                    {entry.createdAtIso.replace('T', ' ').slice(0, 19)}
-                  </div>
-                  <div className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                    {entry.persistedToFirestore ? 'موثق في Firestore (/audit_logs)' : 'محفوظ في سجل التدقيق الإداري'}
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
+              );
+            });
+          })()}
         </div>
       )}
     </div>

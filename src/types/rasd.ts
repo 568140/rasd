@@ -511,7 +511,8 @@ export type PlatformAdminOperation =
   | 'suspend_subscription'
   | 'reactivate_subscription'
   | 'manage_packages'
-  | 'manage_platform_staff';
+  | 'manage_platform_staff'
+  | 'permission_denied_attempt';
 
 export interface PlatformClientAccountSummary {
   workspaceId: string;
