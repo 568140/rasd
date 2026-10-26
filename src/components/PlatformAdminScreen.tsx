@@ -108,8 +108,12 @@ export const PlatformAdminScreen: React.FC = () => {
   const {
     firebaseUser,
     isPlatformAdmin,
+    ownerSessionDiagnostic,
     platformStaffRecord,
     canAccessPlatformAdmin,
+    loginWithGoogle,
+    resendVerificationEmail,
+    refreshAuthUser,
     receivedRegistrationRequests,
     platformClientAccounts,
     subscriptionPackages,
@@ -127,6 +131,7 @@ export const PlatformAdminScreen: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<AdminTabId>('requests');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isVerifyingOwner, setIsVerifyingOwner] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [reqFilter, setReqFilter] = useState<'all' | 'pending' | 'active' | 'suspended'>('all');
   const [clientFilter, setClientFilter] = useState<'all' | 'active' | 'pending' | 'expired' | 'suspended'>('all');
@@ -168,7 +173,7 @@ export const PlatformAdminScreen: React.FC = () => {
     canManagePackages: false,
   });
 
-  // Programmatic Permission Evaluations
+  // Programmatic Permission Evaluations (Aligned strictly with licenseService.ts & firestore.rules)
   const canDecideRequests = useMemo(
     () =>
       authorizePlatformOperation({
@@ -176,7 +181,7 @@ export const PlatformAdminScreen: React.FC = () => {
         actorStaffRecord: platformStaffRecord,
         operation: 'decide_registration_request',
       }).allowed,
-    [firebaseUser, platformStaffRecord]
+    [firebaseUser, platformStaffRecord, isPlatformAdmin]
   );
 
   const canRenewOrSuspend = useMemo(
@@ -186,7 +191,7 @@ export const PlatformAdminScreen: React.FC = () => {
         actorStaffRecord: platformStaffRecord,
         operation: 'renew_subscription',
       }).allowed,
-    [firebaseUser, platformStaffRecord]
+    [firebaseUser, platformStaffRecord, isPlatformAdmin]
   );
 
   const canManagePackages = useMemo(
@@ -196,7 +201,7 @@ export const PlatformAdminScreen: React.FC = () => {
         actorStaffRecord: platformStaffRecord,
         operation: 'manage_packages',
       }).allowed,
-    [firebaseUser, platformStaffRecord]
+    [firebaseUser, platformStaffRecord, isPlatformAdmin]
   );
 
   const canManageStaff = useMemo(
@@ -206,11 +211,126 @@ export const PlatformAdminScreen: React.FC = () => {
         actorStaffRecord: platformStaffRecord,
         operation: 'manage_platform_staff',
       }).allowed,
-    [firebaseUser, platformStaffRecord]
+    [firebaseUser, platformStaffRecord, isPlatformAdmin]
   );
 
-  // Access Gate if user is neither Permanent Owner nor Active Delegated Staff
+  // Access Gate if user is neither Verified Permanent Owner nor Active Delegated Staff
   if (!canAccessPlatformAdmin) {
+    if (ownerSessionDiagnostic.requiresEmailVerificationForAdmin) {
+      return (
+        <div className="py-6 px-4 max-w-2xl mx-auto space-y-5" dir="rtl">
+          <div className="rounded-3xl bg-white dark:bg-[#1E1C1A] border border-amber-300 dark:border-amber-800/80 p-6 shadow-sm space-y-4">
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h1 className="text-base sm:text-lg font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+                    يلزم توثيق البريد الإلكتروني لتفعيل صلاحيات المالك الدائم
+                  </h1>
+                  <span className="px-2.5 py-0.5 rounded-lg bg-amber-100 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200 text-[11px] font-bold font-mono">
+                    email_verified: false
+                  </span>
+                </div>
+                <p className="text-xs text-[#77716B] dark:text-[#ACA59C] leading-relaxed">
+                  {ownerSessionDiagnostic.statusSummaryAr}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-[#F7F5F0] dark:bg-[#161514] border border-[#E7E1D8] dark:border-[#383431] p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+              <div>
+                <div className="text-[11px] text-[#77716B] dark:text-[#ACA59C]">البريد المسجل في الجلسة</div>
+                <div className="font-mono font-bold text-[#292725] dark:text-[#F4F1EA] mt-0.5" dir="ltr">
+                  {ownerSessionDiagnostic.normalizedEmail}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[#77716B] dark:text-[#ACA59C]">الصفة المطابقة</div>
+                <div className="font-bold text-[#743B46] dark:text-[#E5B9C0] mt-0.5">
+                  {ownerSessionDiagnostic.matchedOwnerRole === 'primary_owner'
+                    ? 'المالك الدائم الرئيسي'
+                    : 'المالك الدائم الاحتياطي'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[#77716B] dark:text-[#ACA59C]">مزود الدخول الحالي</div>
+                <div className="font-mono font-bold text-[#292725] dark:text-[#F4F1EA] mt-0.5" dir="ltr">
+                  {ownerSessionDiagnostic.authProviderIds.join(', ') || 'password'}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+              <strong>قاعدة الأمان المطبقة في الكود وفي Firestore:</strong> لا تُمنح صلاحيات الإدارة السيادية بالاعتماد على نص البريد الإلكتروني وحده دون التحقق الفعلي من ملكية البريد (<code className="font-mono">email_verified == true</code>).
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={isVerifyingOwner}
+                onClick={async () => {
+                  setIsVerifyingOwner(true);
+                  try {
+                    await loginWithGoogle();
+                  } finally {
+                    setIsVerifyingOwner(false);
+                  }
+                }}
+                className="min-h-[44px] px-4 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-extrabold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>تسجيل الدخول الموثّق عبر Google (تفعيل فوري)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isVerifyingOwner}
+                onClick={async () => {
+                  setIsVerifyingOwner(true);
+                  try {
+                    await resendVerificationEmail();
+                  } finally {
+                    setIsVerifyingOwner(false);
+                  }
+                }}
+                className="min-h-[44px] px-4 rounded-2xl bg-[#EFECE6] hover:bg-[#E5DFD6] dark:bg-[#2B2826] dark:hover:bg-[#383431] text-[#292725] dark:text-[#F4F1EA] text-xs font-bold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+              >
+                <span>إرسال رابط توثيق البريد</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isVerifyingOwner}
+                onClick={async () => {
+                  setIsVerifyingOwner(true);
+                  try {
+                    await refreshAuthUser();
+                  } finally {
+                    setIsVerifyingOwner(false);
+                  }
+                }}
+                className="min-h-[44px] px-4 rounded-2xl bg-[#EFECE6] hover:bg-[#E5DFD6] dark:bg-[#2B2826] dark:hover:bg-[#383431] text-[#292725] dark:text-[#F4F1EA] text-xs font-bold inline-flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-4 h-4 ${isVerifyingOwner ? 'animate-spin' : ''}`} />
+                <span>تحديث وفحص حالة التوثيق الآن</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveScreen('more')}
+                className="min-h-[44px] px-4 rounded-2xl border border-[#DFD8CE] dark:border-[#383431] text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowRight className="w-4 h-4" />
+                <span>العودة إلى المزيد</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="py-10 px-4 max-w-lg mx-auto text-center space-y-4" dir="rtl">
         <div className="w-14 h-14 rounded-3xl bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 flex items-center justify-center mx-auto">

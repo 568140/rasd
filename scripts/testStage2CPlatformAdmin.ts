@@ -12,6 +12,7 @@ import {
   validateAndBuildPlatformStaffRecord,
   buildPlatformClientAccountSummary,
   evaluateAccountAccessGate,
+  inspectOwnerSessionDiagnostic,
   verifyPlatformOwnerIdentity,
   isPermanentPlatformOwnerEmail,
   DEFAULT_SUBSCRIPTION_PACKAGES,
@@ -404,6 +405,35 @@ assert.equal(legacySummary.isPermanentOwner, false);
 assert.equal(legacySummary.source, 'legacy_workspace');
 console.log(
   '✅ 8. الحسابات الحالية (isGrandfatheredLegacy) تعمل وتظهر في لوحة الإدارة دون أي ترحيل قسري أو تعطيل.'
+);
+
+// 9. اختبار فحص حالة توثيق البريد الفعلية لحساب المالك وعدم منح الصلاحيات الإدارية لنص البريد غير الموثق
+const unverifiedOwnerDiag = inspectOwnerSessionDiagnostic({
+  uid: 'uid_owner_unverified',
+  email: 'ahah26h@gmail.com',
+  emailVerified: false,
+  providerData: [{ providerId: 'password' }],
+});
+assert.equal(unverifiedOwnerDiag.isPermanentOwnerEmailMatch, true);
+assert.equal(unverifiedOwnerDiag.matchedOwnerRole, 'backup_owner');
+assert.equal(unverifiedOwnerDiag.emailVerified, false);
+assert.equal(unverifiedOwnerDiag.isVerifiedOwner, false);
+assert.equal(unverifiedOwnerDiag.requiresEmailVerificationForAdmin, true);
+assert.equal(unverifiedOwnerDiag.rejectionReason, 'unverified_email_token');
+
+const verifiedOwnerDiag = inspectOwnerSessionDiagnostic({
+  uid: 'uid_owner_verified',
+  email: 'ahah26h@gmail.com',
+  emailVerified: true,
+  providerData: [{ providerId: 'google.com' }],
+});
+assert.equal(verifiedOwnerDiag.isPermanentOwnerEmailMatch, true);
+assert.equal(verifiedOwnerDiag.emailVerified, true);
+assert.equal(verifiedOwnerDiag.isVerifiedOwner, true);
+assert.equal(verifiedOwnerDiag.requiresEmailVerificationForAdmin, false);
+assert.equal(verifiedOwnerDiag.rejectionReason, null);
+console.log(
+  '✅ 9. فحص توثيق جلسة المالك الدائم يكتشف البريد غير الموثق ويوفر مسار التوثيق الآمن دون منح صلاحيات لنص البريد وحده.'
 );
 
 console.log('\n🎉 اكتملت جميع اختبارات المرحلة 2-C (لوحة إدارة منصة «رَصْد») بنجاح تام!');

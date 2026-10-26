@@ -22,6 +22,9 @@ export const RegistrationApprovalGateScreen: React.FC = () => {
     workspace,
     accountApprovalStatus,
     registrationRequest,
+    ownerSessionDiagnostic,
+    loginWithGoogle,
+    refreshAuthUser,
     refreshRegistrationStatus,
     resendVerificationEmail,
     logout,
@@ -29,6 +32,7 @@ export const RegistrationApprovalGateScreen: React.FC = () => {
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isResendingEmail, setIsResendingEmail] = useState(false);
+  const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState(false);
 
   const isSuspended = accountApprovalStatus === 'suspended';
 
@@ -236,21 +240,75 @@ export const RegistrationApprovalGateScreen: React.FC = () => {
         )}
 
         {/* Email Verification Notice if not verified yet */}
-        {firebaseUser && !firebaseUser.emailVerified && (
-          <div className="p-3.5 rounded-2xl bg-[#EFECE6] dark:bg-[#2B2826] border border-[#DFD8CE] dark:border-[#3E3936] flex items-center justify-between gap-3 flex-wrap">
-            <div className="text-xs text-[#5C554E] dark:text-[#D5CFC7]">
-              <span className="font-bold block">تأكيد البريد الإلكتروني</span>
-              <span>يُنصح بتأكيد بريدك الإلكتروني لتسريع مراجعة واعتماد الحساب.</span>
+        {ownerSessionDiagnostic.requiresEmailVerificationForAdmin ? (
+          <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/35 border border-amber-300 dark:border-amber-800 space-y-3">
+            <div className="text-xs text-amber-950 dark:text-amber-200 leading-relaxed">
+              <span className="font-extrabold block mb-1">
+                تنبيه خاص بمالك المنصة ({ownerSessionDiagnostic.normalizedEmail}) — البريد غير موثّق (email_verified: false)
+              </span>
+              <span>
+                لا تُمنح صلاحيات المالك الدائم بالاعتماد على نص البريد الإلكتروني وحده قبل التحقق الفعلي من ملكية البريد. يمكنك توثيق الحساب فورًا بتسجيل الدخول عبر Google أو عبر رابط التوثيق المرسل لبريدك:
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={handleResendVerification}
-              disabled={isResendingEmail}
-              className="min-h-[36px] px-3.5 rounded-xl bg-white dark:bg-[#1E1C1A] border border-[#DFD8CE] dark:border-[#3E3936] text-xs font-bold hover:border-[#743B46] transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {isResendingEmail ? 'جاري الإرسال...' : 'إرسال رابط التأكيد'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={isGoogleLoggingIn}
+                onClick={async () => {
+                  setIsGoogleLoggingIn(true);
+                  try {
+                    await loginWithGoogle();
+                  } finally {
+                    setIsGoogleLoggingIn(false);
+                  }
+                }}
+                className="min-h-[38px] px-4 rounded-xl bg-[#743B46] text-white text-xs font-extrabold hover:bg-[#5E2F38] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isGoogleLoggingIn ? 'جاري التوثيق...' : 'تسجيل الدخول الموثّق عبر Google (تفعيل فوري)'}
+              </button>
+              <button
+                type="button"
+                onClick={handleResendVerification}
+                disabled={isResendingEmail}
+                className="min-h-[38px] px-3.5 rounded-xl bg-white dark:bg-[#1E1C1A] border border-amber-300 dark:border-amber-700 text-xs font-bold hover:border-[#743B46] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isResendingEmail ? 'جاري الإرسال...' : 'إرسال رابط توثيق البريد'}
+              </button>
+              <button
+                type="button"
+                disabled={isRefreshing}
+                onClick={async () => {
+                  setIsRefreshing(true);
+                  try {
+                    await refreshAuthUser();
+                  } finally {
+                    setIsRefreshing(false);
+                  }
+                }}
+                className="min-h-[38px] px-3.5 rounded-xl bg-white dark:bg-[#1E1C1A] border border-amber-300 dark:border-amber-700 text-xs font-bold hover:border-[#743B46] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                فحص حالة التوثيق الآن
+              </button>
+            </div>
           </div>
+        ) : (
+          firebaseUser &&
+          !firebaseUser.emailVerified && (
+            <div className="p-3.5 rounded-2xl bg-[#EFECE6] dark:bg-[#2B2826] border border-[#DFD8CE] dark:border-[#3E3936] flex items-center justify-between gap-3 flex-wrap">
+              <div className="text-xs text-[#5C554E] dark:text-[#D5CFC7]">
+                <span className="font-bold block">تأكيد البريد الإلكتروني</span>
+                <span>يُنصح بتأكيد بريدك الإلكتروني لتسريع مراجعة واعتماد الحساب.</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleResendVerification}
+                disabled={isResendingEmail}
+                className="min-h-[36px] px-3.5 rounded-xl bg-white dark:bg-[#1E1C1A] border border-[#DFD8CE] dark:border-[#3E3936] text-xs font-bold hover:border-[#743B46] transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isResendingEmail ? 'جاري الإرسال...' : 'إرسال رابط التأكيد'}
+              </button>
+            </div>
+          )
         )}
 
         {/* Action Buttons */}

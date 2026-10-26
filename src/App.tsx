@@ -168,6 +168,8 @@ const RasdShell: React.FC = () => {
     showToast,
     accountApprovalStatus,
     canAccessWorkScreens,
+    canAccessPlatformAdmin,
+    ownerSessionDiagnostic,
   } = useRasd();
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
@@ -611,6 +613,25 @@ const RasdShell: React.FC = () => {
             >
               التقارير
             </button>
+            {(isPlatformAdmin ||
+              canAccessPlatformAdmin ||
+              ownerSessionDiagnostic.requiresEmailVerificationForAdmin) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPropertyId(null);
+                  setSelectedTaxpayerId(null);
+                  setActiveScreen('platform_admin');
+                }}
+                className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+                  activeScreen === 'platform_admin'
+                    ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
+                    : 'border-transparent text-[#743B46] dark:text-[#E5B9C0] hover:opacity-80'
+                }`}
+              >
+                إدارة المنصة
+              </button>
+            )}
           </nav>
 
           {/* Left Zone (End in RTL): Notification Bell, Voice, Dark Mode & Menu */}

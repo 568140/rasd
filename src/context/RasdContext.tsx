@@ -47,8 +47,10 @@ import {
   buildRegistrationDecisionTransition,
   buildRegistrationRequestSummary,
   evaluateAccountAccessGate,
+  inspectOwnerSessionDiagnostic,
   isPermanentPlatformOwnerEmail,
   isPendingRegistrationProfileMarker,
+  OwnerSessionDiagnosticInfo,
   validateAndBuildPlatformStaffRecord,
   validateAndBuildSubscriptionPackageUpdate,
   validateTeamMemberAdditionLimit,
@@ -168,6 +170,7 @@ interface RasdContextValue {
   refreshReceivedRegistrationRequests: () => Promise<void>;
 
   // Stage 2-C: Platform Administration Dashboard (لوحة إدارة منصة رَصْد)
+  ownerSessionDiagnostic: OwnerSessionDiagnosticInfo;
   platformStaffRecord: PlatformStaff | null;
   canAccessPlatformAdmin: boolean;
   platformClientAccounts: PlatformClientAccountSummary[];
@@ -338,6 +341,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     RegistrationRequestMetadata[]
   >([]);
   const [platformStaffRecord, setPlatformStaffRecord] = useState<PlatformStaff | null>(null);
+  const [authSessionVersion, setAuthSessionVersion] = useState<number>(0);
   const [platformClientAccounts, setPlatformClientAccounts] = useState<
     PlatformClientAccountSummary[]
   >([]);
@@ -487,6 +491,21 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const uid = user.uid;
       applyOptimisticSession(user, customDisplayName);
 
+      // إذا كان البريد مطابقًا لأحد المالكين الدائمين وكان يظهر غير موثق محليًا، نتحقق أولًا من حالة التوثيق الفعلية في خادم Firebase Auth
+      if (isPermanentPlatformOwnerEmail(user.email) && !user.emailVerified) {
+        try {
+          if (typeof user.reload === 'function') {
+            await user.reload();
+            if (user.emailVerified && typeof user.getIdToken === 'function') {
+              await user.getIdToken(true);
+            }
+            setAuthSessionVersion((v) => v + 1);
+          }
+        } catch {
+          // ignore if offline
+        }
+      }
+
       const ownerCheck = verifyPlatformOwnerIdentity(user);
       if (ownerCheck.isVerifiedOwner) {
         setAccountApprovalStatus('approved');
@@ -627,10 +646,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             invitedMemberStatus = (memberSnap.data()?.status as 'active' | 'invited' | 'suspended') || 'active';
           }
 
-          const isVerifiedOwnerNow =
-            ownerCheck.isVerifiedOwner || isPermanentPlatformOwnerEmail(user.email);
+          // التحقق الصارم المتطابق مع licenseService.ts وقواعد Firestore: لا تُمنح صفة المالك الدائم إلا بتوثيق البريد الفعلي (emailVerified === true)
+          const isVerifiedOwnerNow = ownerCheck.isVerifiedOwner;
 
-          // الحساب الجديد المسجل ذاتيًا: لم يكن له سجل مستخدم أو مساحة عمل سابقة وليس مالكًا دائمًا ولا عضو فريق مدعوًا
+          // الحساب الجديد المسجل ذاتيًا: لم يكن له سجل مستخدم أو مساحة عمل سابقة وليس مالكًا دائمًا موثقًا ولا عضو فريق مدعوًا
           const isNewSelfRegistration =
             !isVerifiedOwnerNow &&
             !isInvitedTeamMember &&
@@ -734,7 +753,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           // للعملاء الجدد: تجهيز وتسجيل طلب الترخيص بحالة pending في /account_licenses/{activeWsId} وفي التخزين المحلي
           let resolvedLicense: AccountLicense | null = null;
-          if (isNewSelfRegistration) {
+          if (isNewSelfRegistration && !isPermanentPlatformOwnerEmail(email)) {
             const pendingLicense = buildPendingRegistrationLicense({
               workspaceId: activeWsId,
               ownerId: uid,
@@ -807,6 +826,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 };
               } else if (
                 !ownerCheck.isVerifiedOwner &&
+                !isPermanentPlatformOwnerEmail(email) &&
                 !isInvitedTeamMember &&
                 isPendingRegistrationProfileMarker(
                   userExistedPrior ? userSnap.data().jobTitle : initialJobTitle,
@@ -930,8 +950,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setRegistrationRequest(regSummary);
         } catch (error) {
           console.warn('Bootstrap Firestore notice at', currentStepPath, error);
-          // في حال الانقطاع عن الشبكة، نحافظ على حالة المالك الدائم أو الحالة المخزنة محليًا دون قفل الحسابات الحالية
-          if (ownerCheck.isVerifiedOwner || isPermanentPlatformOwnerEmail(user.email)) {
+          // في حال الانقطاع عن الشبكة، نحافظ على حالة المالك الدائم الموثق أو الحالة المخزنة محليًا دون قفل الحسابات الحالية
+          if (ownerCheck.isVerifiedOwner) {
             setAccountApprovalStatus('approved');
           } else {
             try {
@@ -1195,10 +1215,16 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [authReady, firebaseUser, userProfile?.activeWorkspaceId, canAccessWorkScreens]);
 
-  // Computed Permissions
+  // Computed Permissions & Owner Session Verification Diagnostic
+  const ownerSessionDiagnostic = useMemo(() => {
+    void authSessionVersion;
+    return inspectOwnerSessionDiagnostic(firebaseUser);
+  }, [firebaseUser, authSessionVersion]);
+
   const isPlatformAdmin = useMemo(() => {
+    void authSessionVersion;
     return verifyPlatformOwnerIdentity(firebaseUser).isVerifiedOwner;
-  }, [firebaseUser]);
+  }, [firebaseUser, authSessionVersion]);
 
   // فحص ما إذا كان المستخدم الحالي ضمن مساعدي المنصة المفوضين
   useEffect(() => {
@@ -1253,13 +1279,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [firebaseUser, isPlatformAdmin, platformStaffList]);
 
   const canAccessPlatformAdmin = useMemo(() => {
+    void authSessionVersion;
     if (isPlatformAdmin) return true;
     return authorizePlatformOperation({
       actorAuth: firebaseUser,
       actorStaffRecord: platformStaffRecord,
       operation: 'view_admin_dashboard',
     }).allowed;
-  }, [firebaseUser, isPlatformAdmin, platformStaffRecord]);
+  }, [firebaseUser, isPlatformAdmin, platformStaffRecord, authSessionVersion]);
 
   // جلب شامل لبيانات لوحة إدارة المنصة (الطلبات، العملاء والتراخيص، الباقات، والمساعدين) دون ترحيل جماعي
   const refreshPlatformAdminData = useCallback(async () => {
@@ -2369,8 +2396,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }).catch((err) => {
             console.error('Background workspace sync error:', err);
           });
-          if (verifyPlatformOwnerIdentity(res.user).isVerifiedOwner || isPermanentPlatformOwnerEmail(res.user.email)) {
+          if (verifyPlatformOwnerIdentity(res.user).isVerifiedOwner) {
             showToast('تم إنشاء وتفعيل حساب مالك المنصة الدائم بنجاح', 'success');
+          } else if (isPermanentPlatformOwnerEmail(res.user.email)) {
+            showToast(
+              'تم إنشاء الحساب ببريد مالك المنصة — يرجى توثيق البريد الإلكتروني أو تسجيل الدخول عبر Google لتفعيل صلاحيات الإدارة.',
+              'warning'
+            );
           } else {
             showToast(
               'تم استلام طلب تسجيل حسابك بنجاح — حسابك الآن بانتظار موافقة إدارة المنصة.',
@@ -2403,7 +2435,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!auth.currentUser) return;
     try {
       await sendEmailVerification(auth.currentUser);
-      showToast('تمت إعادة إرسال رسالة تأكيد البريد الإلكتروني.', 'success');
+      showToast('تم إرسال رابط توثيق البريد الإلكتروني إلى صندوق الوارد بنجاح.', 'success');
     } catch (error) {
       showToast(translateFirebaseError(error), 'error');
     }
@@ -2412,10 +2444,18 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshAuthUser = useCallback(async () => {
     if (!auth.currentUser) return;
     await auth.currentUser.reload();
+    if (typeof auth.currentUser.getIdToken === 'function') {
+      await auth.currentUser.getIdToken(true);
+    }
     const refreshed = auth.currentUser;
-    setFirebaseUser({ ...refreshed } as FirebaseUser);
+    setFirebaseUser(refreshed);
+    setAuthSessionVersion((v) => v + 1);
     await ensureUserAndWorkspace(refreshed);
-    showToast('تم تحديث بيانات الجلسة ومساحة العمل بنجاح!', 'success');
+    if (verifyPlatformOwnerIdentity(refreshed).isVerifiedOwner) {
+      showToast('تم التحقق من توثيق بريد المالك وتفعيل صلاحيات إدارة المنصة بنجاح!', 'success');
+    } else {
+      showToast('تم تحديث بيانات الجلسة وحالة توثيق البريد بنجاح.', 'info');
+    }
   }, [ensureUserAndWorkspace, showToast]);
 
   const logout = useCallback(async () => {
@@ -4204,6 +4244,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     receivedRegistrationRequests,
     refreshRegistrationStatus,
     refreshReceivedRegistrationRequests,
+    ownerSessionDiagnostic,
     platformStaffRecord,
     canAccessPlatformAdmin,
     platformClientAccounts,

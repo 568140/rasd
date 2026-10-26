@@ -149,6 +149,7 @@ export interface PlatformOwnerAuthCandidate {
   uid?: string | null;
   email?: string | null;
   emailVerified?: boolean | null;
+  providerData?: Array<{ providerId?: string | null } | null> | null;
 }
 
 export interface PlatformOwnerVerificationResult {
@@ -165,6 +166,19 @@ export interface PlatformOwnerVerificationResult {
     | 'missing_email'
     | 'unverified_email_token'
     | 'not_in_permanent_owners_list';
+}
+
+export interface OwnerSessionDiagnosticInfo {
+  isAuthenticated: boolean;
+  normalizedEmail: string;
+  isPermanentOwnerEmailMatch: boolean;
+  matchedOwnerRole: PlatformOwnerRole | null;
+  emailVerified: boolean;
+  isVerifiedOwner: boolean;
+  authProviderIds: string[];
+  rejectionReason: PlatformOwnerVerificationResult['rejectionReason'];
+  requiresEmailVerificationForAdmin: boolean;
+  statusSummaryAr: string;
 }
 
 /**
@@ -202,7 +216,7 @@ export function getPermanentOwnerRole(email: string | null | undefined): Platfor
 
 /**
  * التحقق الصارم من هوية مالك المنصة بالاعتماد الحصري على جلسة Firebase Auth الموثقة (request.auth / firebaseUser)
- * دون الاعتماد على حقل البريد القابل للتعديل في وثيقة Firestore (/users) لمنع انتحال الصلاحيات.
+ * دون الاعتماد على حقل البريد القابل للتعديل في وثيقة Firestore (/users) ودون منح صلاحيات لنص البريد وحده قبل توثيقه.
  */
 export function verifyPlatformOwnerIdentity(
   authCandidate: PlatformOwnerAuthCandidate | null | undefined
@@ -270,6 +284,57 @@ export function verifyPlatformOwnerIdentity(
     isFreeLifetime: true,
     planId: 'owner_permanent',
     rejectionReason: null,
+  };
+}
+
+/**
+ * فحص تشخيصي آمن لحالة جلسة المالك وتوثيق البريد الفعلي دون كشف أي أسرار أو منح صلاحيات غير موثقة
+ */
+export function inspectOwnerSessionDiagnostic(
+  authCandidate: PlatformOwnerAuthCandidate | null | undefined
+): OwnerSessionDiagnosticInfo {
+  const verification = verifyPlatformOwnerIdentity(authCandidate);
+  const isAuthenticated = Boolean(
+    authCandidate && typeof authCandidate.uid === 'string' && authCandidate.uid.trim()
+  );
+  const normalizedEmail = normalizeEmail(authCandidate?.email);
+  const matchedOwnerRole = getPermanentOwnerRole(normalizedEmail);
+  const isPermanentOwnerEmailMatch = matchedOwnerRole !== null;
+  const emailVerified = authCandidate?.emailVerified === true;
+  const rawProviders = Array.isArray(authCandidate?.providerData)
+    ? authCandidate!.providerData
+    : [];
+  const authProviderIds = rawProviders
+    .map((p) => (p && typeof p.providerId === 'string' ? p.providerId.trim() : ''))
+    .filter(Boolean);
+
+  const requiresEmailVerificationForAdmin =
+    isAuthenticated && isPermanentOwnerEmailMatch && !emailVerified;
+
+  let statusSummaryAr = 'حساب مستخدم عادي غير مدرج ضمن المالكين الدائمين للمنصة.';
+  if (!isAuthenticated) {
+    statusSummaryAr = 'لم يتم تسجيل الدخول في جلسة المصادقة الحالية.';
+  } else if (verification.isVerifiedOwner) {
+    statusSummaryAr =
+      matchedOwnerRole === 'primary_owner'
+        ? 'جلسة مالك دائم رئيسي موثّقة بالكامل (email_verified: true) — الصلاحيات الإدارية مفعّلة.'
+        : 'جلسة مالك دائم احتياطي موثّقة بالكامل (email_verified: true) — الصلاحيات الإدارية مفعّلة.';
+  } else if (requiresEmailVerificationForAdmin) {
+    statusSummaryAr =
+      'البريد المسجل مطابق لحساب مالك دائم معتمد، لكن البريد غير موثّق في جلسة المصادقة الحالية (email_verified: false). حُجبت الصلاحيات الإدارية مؤقتًا لحين توثيق البريد أو الدخول الموثّق عبر Google.';
+  }
+
+  return {
+    isAuthenticated,
+    normalizedEmail,
+    isPermanentOwnerEmailMatch,
+    matchedOwnerRole,
+    emailVerified,
+    isVerifiedOwner: verification.isVerifiedOwner,
+    authProviderIds,
+    rejectionReason: verification.rejectionReason,
+    requiresEmailVerificationForAdmin,
+    statusSummaryAr,
   };
 }
 

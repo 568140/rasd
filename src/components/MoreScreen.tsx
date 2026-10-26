@@ -49,6 +49,10 @@ export const MoreScreen: React.FC = () => {
     isOwner,
     isPlatformAdmin,
     canAccessPlatformAdmin,
+    ownerSessionDiagnostic,
+    loginWithGoogle,
+    resendVerificationEmail,
+    refreshAuthUser,
     isOnline,
     pendingSyncCount,
     darkMode,
@@ -90,13 +94,41 @@ export const MoreScreen: React.FC = () => {
   const [wsTaxRate, setWsTaxRate] = useState(String(workspace?.taxRatePercent ?? 0));
   const [wsRegion, setWsRegion] = useState(workspace?.regionName || 'عدن');
 
+  const [isVerifyingOwnerAction, setIsVerifyingOwnerAction] = useState(false);
+
+  const showPlatformAdminEntry =
+    isPlatformAdmin ||
+    canAccessPlatformAdmin ||
+    ownerSessionDiagnostic.requiresEmailVerificationForAdmin;
+
+  const pendingRegCount = receivedRegistrationRequests.filter((r) => r.status === 'pending').length;
+
   const navItems: {
     id: ScreenId;
     label: string;
     desc: string;
     icon: React.ReactNode;
     badgeBg: string;
+    highlightBadge?: string;
   }[] = [
+    ...(showPlatformAdminEntry
+      ? [
+          {
+            id: 'platform_admin' as ScreenId,
+            label: 'إدارة المنصة (لوحة إدارة منصة رَصْد)',
+            desc: ownerSessionDiagnostic.requiresEmailVerificationForAdmin
+              ? 'حساب مالك دائم معتمد — يتطلب توثيق البريد الإلكتروني أو الدخول عبر Google لتفعيل الصلاحيات الإدارية'
+              : 'إدارة طلبات التسجيل، حسابات العملاء والاشتراكات، الباقات، مساعدي المنصة، وسجل التدقيق الإداري',
+            icon: <Shield className="w-5 h-5 text-[#743B46] dark:text-[#E5B9C0]" />,
+            badgeBg: 'bg-[#743B46]/15 dark:bg-[#743B46]/30',
+            highlightBadge: ownerSessionDiagnostic.requiresEmailVerificationForAdmin
+              ? 'بانتظار توثيق البريد'
+              : isPlatformAdmin
+              ? `مالك دائم موثّق · ${pendingRegCount} طلب معلق`
+              : `مساعد مفوّض · ${pendingRegCount} طلب معلق`,
+          },
+        ]
+      : []),
     {
       id: 'taxpayers',
       label: 'المكلفون والعقارات (الملف الميداني الموحد)',
@@ -290,12 +322,137 @@ export const MoreScreen: React.FC = () => {
 
       <ThemeSelectorModal isOpen={isThemeOpen} onClose={() => setIsThemeOpen(false)} />
 
+      {/* فحص حالة توثيق البريد الفعلية لحساب المالك والمسار الآمن للتفعيل */}
+      {ownerSessionDiagnostic.isPermanentOwnerEmailMatch && (
+        <div
+          className={`rounded-3xl border p-4 sm:p-5 shadow-xs space-y-3 ${
+            ownerSessionDiagnostic.isVerifiedOwner
+              ? 'bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-800/70'
+              : 'bg-amber-50/90 dark:bg-amber-950/30 border-amber-300 dark:border-amber-800/80'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                  ownerSessionDiagnostic.isVerifiedOwner
+                    ? 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300'
+                }`}
+              >
+                {ownerSessionDiagnostic.isVerifiedOwner ? (
+                  <CheckCircle2 className="w-5 h-5" />
+                ) : (
+                  <AlertCircle className="w-5 h-5" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-extrabold text-slate-900 dark:text-white">
+                    {ownerSessionDiagnostic.isVerifiedOwner
+                      ? 'حالة حساب المالك الدائم: موثّق ومفعّل بالكامل'
+                      : 'تنبيه أمني لمالك المنصة: البريد الإلكتروني غير موثّق في هذه الجلسة'}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-lg text-[11px] font-bold font-mono ${
+                      ownerSessionDiagnostic.isVerifiedOwner
+                        ? 'bg-emerald-100 dark:bg-emerald-900/70 text-emerald-800 dark:text-emerald-200'
+                        : 'bg-amber-200/80 dark:bg-amber-900/70 text-amber-900 dark:text-amber-200'
+                    }`}
+                  >
+                    email_verified: {String(ownerSessionDiagnostic.emailVerified)}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+                  {ownerSessionDiagnostic.statusSummaryAr}
+                </p>
+              </div>
+            </div>
+
+            {ownerSessionDiagnostic.isVerifiedOwner && (
+              <button
+                type="button"
+                onClick={() => setActiveScreen('platform_admin')}
+                className="min-h-[40px] px-4 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-extrabold flex items-center gap-2 cursor-pointer transition-colors shrink-0"
+              >
+                <Shield className="w-4 h-4" />
+                <span>فتح إدارة المنصة الآن</span>
+              </button>
+            )}
+          </div>
+
+          {ownerSessionDiagnostic.requiresEmailVerificationForAdmin && (
+            <div className="pt-2 border-t border-amber-200/80 dark:border-amber-800/60 space-y-2.5">
+              <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                حفاظًا على أمان Firebase وقواعد Firestore، لا تُمنح صلاحيات «إدارة المنصة» بالاعتماد على نص البريد وحده قبل توثيق ملكية البريد. يمكنك تفعيل صلاحياتك فورًا بإحدى الطرق الآمنة التالية:
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isVerifyingOwnerAction}
+                  onClick={async () => {
+                    setIsVerifyingOwnerAction(true);
+                    try {
+                      await loginWithGoogle();
+                    } finally {
+                      setIsVerifyingOwnerAction(false);
+                    }
+                  }}
+                  className="min-h-[40px] px-4 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>تسجيل الدخول الموثّق عبر Google (موصى به — تفعيل فوري)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isVerifyingOwnerAction}
+                  onClick={async () => {
+                    setIsVerifyingOwnerAction(true);
+                    try {
+                      await resendVerificationEmail();
+                    } finally {
+                      setIsVerifyingOwnerAction(false);
+                    }
+                  }}
+                  className="min-h-[40px] px-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-slate-800 dark:text-slate-100 text-xs font-bold hover:border-[#743B46] cursor-pointer transition-colors disabled:opacity-50"
+                >
+                  إرسال رابط توثيق البريد الإلكتروني
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isVerifyingOwnerAction}
+                  onClick={async () => {
+                    setIsVerifyingOwnerAction(true);
+                    try {
+                      await refreshAuthUser();
+                    } finally {
+                      setIsVerifyingOwnerAction(false);
+                    }
+                  }}
+                  className="min-h-[40px] px-3.5 rounded-2xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-slate-800 dark:text-slate-100 text-xs font-bold flex items-center gap-1.5 hover:border-[#743B46] cursor-pointer transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isVerifyingOwnerAction ? 'animate-spin' : ''}`} />
+                  <span>تحديث وفحص حالة التوثيق الآن</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main Modules Directory */}
       <div className="bg-white dark:bg-[#0D1829] border border-slate-200/80 dark:border-slate-800/80 rounded-3xl overflow-hidden shadow-xs">
-        <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800/80">
+        <div className="p-4 sm:p-5 border-b border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-sm font-extrabold text-slate-900 dark:text-white">
             وحدات وشاشات النظام المتكاملة
           </h2>
+          {showPlatformAdminEntry && (
+            <span className="text-[11px] font-bold text-[#743B46] dark:text-[#E5B9C0]">
+              يتضمن خيار «إدارة المنصة» في أعلى القائمة
+            </span>
+          )}
         </div>
         <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
           {navItems.map((item) => (
@@ -303,14 +460,27 @@ export const MoreScreen: React.FC = () => {
               key={item.id}
               type="button"
               onClick={() => setActiveScreen(item.id)}
-              className="w-full min-h-[66px] px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors text-right cursor-pointer"
+              className={`w-full min-h-[66px] px-5 py-3.5 flex items-center justify-between gap-3 transition-colors text-right cursor-pointer ${
+                item.id === 'platform_admin'
+                  ? 'bg-[#743B46]/5 hover:bg-[#743B46]/10 dark:bg-[#743B46]/15 dark:hover:bg-[#743B46]/25'
+                  : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+              }`}
             >
               <div className="flex items-center gap-3.5">
                 <div className={`w-11 h-11 rounded-2xl ${item.badgeBg} flex items-center justify-center shrink-0`}>
                   {item.icon}
                 </div>
                 <div>
-                  <div className="text-sm font-extrabold text-slate-900 dark:text-white">{item.label}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-extrabold text-slate-900 dark:text-white">
+                      {item.label}
+                    </span>
+                    {item.highlightBadge && (
+                      <span className="px-2 py-0.5 rounded-lg bg-[#743B46] text-white text-[11px] font-bold">
+                        {item.highlightBadge}
+                      </span>
+                    )}
+                  </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{item.desc}</div>
                 </div>
               </div>

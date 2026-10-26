@@ -2,7 +2,7 @@
  * RASD Unified Service Worker (Workbox injectManifest + Web Push & Notification Click Handling)
  */
 
-const CACHE_NAME = 'rasd-cache-v4';
+const CACHE_NAME = 'rasd-cache-v5';
 const PRECACHE_MANIFEST = self.__WB_MANIFEST || [];
 const PRECACHE_URLS = Array.from(
   new Set([
@@ -97,7 +97,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Same-origin static assets & Google Fonts: Cache-first with network fallback & cache update
+  // Same-origin JS/CSS bundles: Network-first with cache fallback so deployed UI changes appear immediately
+  if (
+    url.origin === self.location.origin &&
+    (url.pathname.startsWith('/assets/') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css'))
+  ) {
+    event.respondWith(
+      fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseClone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone)).catch(() => {});
+          }
+          return networkResponse;
+        })
+        .catch(async () => {
+          const cached = await caches.match(request);
+          return cached || Response.error();
+        })
+    );
+    return;
+  }
+
+  // Same-origin static icons/images & Google Fonts: Cache-first with network fallback & cache update
   if (
     url.origin === self.location.origin ||
     url.hostname.includes('fonts.googleapis.com') ||
