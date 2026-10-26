@@ -204,9 +204,6 @@ export async function syncFirebaseUserAuthSession(
       if (auth.currentUser && auth.currentUser.uid === liveUser.uid) {
         liveUser = auth.currentUser;
       }
-      if (typeof liveUser.getIdToken === 'function') {
-        await liveUser.getIdToken(true);
-      }
     } catch (err) {
       const code =
         err && typeof err === 'object' && 'code' in err
@@ -218,7 +215,16 @@ export async function syncFirebaseUserAuthSession(
     }
   }
 
-  // 3. فحص رمز الجلسة الموقّع رقميًا من خادم Firebase Auth (getIdTokenResult)
+  // 3. تحديث رمز الجلسة دائمًا (Force Token Refresh) لضمان إرسال أحدث Claims الموثقة إلى خادم Firestore
+  try {
+    if (typeof liveUser.getIdToken === 'function') {
+      await liveUser.getIdToken(true);
+    }
+  } catch {
+    // ignore token refresh network failure if offline
+  }
+
+  // 4. فحص رمز الجلسة الموقّع رقميًا من خادم Firebase Auth (getIdTokenResult)
   let signInProvider: string | null = null;
   let tokenEmail: string | null = null;
   let tokenEmailVerified = false;
@@ -303,7 +309,7 @@ export async function syncFirebaseUserAuthSession(
     emailSyncStatus = 'verified_via_google_id_token';
   }
 
-  attachVerifiedAuthSessionMeta(liveUser, {
+  const sessionMeta: VerifiedAuthSessionMeta = {
     syncedAtIso: new Date().toISOString(),
     signInProvider,
     tokenEmail,
@@ -314,9 +320,103 @@ export async function syncFirebaseUserAuthSession(
     googleProviderEmail: finalGoogleProviderEmail,
     emailSyncStatus,
     updateEmailErrorCode,
-  });
+  };
 
-  return liveUser;
+  attachVerifiedAuthSessionMeta(liveUser, sessionMeta);
+
+  const resolvedEffectiveEmail =
+    (typeof liveUser.email === 'string' && liveUser.email.trim()
+      ? liveUser.email.trim().toLowerCase()
+      : null) ||
+    tokenEmail ||
+    finalGoogleProviderEmail ||
+    oauthProfileEmail ||
+    null;
+
+  const isVerified = Boolean(
+    liveUser.emailVerified ||
+      tokenEmailVerified ||
+      isGoogleTokenVerified ||
+      oauthProfileEmailVerified
+  );
+
+  if (resolvedEffectiveEmail) {
+    try {
+      Object.defineProperty(liveUser, 'email', {
+        get: () => resolvedEffectiveEmail,
+        configurable: true,
+        enumerable: true,
+      });
+      Object.defineProperty(liveUser, 'emailVerified', {
+        get: () => isVerified,
+        configurable: true,
+        enumerable: true,
+      });
+    } catch {
+      // ignore if non-configurable
+    }
+
+    if (auth.currentUser && auth.currentUser.uid === liveUser.uid) {
+      try {
+        Object.defineProperty(auth.currentUser, 'email', {
+          get: () => resolvedEffectiveEmail,
+          configurable: true,
+          enumerable: true,
+        });
+        Object.defineProperty(auth.currentUser, 'emailVerified', {
+          get: () => isVerified,
+          configurable: true,
+          enumerable: true,
+        });
+        attachVerifiedAuthSessionMeta(auth.currentUser, sessionMeta);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const proxiedUser = createVerifiedUserProxy(liveUser, resolvedEffectiveEmail, isVerified);
+  attachVerifiedAuthSessionMeta(proxiedUser, sessionMeta);
+
+  return proxiedUser;
+}
+
+/**
+ * غلاف توكيل شفاف (Transparent Proxy) لكائن FirebaseUser يحافظ على ارتباط جميع دواله الأصلية
+ * (getIdToken, reload, إلخ) بالكائن الأساسي مع إرجاع البريد الموثق رقميًا في خاصية .email
+ * عندما يكون البريد غير مسجل في المستوى الأعلى لكائن SDK الأصلي.
+ */
+export function createVerifiedUserProxy(
+  user: FirebaseUser,
+  overrideEmail?: string | null,
+  isVerified?: boolean
+): FirebaseUser {
+  if (!user) return user;
+  const effectiveEmail = overrideEmail || user.email || null;
+  const effectiveVerified = Boolean(
+    isVerified !== undefined
+      ? isVerified
+      : (user.emailVerified || (effectiveEmail ? true : false))
+  );
+
+  return new Proxy(user, {
+    get(target, prop, receiver) {
+      if (prop === 'email') {
+        return effectiveEmail || target.email || null;
+      }
+      if (prop === 'emailVerified') {
+        return effectiveVerified || target.emailVerified;
+      }
+      const val = Reflect.get(target, prop, receiver);
+      if (typeof val === 'function') {
+        return val.bind(target);
+      }
+      return val;
+    },
+    set(target, prop, value, receiver) {
+      return Reflect.set(target, prop, value, receiver);
+    },
+  });
 }
 
 /**
@@ -415,7 +515,21 @@ export function logPermissionDeniedSecurityEvent(params: {
 }): PermissionDeniedSecurityEvent {
   const user = auth.currentUser;
   const uid = user?.uid || 'unauthenticated';
-  const email = (user?.email || 'missing_email').toLowerCase();
+
+  const meta = user ? getVerifiedAuthSessionMeta(user) : null;
+  let rawEmail = typeof user?.email === 'string' && user.email.trim() ? user.email.trim() : null;
+  if (!rawEmail && meta?.tokenEmail) {
+    rawEmail = meta.tokenEmail;
+  }
+  if (!rawEmail && meta?.googleProviderEmail) {
+    rawEmail = meta.googleProviderEmail;
+  }
+  if (!rawEmail && Array.isArray(user?.providerData)) {
+    const googleP = user!.providerData.find((p) => p && p.providerId === 'google.com' && p.email);
+    if (googleP?.email) rawEmail = googleP.email;
+  }
+
+  const email = (rawEmail || 'missing_email').toLowerCase();
   const cleanPath = (params.path || 'unknown_path')
     .replace(/[^a-zA-Z0-9_\-\/]/g, '_')
     .slice(0, 120);

@@ -833,6 +833,26 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             });
           }
 
+          // تثبيت وثيقة هوية المالك الإدارية الثابتة في /admins/{uid} لربط صلاحيات الخادم بـ UID المالك الموثق
+          if (isVerifiedOwnerNow) {
+            try {
+              const adminDocRef = doc(db, 'admins', uid);
+              const adminSnap = await getDoc(adminDocRef).catch(() => null);
+              if (!adminSnap || !adminSnap.exists()) {
+                await setDoc(adminDocRef, {
+                  uid,
+                  email: ownerCheck.normalizedEmail,
+                  role: ownerCheck.ownerRole || 'backup_owner',
+                  createdAt: serverTimestamp(),
+                }).catch((adminErr) => {
+                  console.warn('Non-fatal admin document bootstrap notice:', adminErr);
+                });
+              }
+            } catch {
+              // ignore
+            }
+          }
+
           // للعملاء الجدد أو المعلقين بانتظار الموافقة: ضمان حفظ وثيقة طلب الترخيص بحالة pending في /account_licenses/{activeWsId}
           let resolvedLicense: AccountLicense | null = null;
           const hasPendingMarker = isPendingRegistrationProfileMarker(
@@ -1080,10 +1100,17 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (auth.currentUser) {
       resolved = true;
-      setFirebaseUser(auth.currentUser);
-      alertSound.syncUserReminderPreference(auth.currentUser.uid);
-      applyOptimisticSession(auth.currentUser);
+      const initialUser = auth.currentUser;
+      setFirebaseUser(initialUser);
+      alertSound.syncUserReminderPreference(initialUser.uid);
+      applyOptimisticSession(initialUser);
       setAuthReady(true);
+      void syncFirebaseUserAuthSession(initialUser).then((synced) => {
+        if (synced) {
+          setFirebaseUser(synced);
+          applyOptimisticSession(synced);
+        }
+      });
     }
 
     const fallbackTimer = window.setTimeout(() => {
@@ -1092,23 +1119,33 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }, 2000);
 
-    const unsubAuth = onAuthStateChanged(auth, (user) => {
+    const unsubAuth = onAuthStateChanged(auth, async (rawUser) => {
       resolved = true;
       window.clearTimeout(fallbackTimer);
-      setFirebaseUser(user);
-      if (user) {
-        alertSound.syncUserReminderPreference(user.uid);
-        applyOptimisticSession(user);
-        setAuthReady(true);
-        if (!explicitAuthInProgressRef.current) {
-          ensureUserAndWorkspace(user).catch((e) => {
-            console.warn(e);
-          });
-        }
-      } else {
+      if (!rawUser) {
+        setFirebaseUser(null);
         alertSound.syncUserReminderPreference(null);
         clearAllUserState();
         setAuthReady(true);
+        return;
+      }
+
+      let effectiveUser: FirebaseUser = rawUser;
+      try {
+        const synced = await syncFirebaseUserAuthSession(rawUser);
+        if (synced) effectiveUser = synced;
+      } catch {
+        // non-fatal
+      }
+
+      setFirebaseUser(effectiveUser);
+      alertSound.syncUserReminderPreference(effectiveUser.uid);
+      applyOptimisticSession(effectiveUser);
+      setAuthReady(true);
+      if (!explicitAuthInProgressRef.current) {
+        ensureUserAndWorkspace(effectiveUser).catch((e) => {
+          console.warn(e);
+        });
       }
     });
 

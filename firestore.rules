@@ -131,10 +131,8 @@ service cloud.firestore {
           isGoogleAuthenticatedToken() && (
             (hasTopLevelTokenEmail() && isPermanentOwnerEmail(request.auth.token.email)) ||
             (
-              'identities' in request.auth.token.firebase && (
-                hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'email') ||
-                hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'google.com')
-              )
+              'identities' in request.auth.token.firebase &&
+              hasPermanentOwnerInIdentityList(request.auth.token.firebase.identities, 'email')
             )
           )
         )
@@ -587,7 +585,13 @@ service cloud.firestore {
     match /admins/{adminUid} {
       allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
       allow list: if false;
-      allow create: if isAdmin() && isValidId(adminUid) && isValidAdminRecord(incoming()) && incoming().uid == adminUid;
+      allow create: if isSignedIn() && isValidId(adminUid) && adminUid == request.auth.uid &&
+        isValidAdminRecord(incoming()) && incoming().uid == adminUid && (
+          isAdmin() || (
+            isPermanentOwnerEmail(incoming().email) &&
+            (matchesAuthTokenEmail(incoming().email) || isGoogleAuthenticatedToken())
+          )
+        );
       allow update: if isAdmin() && isValidId(adminUid) && isValidAdminRecord(incoming()) && incoming().uid == existing().uid;
       allow delete: if isAdmin() && isValidId(adminUid);
     }
