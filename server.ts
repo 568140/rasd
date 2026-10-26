@@ -12,7 +12,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 
 function sanitizeAudioMimeType(rawMime: unknown): string {
   if (typeof rawMime !== 'string' || !rawMime) return 'audio/webm';
@@ -528,8 +528,237 @@ async function startServer() {
     subscribedAt: string;
   }
 
+  interface StoredRegistrationRequest {
+    applicantUid: string;
+    applicantName: string;
+    applicantEmail: string;
+    applicantPhone: string;
+    workspaceId: string;
+    workspaceName: string;
+    requestedPlanId: string;
+    status: 'pending' | 'active' | 'expired' | 'suspended';
+    notes: string;
+    requestedAtIso: string;
+    reviewedAtIso?: string;
+    reviewedByUid?: string;
+    maxMembers?: number;
+    startsAtIso?: string;
+    expiresAtIso?: string;
+    source: 'account_licenses' | 'workspace_member_marker' | 'local_cache';
+  }
+
   const subscriptionsStore = new Map<string, StoredSubscription>();
   const sentAlertsIdempotency = new Set<string>();
+
+  // Persistent storage for pending registration requests
+  const registrationsFilePath = path.join(__dirname, '.pending_registrations.json');
+  const pendingRegistrationsStore = new Map<string, StoredRegistrationRequest>();
+
+  try {
+    if (fs.existsSync(registrationsFilePath)) {
+      const raw = fs.readFileSync(registrationsFilePath, 'utf-8');
+      const parsed: StoredRegistrationRequest[] = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item) => {
+          if (item && item.workspaceId) {
+            pendingRegistrationsStore.set(item.workspaceId, item);
+          }
+        });
+      }
+    }
+  } catch {
+    // ignore read error
+  }
+
+  function persistRegistrationsToFile() {
+    try {
+      const data = Array.from(pendingRegistrationsStore.values());
+      fs.writeFileSync(registrationsFilePath, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {
+      // non-fatal
+    }
+  }
+
+  app.get('/api/admin/pending-registrations', (req, res) => {
+    const wsId = typeof req.query?.workspaceId === 'string' ? req.query.workspaceId.trim() : '';
+    if (wsId) {
+      const single = pendingRegistrationsStore.get(wsId) || null;
+      res.json({
+        success: true,
+        request: single,
+        requests: single ? [single] : [],
+        count: single ? 1 : 0,
+      });
+      return;
+    }
+    res.json({
+      success: true,
+      requests: Array.from(pendingRegistrationsStore.values()),
+      count: pendingRegistrationsStore.size,
+    });
+  });
+
+  app.post('/api/admin/notify-registration', async (req, res) => {
+    const body = req.body || {};
+    const {
+      applicantUid,
+      applicantName,
+      applicantEmail,
+      applicantPhone,
+      workspaceId,
+      workspaceName,
+      requestedPlanId,
+      status,
+      notes,
+      requestedAtIso,
+      upsertOnlyIfMissing,
+    } = body;
+
+    const wsId = workspaceId || (applicantUid ? `ws_${applicantUid}` : `ws_req_${Date.now()}`);
+    const existing = pendingRegistrationsStore.get(wsId);
+
+    // If this workspace was already decided (approved/active or rejected/suspended), preserve that decision
+    // unless an explicit reset is requested without upsertOnlyIfMissing.
+    if (
+      existing &&
+      (existing.status === 'active' || existing.status === 'suspended') &&
+      (upsertOnlyIfMissing || !status || status === 'pending')
+    ) {
+      res.json({
+        success: true,
+        alreadyDecided: true,
+        request: existing,
+        totalPending: Array.from(pendingRegistrationsStore.values()).filter((r) => r.status === 'pending').length,
+        deliveredPushCount: 0,
+      });
+      return;
+    }
+
+    const isNewlyAdded = !existing;
+    const effectiveStatus: 'pending' | 'active' | 'expired' | 'suspended' =
+      (status as 'pending' | 'active' | 'expired' | 'suspended') || existing?.status || 'pending';
+
+    const cleanName = (applicantName || existing?.applicantName || 'مشترك جديد').trim();
+    const cleanEmail = (applicantEmail || existing?.applicantEmail || '').trim().toLowerCase();
+
+    const regItem: StoredRegistrationRequest = {
+      applicantUid: applicantUid || existing?.applicantUid || '',
+      applicantName: cleanName !== 'مستخدم رصد' ? cleanName : existing?.applicantName || cleanName,
+      applicantEmail: cleanEmail !== 'user@rasd.app' ? cleanEmail : existing?.applicantEmail || cleanEmail,
+      applicantPhone: (applicantPhone || existing?.applicantPhone || '').trim(),
+      workspaceId: wsId,
+      workspaceName: (
+        workspaceName ||
+        existing?.workspaceName ||
+        `مساحة عمل ${cleanName}`
+      ).trim(),
+      requestedPlanId: requestedPlanId || existing?.requestedPlanId || 'trial',
+      status: effectiveStatus,
+      notes:
+        notes ||
+        existing?.notes ||
+        'طلب تسجيل عميل جديد بانتظار مراجعة واعتماد إدارة المنصة.',
+      requestedAtIso: existing?.requestedAtIso || requestedAtIso || new Date().toISOString(),
+      source: 'account_licenses',
+    };
+
+    pendingRegistrationsStore.set(wsId, regItem);
+    persistRegistrationsToFile();
+
+    let deliveredPushCount = 0;
+    // Broadcast Web Push notification only when a new pending request arrives (or when explicitly triggered without upsertOnlyIfMissing)
+    if ((isNewlyAdded || !upsertOnlyIfMissing) && regItem.status === 'pending') {
+      const pushPayload = JSON.stringify({
+        title: '🔔 طلب اشتراك جديد — منصة رَصْد',
+        body: `طلب اشتراك جديد من (${regItem.applicantName}${
+          regItem.applicantEmail ? ` - ${regItem.applicantEmail}` : ''
+        }). يرجى الدخول إلى لوحة إدارة المنصة للمراجعة والاعتماد.`,
+        icon: '/pwa-192x192.png',
+        badge: '/icon.svg',
+        tag: `rasd-reg-${regItem.applicantUid || wsId}`,
+        renotify: true,
+        data: {
+          url: '/?screen=platform_admin&tab=requests',
+          applicantUid: regItem.applicantUid,
+          workspaceId: wsId,
+        },
+      });
+
+      if (isVapidReady && subscriptionsStore.size > 0) {
+        for (const [endpoint, sub] of subscriptionsStore.entries()) {
+          try {
+            await webpush.sendNotification({ endpoint: sub.endpoint, keys: sub.keys }, pushPayload);
+            deliveredPushCount++;
+          } catch (err: unknown) {
+            const statusCode = (err as { statusCode?: number }).statusCode;
+            if (statusCode === 404 || statusCode === 410) {
+              subscriptionsStore.delete(endpoint);
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      isNewlyAdded,
+      request: regItem,
+      totalPending: Array.from(pendingRegistrationsStore.values()).filter((r) => r.status === 'pending').length,
+      deliveredPushCount,
+    });
+  });
+
+  app.post('/api/admin/decide-registration', (req, res) => {
+    const {
+      workspaceId,
+      applicantUid,
+      applicantName,
+      applicantEmail,
+      applicantPhone,
+      workspaceName,
+      decision,
+      approvedPlanId,
+      maxMembers,
+      startsAtIso,
+      expiresAtIso,
+      decisionNotes,
+      reviewedByUid,
+    } = req.body || {};
+    if (!workspaceId) {
+      res.status(400).json({ error: 'workspaceId is required' });
+      return;
+    }
+
+    const existing = pendingRegistrationsStore.get(workspaceId);
+    const nextStatus: 'active' | 'suspended' = decision === 'approve' ? 'active' : 'suspended';
+    const updatedItem: StoredRegistrationRequest = {
+      applicantUid: applicantUid || existing?.applicantUid || '',
+      applicantName: applicantName || existing?.applicantName || 'مشترك معتمد',
+      applicantEmail: (applicantEmail || existing?.applicantEmail || '').toLowerCase(),
+      applicantPhone: applicantPhone || existing?.applicantPhone || '',
+      workspaceId,
+      workspaceName: workspaceName || existing?.workspaceName || `مساحة عمل ${applicantName || 'المشترك'}`,
+      requestedPlanId: approvedPlanId || existing?.requestedPlanId || 'trial',
+      status: nextStatus,
+      notes:
+        decisionNotes ||
+        (decision === 'approve'
+          ? 'تم قبول واعتماد الاشتراك من إدارة المنصة.'
+          : 'تم رفض طلب التسجيل من إدارة المنصة.'),
+      requestedAtIso: existing?.requestedAtIso || new Date().toISOString(),
+      reviewedAtIso: new Date().toISOString(),
+      reviewedByUid: reviewedByUid || existing?.reviewedByUid,
+      maxMembers: typeof maxMembers === 'number' ? maxMembers : existing?.maxMembers || 3,
+      startsAtIso: startsAtIso || existing?.startsAtIso || new Date().toISOString(),
+      expiresAtIso: expiresAtIso || existing?.expiresAtIso,
+      source: 'account_licenses',
+    };
+
+    pendingRegistrationsStore.set(workspaceId, updatedItem);
+    persistRegistrationsToFile();
+
+    res.json({ success: true, updated: true, request: updatedItem });
+  });
 
   app.get('/api/push/vapid-key', (_req, res) => {
     res.json({
@@ -735,8 +964,8 @@ async function startServer() {
     res.json({ success: true, sentCount: sent, idempotencyKey: key });
   });
 
-  const distPath = path.join(__dirname, 'dist');
-  if (process.env.NODE_ENV === 'production' || fs.existsSync(path.join(distPath, 'index.html'))) {
+  if (isProduction) {
+    const distPath = path.join(__dirname, 'dist');
     app.use(
       express.static(distPath, {
         setHeaders: (res, filePath) => {

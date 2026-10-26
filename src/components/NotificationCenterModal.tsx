@@ -12,9 +12,10 @@ import {
   AlertTriangle,
   Trash2,
   CheckCheck,
+  UserCheck,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { Appointment, NotificationItem } from '../types/rasd';
+import { Appointment, NotificationItem, RegistrationRequestMetadata } from '../types/rasd';
 import {
   evaluateAppointmentStatus,
   getMinutesUntilAden,
@@ -42,6 +43,9 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     appointments,
     taxpayers,
     properties,
+    receivedRegistrationRequests,
+    canAccessPlatformAdmin,
+    decideRegistrationRequest,
     markNotificationRead,
     deleteNotification,
     clearAllNotifications,
@@ -53,13 +57,36 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     showToast,
   } = useRasd();
 
-  const [activeTab, setActiveTab] = useState<'all' | 'appointments' | 'alerts' | 'sounds'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'requests' | 'appointments' | 'alerts' | 'sounds'>('all');
   const [enablingPush, setEnablingPush] = useState(false);
   const [isCleaning, setIsCleaning] = useState(false);
+  const [isApprovingId, setIsApprovingId] = useState<string | null>(null);
   const [dismissedApptIds, setDismissedApptIds] = useState<Set<string>>(() => new Set());
   const [defaultReminderMins, setDefaultReminderMins] = useState<number>(() =>
     alertSound.getDefaultReminderMinutes()
   );
+
+  const pendingRequests = useMemo(() => {
+    if (!canAccessPlatformAdmin) return [];
+    return receivedRegistrationRequests.filter((r) => r.status === 'pending');
+  }, [canAccessPlatformAdmin, receivedRegistrationRequests]);
+
+  const handleQuickApprove = async (req: RegistrationRequestMetadata) => {
+    setIsApprovingId(req.workspaceId);
+    try {
+      await decideRegistrationRequest({
+        request: req,
+        decision: 'approve',
+        approvedPlanId: req.requestedPlanId || 'trial',
+        decisionNotes: 'تمت الموافقة السريعة والاعتماد المباشر من مركز التنبيهات',
+      });
+      showToast(`تم قبول واعتماد حساب (${req.applicantName}) وتفعيله بنجاح!`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'تعذر تنفيذ الموافقة على الطلب', 'error');
+    } finally {
+      setIsApprovingId(null);
+    }
+  };
 
   useEffect(() => {
     return alertSound.subscribe((updated) => {
@@ -99,8 +126,8 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
   }, [notifications, activeTab]);
 
   const unreadCount = useMemo(() => {
-    return notifications.filter((n) => !n.isRead).length + dueAppointments.length;
-  }, [notifications, dueAppointments]);
+    return notifications.filter((n) => !n.isRead).length + dueAppointments.length + pendingRequests.length;
+  }, [notifications, dueAppointments, pendingRequests]);
 
   const handleDismissDueAppointment = (apptId: string) => {
     setDismissedApptIds((prev) => new Set([...prev, apptId]));
@@ -308,9 +335,13 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
           </div>
         </div>
 
-        {/* Filter Tabs — Matching Reference Image (الكل · مواعيد · تنبيهات · أخرى/الإعدادات) */}
+        {/* Filter Tabs — Supporting New Subscriber Requests for Platform Admins */}
         <div className="px-4 pt-3 pb-2 bg-[#F7F5F0] dark:bg-[#161514]">
-          <div className="grid grid-cols-4 gap-1.5 p-1 rounded-2xl bg-[#EFECE6] dark:bg-[#22201F] border border-[#E5DEC9] dark:border-[#383431] text-xs font-bold">
+          <div
+            className={`grid ${
+              canAccessPlatformAdmin ? 'grid-cols-5' : 'grid-cols-4'
+            } gap-1 p-1 rounded-2xl bg-[#EFECE6] dark:bg-[#22201F] border border-[#E5DEC9] dark:border-[#383431] text-[11px] font-bold`}
+          >
             <button
               type="button"
               onClick={() => setActiveTab('all')}
@@ -322,6 +353,24 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
             >
               الكل
             </button>
+            {canAccessPlatformAdmin && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('requests')}
+                className={`py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                  activeTab === 'requests'
+                    ? 'bg-[#FFFEFC] dark:bg-[#2B2826] text-[#743B46] dark:text-[#E5B9C0] shadow-2xs font-extrabold'
+                    : 'text-[#77716B] dark:text-[#ACA59C] hover:text-[#292725]'
+                }`}
+              >
+                <span>الاشتراكات</span>
+                {pendingRequests.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-[#A64B45] text-white text-[9px] font-bold animate-pulse">
+                    {pendingRequests.length}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setActiveTab('appointments')}
@@ -356,7 +405,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   : 'text-[#77716B] dark:text-[#ACA59C] hover:text-[#292725]'
               }`}
             >
-              أخرى
+              الإعدادات
             </button>
           </div>
         </div>
@@ -391,6 +440,112 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                   {enablingPush ? 'جاري التفعيل...' : 'تفعيل'}
                 </button>
               </div>
+
+              {/* Platform Admin Registration Requests Card List */}
+              {canAccessPlatformAdmin && (activeTab === 'all' || activeTab === 'requests') && pendingRequests.length > 0 && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-2 px-1">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#743B46] dark:text-[#E5B9C0]">
+                      <UserCheck className="w-4 h-4" />
+                      <span>طلبات اشتراك جديدة بانتظار الاعتماد ({pendingRequests.length})</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        setActiveScreen('platform_admin');
+                      }}
+                      className="text-[11px] font-bold text-[#A77B35] dark:text-[#E2B76D] hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>لوحة الإدارة الكاملة</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {pendingRequests.map((req) => (
+                    <div
+                      key={req.workspaceId}
+                      className="p-3.5 rounded-2xl bg-[#FFFDF9] dark:bg-[#1E1C1A] border-2 border-[#A77B35]/40 dark:border-[#A77B35]/60 shadow-xs space-y-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-[#A77B35]/15 text-[#A77B35] flex items-center justify-center shrink-0 mt-0.5">
+                            <UserCheck className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA] truncate">
+                                {req.applicantName}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-md bg-[#A77B35]/15 text-[#A77B35] text-[10px] font-bold shrink-0">
+                                طلب اشتراك جديد
+                              </span>
+                            </div>
+                            <div className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-0.5 font-mono truncate" dir="ltr">
+                              {req.applicantEmail}
+                            </div>
+                            <div className="text-[11px] text-[#77716B] dark:text-[#ACA59C] mt-1">
+                              مساحة العمل: <span className="font-semibold text-[#292725] dark:text-[#F4F1EA]">{req.workspaceName}</span>
+                              {req.requestedPlanId && (
+                                <span className="mr-2">· الباقة: <span className="font-semibold text-[#743B46] dark:text-[#E5B9C0]">{req.requestedPlanId === 'trial' ? 'تجريبي (14 يومًا)' : 'شهري'}</span></span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2 border-t border-[#EFECE6] dark:border-[#2E2B28]">
+                        <button
+                          type="button"
+                          disabled={isApprovingId === req.workspaceId}
+                          onClick={() => handleQuickApprove(req)}
+                          className="flex-1 min-h-[34px] px-3 rounded-xl bg-[#52765D] hover:bg-[#41604B] text-white text-xs font-extrabold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>{isApprovingId === req.workspaceId ? 'جاري الاعتماد...' : 'قبول واعتماد الحساب'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            setActiveScreen('platform_admin');
+                          }}
+                          className="min-h-[34px] px-3 rounded-xl bg-[#EFECE6] hover:bg-[#E5DFD6] dark:bg-[#2B2826] dark:hover:bg-[#383431] text-[#292725] dark:text-[#F4F1EA] text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer border border-[#E7E1D8] dark:border-[#383431]"
+                        >
+                          <span>خيارات متقدمة</span>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Empty state for requests tab when no pending requests exist */}
+              {canAccessPlatformAdmin && activeTab === 'requests' && pendingRequests.length === 0 && (
+                <div className="py-8 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 mx-auto flex items-center justify-center">
+                    <CheckCircle2 className="w-6 h-6" />
+                  </div>
+                  <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+                    لا توجد طلبات اشتراك جديدة معلقة
+                  </div>
+                  <p className="text-xs text-[#77716B] dark:text-[#ACA59C] max-w-xs mx-auto">
+                    تمت معالجة كافة طلبات المشتركين أو لا توجد تسجيلات جديدة بانتظار المراجعة حاليًا.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      setActiveScreen('platform_admin');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-[#743B46] text-white text-xs font-bold hover:bg-[#5D2D37] transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <span>فتح لوحة إدارة المنصة</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
 
               {/* Cleanup Bar */}
               {(filteredNotifications.length > 0 || dueAppointments.length > 0) && (

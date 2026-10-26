@@ -170,6 +170,7 @@ const RasdShell: React.FC = () => {
     canAccessWorkScreens,
     canAccessPlatformAdmin,
     ownerSessionDiagnostic,
+    receivedRegistrationRequests,
   } = useRasd();
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
@@ -302,6 +303,11 @@ const RasdShell: React.FC = () => {
   // Evaluate due badge on a 30-second cadence instead of every 1 second to avoid full-shell re-renders
   const dueClock = useLiveAdenClock(30000);
 
+  const pendingRegistrationCount = React.useMemo(() => {
+    if (!canAccessPlatformAdmin) return 0;
+    return receivedRegistrationRequests.filter((r) => r.status === 'pending').length;
+  }, [canAccessPlatformAdmin, receivedRegistrationRequests]);
+
   const dueCount = React.useMemo(() => {
     return (
       appointments.filter((a) => {
@@ -320,9 +326,11 @@ const RasdShell: React.FC = () => {
           dueClock.now
         );
         return s === 'due';
-      }).length + notifications.filter((n) => !n.isRead).length
+      }).length +
+      notifications.filter((n) => !n.isRead).length +
+      pendingRegistrationCount
     );
-  }, [appointments, notifications, defaultReminderMins, dueClock.now]);
+  }, [appointments, notifications, defaultReminderMins, dueClock.now, pendingRegistrationCount]);
 
   const { isInstallable, isInstalled, install } = usePWAInstall();
 
@@ -623,13 +631,18 @@ const RasdShell: React.FC = () => {
                   setSelectedTaxpayerId(null);
                   setActiveScreen('platform_admin');
                 }}
-                className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+                className={`py-1.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
                   activeScreen === 'platform_admin'
                     ? 'border-[#743B46] text-[#743B46] dark:text-[#E5B9C0]'
                     : 'border-transparent text-[#743B46] dark:text-[#E5B9C0] hover:opacity-80'
                 }`}
               >
-                إدارة المنصة
+                <span>إدارة المنصة</span>
+                {pendingRegistrationCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full bg-[#A64B45] text-white text-[10px] font-bold animate-pulse">
+                    {pendingRegistrationCount}
+                  </span>
+                )}
               </button>
             )}
           </nav>
@@ -716,6 +729,25 @@ const RasdShell: React.FC = () => {
 
       {/* Real-time In-App Due Appointment Alert Banner */}
       <ActiveAlertBanner />
+
+      {/* Real-time Administrative New Registration Alert Banner for Platform Admins */}
+      {canAccessPlatformAdmin && pendingRegistrationCount > 0 && (
+        <div className="bg-[#A77B35]/15 dark:bg-[#A77B35]/25 border-b border-[#A77B35]/30 px-4 py-2.5 text-xs flex items-center justify-between gap-3 text-[#A77B35] dark:text-[#E2B76D]">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-[#A77B35] animate-ping shrink-0" />
+            <span className="font-extrabold truncate">
+              يوجد {pendingRegistrationCount} طلب اشتراك جديد بانتظار موافقتك واعتمادك في لوحة الإدارة!
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveScreen('platform_admin')}
+            className="px-3 py-1.5 rounded-xl bg-[#A77B35] hover:bg-[#8D662A] text-white text-xs font-extrabold transition-colors cursor-pointer shrink-0 shadow-xs"
+          >
+            مراجعة واعتماد الآن
+          </button>
+        </div>
+      )}
 
       {/* Notification Center Modal (loaded on demand when opened) */}
       {isNotifOpen && (
@@ -837,13 +869,18 @@ const RasdShell: React.FC = () => {
                   <span className="absolute top-0.5 w-8 h-1 rounded-full bg-[#743B46] dark:bg-[#E5B9C0]" />
                 )}
                 <div
-                  className={`px-3.5 py-1 rounded-xl transition-all flex items-center justify-center ${
+                  className={`relative px-3.5 py-1 rounded-xl transition-all flex items-center justify-center ${
                     isActive
                       ? 'bg-[#743B46]/10 dark:bg-[#743B46]/25 text-[#743B46] dark:text-[#E5B9C0]'
                       : ''
                   }`}
                 >
                   <Icon className="w-5 h-5" />
+                  {tab.id === 'more' && pendingRegistrationCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#A64B45] text-white text-[9px] font-bold flex items-center justify-center animate-pulse">
+                      {pendingRegistrationCount}
+                    </span>
+                  )}
                 </div>
                 <span className="text-[11px] mt-0.5 whitespace-nowrap">{tab.label}</span>
               </button>

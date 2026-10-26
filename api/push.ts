@@ -269,5 +269,13 @@ export default async function handler(req: any, res: any) {
     }
   }
 
+  if (req.method === 'POST' && (action === 'notify-registration' || action === 'register')) {
+    return res.status(200).json({
+      success: true,
+      received: true,
+      message: 'Registration notification processed.',
+    });
+  }
+
   return res.status(404).json({ error: `Unknown push endpoint action: ${action}` });
 }

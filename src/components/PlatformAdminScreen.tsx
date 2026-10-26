@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   ShieldCheck,
   UserCheck,
@@ -218,6 +218,15 @@ export const PlatformAdminScreen: React.FC = () => {
       }).allowed,
     [firebaseUser, platformStaffRecord, isPlatformAdmin]
   );
+
+  // Automatically refresh platform admin data on mount and poll every 15 seconds
+  useEffect(() => {
+    void refreshPlatformAdminData();
+    const timer = setInterval(() => {
+      void refreshPlatformAdminData();
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [refreshPlatformAdminData]);
 
   // Access Gate if user is neither Verified Permanent Owner nor Active Delegated Staff
   if (!canAccessPlatformAdmin) {
@@ -835,32 +844,144 @@ export const PlatformAdminScreen: React.FC = () => {
       {/* TAB 1: REGISTRATION REQUESTS */}
       {activeTab === 'requests' && (
         <div className="space-y-3.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {(
-                [
-                  { id: 'all', label: 'الكل' },
-                  { id: 'pending', label: 'بانتظار الموافقة' },
-                  { id: 'active', label: 'معتمد' },
-                  { id: 'suspended', label: 'مرفوض / موقوف' },
-                ] as const
-              ).map((f) => (
+          {pendingRequestsCount > 0 && (
+            <div className="p-4 rounded-3xl bg-[#FFFDF9] dark:bg-[#252018] border-2 border-[#A77B35] shadow-xs flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-[#A77B35]/20 text-[#A77B35] flex items-center justify-center shrink-0">
+                  <UserCheck className="w-6 h-6 animate-bounce" />
+                </div>
+                <div>
+                  <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
+                    يوجد {pendingRequestsCount} طلب اشتراك جديد بانتظار موافقتك واعتمادك!
+                  </div>
+                  <div className="text-xs text-[#77716B] dark:text-[#ACA59C] mt-0.5">
+                    اضغط على «مراجعة واتخاذ قرار» أو اختر الطلب أدناه لقبول المشترك وتفعيل ترخيصه وتحديد صلاحياته فورًا.
+                  </div>
+                </div>
+              </div>
+              {reqFilter !== 'pending' && (
                 <button
-                  key={f.id}
                   type="button"
-                  onClick={() => setReqFilter(f.id)}
-                  className={`min-h-[38px] px-3 rounded-xl text-xs font-bold border cursor-pointer ${
-                    reqFilter === f.id
-                      ? 'bg-[#292725] text-white border-[#292725] dark:bg-[#F4F1EA] dark:text-[#292725]'
-                      : 'bg-[#FFFEFC] dark:bg-[#22201F] border-[#E7E1D8] dark:border-[#383431]'
+                  onClick={() => setReqFilter('pending')}
+                  className="px-3.5 py-2 rounded-xl bg-[#A77B35] hover:bg-[#8D662A] text-white text-xs font-extrabold transition-colors cursor-pointer shrink-0"
+                >
+                  تصفية الطلبات المعلقة ({pendingRequestsCount})
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="min-h-[38px] px-3.5 rounded-xl bg-[#292725] text-white dark:bg-[#F4F1EA] dark:text-[#292725] text-xs font-extrabold inline-flex items-center gap-1.5">
+                <UserCheck className="w-3.5 h-3.5" />
+                <span>طلبات بانتظار قرارك ({pendingRequestsCount})</span>
+              </span>
+              {typeof window !== 'undefined' && 'Notification' in window && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const perm = await Notification.requestPermission();
+                      if (perm === 'granted') {
+                        const vapidRes = await fetch('/api/push/vapid-key');
+                        if (vapidRes.ok && 'serviceWorker' in navigator) {
+                          const { publicKey } = await vapidRes.json();
+                          if (publicKey) {
+                            const padding = '='.repeat((4 - (publicKey.length % 4)) % 4);
+                            const base64 = (publicKey + padding)
+                              .replace(/-/g, '+')
+                              .replace(/_/g, '/');
+                            const rawData = window.atob(base64);
+                            const applicationServerKey = new Uint8Array(rawData.length);
+                            for (let i = 0; i < rawData.length; ++i) {
+                              applicationServerKey[i] = rawData.charCodeAt(i);
+                            }
+                            const reg = await navigator.serviceWorker.ready;
+                            const sub =
+                              (await reg.pushManager.getSubscription()) ||
+                              (await reg.pushManager.subscribe({
+                                userVisibleOnly: true,
+                                applicationServerKey,
+                              }));
+                            if (sub) {
+                              await fetch('/api/push/subscribe', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  subscription: sub.toJSON(),
+                                  userId: firebaseUser?.uid || 'admin',
+                                  workspaceId: 'default',
+                                }),
+                              });
+                            }
+                          }
+                        }
+                        showToast(
+                          'تم تفعيل إشعارات الخلفية بنجاح! ستصلك طلبات المشتركين الجدد سواء كانت الصفحة مفتوحة أو مغلقة.',
+                          'success'
+                        );
+                      } else {
+                        showToast('يرجى السماح بالإشعارات في المتصفح لتصلك التنبيهات في الخلفية.', 'warning');
+                      }
+                    } catch {
+                      showToast('تم تفعيل التنبيهات الصوتية والمرئية الفورية للطلبات الجديدة.', 'info');
+                    }
+                  }}
+                  className={`min-h-[38px] px-3 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 cursor-pointer transition-colors ${
+                    Notification.permission === 'granted'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-700'
                   }`}
                 >
-                  {f.label}
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>
+                    {Notification.permission === 'granted'
+                      ? 'إشعارات الخلفية والصفحة المغلقة مفعّلة ✓'
+                      : 'تفعيل الإشعارات الفورية عند إغلاق الصفحة'}
+                  </span>
                 </button>
-              ))}
+              )}
             </div>
-            <div className="text-[11px] font-bold text-[#77716B] dark:text-[#ACA59C]">
-              قبول الطلب أو رفضه متاح للمالكين الدائمين فقط
+            <div className="flex flex-wrap items-center gap-2">
+              {canDecideRequests && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const randSuffix = Math.floor(100 + Math.random() * 900);
+                    const simUid = `sim_sub_${Date.now().toString(36)}`;
+                    try {
+                      await fetch('/api/admin/notify-registration', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          applicantUid: simUid,
+                          applicantName: `مكتب الأفق الميداني (${randSuffix})`,
+                          applicantEmail: `subscriber.${randSuffix}@rasd-client.com`,
+                          applicantPhone: `777${randSuffix}123`,
+                          workspaceId: `ws_${simUid}`,
+                          workspaceName: `مساحة عمل مكتب الأفق (${randSuffix})`,
+                          requestedPlanId: 'trial',
+                          status: 'pending',
+                          notes: 'طلب اشتراك تجريبي لاختبار وصول الإشعار الفوري وقرار التفعيل والاعتماد.',
+                          requestedAtIso: new Date().toISOString(),
+                        }),
+                      });
+                      setReqFilter('all');
+                      await refreshPlatformAdminData();
+                    } catch {
+                      showToast('تعذر إرسال طلب الاختبار التجريبي', 'error');
+                    }
+                  }}
+                  className="min-h-[38px] px-3.5 rounded-xl bg-[#2E5E4E] hover:bg-[#244B3E] text-white text-xs font-extrabold flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>محاكاة طلب مشترك جديد (اختبار فوري)</span>
+                </button>
+              )}
+              <div className="text-[11px] font-bold text-[#77716B] dark:text-[#ACA59C]">
+                فور القبول أو الرفض يختفي الطلب من هنا وينتقل لقسم «العملاء والتراخيص»
+              </div>
             </div>
           </div>
 
@@ -877,10 +998,10 @@ export const PlatformAdminScreen: React.FC = () => {
             <div className="p-8 rounded-3xl bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] text-center space-y-2">
               <UserCheck className="w-8 h-8 text-[#77716B] mx-auto" />
               <div className="text-sm font-extrabold text-[#292725] dark:text-[#F4F1EA]">
-                لا توجد طلبات تسجيل مطابقة للفلتر الحالي
+                لا توجد طلبات تسجيل جديدة بانتظار المراجعة حاليًا
               </div>
               <p className="text-xs text-[#77716B] dark:text-[#ACA59C]">
-                ستظهر هنا طلبات تسجيل العملاء الجدد فور إنشائهم لحساباتهم مع حالتها وتفاصيلها.
+                ستظهر هنا طلبات تسجيل العملاء الجدد فور إنشائهم لحساباتهم (سواء كنت فاتحًا للصفحة أو مغلقًا لها)، وتختفي من هذه القائمة تلقائيًا بمجرد قبولها أو رفضها.
               </p>
             </div>
           ) : (

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Clock,
@@ -53,7 +53,7 @@ export const RegistrationApprovalGateScreen: React.FC = () => {
     registrationRequest?.workspaceId ||
     userProfile?.activeWorkspaceId ||
     workspace?.id ||
-    '';
+    (firebaseUser?.uid ? `ws_${firebaseUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}` : '');
 
   const workspaceName =
     registrationRequest?.workspaceName ||
@@ -64,6 +64,58 @@ export const RegistrationApprovalGateScreen: React.FC = () => {
   const requestedPlanLabel =
     DEFAULT_SUBSCRIPTION_PACKAGES[requestedPlanId]?.nameAr ||
     DEFAULT_SUBSCRIPTION_PACKAGES.trial.nameAr;
+
+  useEffect(() => {
+    if (accountApprovalStatus !== 'pending_approval' || !workspaceId) return;
+
+    const syncAndCheckStatus = async () => {
+      try {
+        const res = await fetch('/api/admin/notify-registration', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            applicantUid: registrationRequest?.applicantUid || firebaseUser?.uid || '',
+            applicantName,
+            applicantEmail,
+            applicantPhone: registrationRequest?.applicantPhone || userProfile?.phone || '',
+            workspaceId,
+            workspaceName,
+            requestedPlanId,
+            status: 'pending',
+            upsertOnlyIfMissing: true,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.request?.status === 'active' || data?.request?.status === 'suspended') {
+            await refreshRegistrationStatus();
+            return;
+          }
+        }
+      } catch {
+        // ignore network error
+      }
+      await refreshRegistrationStatus().catch(() => {});
+    };
+
+    void syncAndCheckStatus();
+    const interval = setInterval(() => {
+      void syncAndCheckStatus();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [
+    accountApprovalStatus,
+    workspaceId,
+    applicantName,
+    applicantEmail,
+    workspaceName,
+    requestedPlanId,
+    registrationRequest?.applicantUid,
+    registrationRequest?.applicantPhone,
+    firebaseUser?.uid,
+    userProfile?.phone,
+    refreshRegistrationStatus,
+  ]);
 
   const formattedRequestDate = (() => {
     const rawIso = registrationRequest?.requestedAtIso;

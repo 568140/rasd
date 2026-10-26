@@ -322,7 +322,16 @@ export function resolveVerifiedOrTopLevelUserEmail(
   const topLevel = normalizeEmail(authCandidate.email);
   if (topLevel) return topLevel;
   const { verifiedSessionEmail } = evaluateServerVerifiedSessionToken(authCandidate);
-  return verifiedSessionEmail;
+  if (verifiedSessionEmail) return verifiedSessionEmail;
+  if (Array.isArray(authCandidate.providerData)) {
+    for (const p of authCandidate.providerData) {
+      if (p && p.email) {
+        const norm = normalizeEmail(p.email);
+        if (norm) return norm;
+      }
+    }
+  }
+  return '';
 }
 
 /**

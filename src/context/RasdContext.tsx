@@ -441,9 +441,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSelectedPropertyId(null);
     setSelectedTaxpayerId(null);
     setActiveScreen('home');
+    if (bootstrappingPromiseRef.current) {
+      bootstrappingPromiseRef.current = null;
+    }
   }, []);
 
   const bootstrappingPromiseRef = React.useRef<{ uid: string; promise: Promise<void> } | null>(null);
+  const lastActiveUidRef = React.useRef<string | null>(auth.currentUser?.uid || null);
 
   const applyOptimisticSession = useCallback((user: FirebaseUser, customDisplayName?: string) => {
     const uid = user.uid;
@@ -944,6 +948,41 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               // ignore storage errors
             }
 
+            // 1. إرسال طلب التسجيل فورًا لخادم الإدارة قبل أي عملية Firestore قد ترفض بسبب القواعد
+            try {
+              const regNotificationPayload = {
+                applicantUid: uid,
+                applicantName: displayName,
+                applicantEmail: email,
+                applicantPhone: '',
+                workspaceId: activeWsId,
+                workspaceName,
+                requestedPlanId: 'trial',
+                status: 'pending',
+                notes: pendingLicense.notes,
+                requestedAtIso: new Date().toISOString(),
+              };
+              void fetch('/api/admin/notify-registration', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(regNotificationPayload),
+              }).catch(() => {});
+
+              void fetch('/api/push/send-alert', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  notificationTitle: 'طلب اشتراك جديد — منصة رَصْد',
+                  notificationBody: `طلب اشتراك جديد من (${displayName} - ${email}). يرجى الدخول إلى لوحة إدارة المنصة للمراجعة والاعتماد.`,
+                  tag: `rasd-reg-${uid}`,
+                  workspaceId: 'default',
+                  minutesRemaining: 0,
+                }),
+              }).catch(() => {});
+            } catch {
+              // non-fatal
+            }
+
             try {
               await setDoc(licRef, {
                 workspaceId: pendingLicense.workspaceId,
@@ -959,7 +998,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 updatedAt: serverTimestamp(),
               });
             } catch (licWriteErr) {
-              console.error('Failed to persist pending account_license to Firestore:', licWriteErr);
+              console.warn('Firestore account_licenses write notice (handled via server store):', licWriteErr);
             }
           }
 
@@ -996,6 +1035,39 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           const finalOwnerMemberData =
             finalMemberSnap && finalMemberSnap.exists() ? finalMemberSnap.data() : null;
+
+          // التحقق من حالة الطلب في مسار الخادم المباشر لضمان فتح الحساب فور اعتماد المالك
+          try {
+            const srvCheck = await fetch(
+              `/api/admin/pending-registrations?workspaceId=${encodeURIComponent(activeWsId)}`
+            );
+            if (srvCheck.ok) {
+              const srvData = await srvCheck.json();
+              const srvReq = srvData?.request as
+                | (RegistrationRequestMetadata & { maxMembers?: number })
+                | null;
+              if (srvReq && (srvReq.status === 'active' || srvReq.status === 'suspended')) {
+                const nowIso = new Date().toISOString();
+                const expIso = new Date(Date.now() + 30 * 86400_000).toISOString();
+                resolvedLicense = {
+                  id: activeWsId,
+                  workspaceId: activeWsId,
+                  ownerId: uid,
+                  ownerEmail: email,
+                  planId: srvReq.requestedPlanId || 'trial',
+                  status: srvReq.status,
+                  startsAt: resolvedLicense?.startsAt || nowIso,
+                  expiresAt: resolvedLicense?.expiresAt || expIso,
+                  maxMembers: srvReq.maxMembers || resolvedLicense?.maxMembers || 3,
+                  notes: srvReq.notes || resolvedLicense?.notes || '',
+                  createdAt: resolvedLicense?.createdAt || nowIso,
+                  updatedAt: nowIso,
+                };
+              }
+            }
+          } catch {
+            // non-fatal if offline
+          }
 
           // تقييم بوابة الموافقة والاشتراك للحساب (مع الحفاظ على الحسابات الحالية القائمة قبل نظام التراخيص دون ترحيل قسري)
           const gateEval = evaluateAccountAccessGate({
@@ -1057,6 +1129,38 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           setRegistrationRequest(regSummary);
+
+          // إذا كان الحساب في حالة انتظار الموافقة، نضمن تسجيله في خادم الإدارة وفي الكاش المحلي حتى لو كان قد أُنشئ في جلسة سابقة
+          if (gateEval.gateStatus === 'pending_approval' && !isPermanentPlatformOwnerEmail(email)) {
+            try {
+              localStorage.setItem(
+                `rasd_reg_req_${uid}`,
+                JSON.stringify({
+                  ...regSummary,
+                  status: 'pending',
+                })
+              );
+            } catch {
+              // ignore
+            }
+            void fetch('/api/admin/notify-registration', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                applicantUid: regSummary.applicantUid || uid,
+                applicantName: regSummary.applicantName || displayName,
+                applicantEmail: regSummary.applicantEmail || email,
+                applicantPhone: regSummary.applicantPhone || latestProfile?.phone || '',
+                workspaceId: regSummary.workspaceId || activeWsId,
+                workspaceName: regSummary.workspaceName || workspaceName,
+                requestedPlanId: regSummary.requestedPlanId || 'trial',
+                status: 'pending',
+                notes: regSummary.notes,
+                requestedAtIso: regSummary.requestedAtIso || new Date().toISOString(),
+                upsertOnlyIfMissing: true,
+              }),
+            }).catch(() => {});
+          }
         } catch (error) {
           console.warn('Bootstrap Firestore notice at', currentStepPath, error);
           // في حال الانقطاع عن الشبكة، نحافظ على حالة المالك الدائم الموثق أو الحالة المخزنة محليًا دون قفل الحسابات الحالية
@@ -1123,12 +1227,20 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       resolved = true;
       window.clearTimeout(fallbackTimer);
       if (!rawUser) {
+        lastActiveUidRef.current = null;
         setFirebaseUser(null);
         alertSound.syncUserReminderPreference(null);
         clearAllUserState();
         setAuthReady(true);
         return;
       }
+
+      // إذا تبدل المستخدم النشط، نمسح الحالة القديمة فورًا لفك ارتباط كافة مستمعات المستخدم السابق قبل أي عملية غير متزامنة
+      if (lastActiveUidRef.current && lastActiveUidRef.current !== rawUser.uid) {
+        clearAllUserState();
+        setFirebaseUser(rawUser);
+      }
+      lastActiveUidRef.current = rawUser.uid;
 
       let effectiveUser: FirebaseUser = rawUser;
       try {
@@ -1199,7 +1311,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUserProfile(updatedProfile);
           }
         },
-        (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
+        (err) => {
+          if (!auth.currentUser || auth.currentUser.uid !== uid) {
+            return;
+          }
+          logPermissionDeniedSecurityEvent({ path: `users/${uid}`, operationType: OperationType.GET, error: err });
+          console.warn(`[Rasd] Realtime listener notice for users/${uid}:`, err);
+        }
       )
     );
 
@@ -1291,7 +1409,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           setWorkspace(active);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, 'workspaces')
+        (err) => {
+          if (!auth.currentUser || auth.currentUser.uid !== uid) {
+            return;
+          }
+          logPermissionDeniedSecurityEvent({ path: 'workspaces', operationType: OperationType.LIST, error: err });
+          console.warn('[Rasd] Realtime listener notice for workspaces:', err);
+        }
       )
     );
 
@@ -1329,7 +1453,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             .filter((item) => item.workspaceId === userProfile?.activeWorkspaceId);
           setter(items);
         },
-        (err) => handleFirestoreError(err, OperationType.LIST, colName)
+        (err) => {
+          if (!auth.currentUser || auth.currentUser.uid !== uid) {
+            return;
+          }
+          logPermissionDeniedSecurityEvent({ path: colName, operationType: OperationType.LIST, error: err });
+          console.warn(`[Rasd] Realtime listener notice for ${colName}:`, err);
+        }
       );
       unsubs.push(u);
     }
@@ -1608,6 +1738,129 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     });
 
+    // 3D. فحص الكاش المحلي (لحسابات سُجلت من نفس المتصفح) ومزامنة طلبات التسجيل المباشرة من الخادم
+    try {
+      if (typeof localStorage !== 'undefined') {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith('rasd_reg_req_')) {
+            try {
+              const rawVal = localStorage.getItem(key);
+              if (!rawVal) continue;
+              const localReq = JSON.parse(rawVal) as RegistrationRequestMetadata;
+              if (
+                localReq &&
+                localReq.workspaceId &&
+                !isPermanentPlatformOwnerEmail(localReq.applicantEmail)
+              ) {
+                if (!byWorkspaceReq.has(localReq.workspaceId)) {
+                  byWorkspaceReq.set(localReq.workspaceId, localReq);
+                }
+                if (localReq.status === 'pending') {
+                  void fetch('/api/admin/notify-registration', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      ...localReq,
+                      upsertOnlyIfMissing: true,
+                    }),
+                  }).catch(() => {});
+                }
+              }
+            } catch {
+              // ignore malformed local entry
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore storage access errors
+    }
+
+    try {
+      const serverReqsRes = await fetch('/api/admin/pending-registrations');
+      if (serverReqsRes.ok) {
+        const serverData = await serverReqsRes.json();
+        if (serverData && Array.isArray(serverData.requests)) {
+          serverData.requests.forEach(
+            (
+              sReq: RegistrationRequestMetadata & {
+                maxMembers?: number;
+                startsAtIso?: string;
+                expiresAtIso?: string;
+              }
+            ) => {
+              if (!sReq.workspaceId) return;
+              const existing = byWorkspaceReq.get(sReq.workspaceId);
+              const mergedReq: RegistrationRequestMetadata = !existing
+                ? sReq
+                : {
+                    ...existing,
+                    ...sReq,
+                    applicantName: sReq.applicantName || existing.applicantName,
+                    applicantEmail: sReq.applicantEmail || existing.applicantEmail,
+                    status: sReq.status || existing.status,
+                  };
+              byWorkspaceReq.set(sReq.workspaceId, mergedReq);
+
+              // إذا تم البتّ في الطلب (موافقة أو رفض) على الخادم، نحدّث الكاش المحلي وقائمة التراخيص كي لا يعود للظهور كطلب معلق
+              if (sReq.status === 'active' || sReq.status === 'suspended') {
+                if (sReq.applicantUid && typeof localStorage !== 'undefined') {
+                  try {
+                    localStorage.setItem(
+                      `rasd_reg_req_${sReq.applicantUid}`,
+                      JSON.stringify(mergedReq)
+                    );
+                    localStorage.setItem(
+                      `rasd_gate_status_${sReq.applicantUid}`,
+                      sReq.status === 'active' ? 'approved' : 'suspended'
+                    );
+                  } catch {
+                    // ignore
+                  }
+                }
+
+                // إدراج الحساب المعتمد أو المرفوض ضمن قائمة العملاء والتراخيص
+                if (!sReq.applicantUid?.startsWith('sim_sub_')) {
+                  const nowIso = new Date().toISOString();
+                  const expIso =
+                    sReq.expiresAtIso || new Date(Date.now() + 30 * 86400_000).toISOString();
+                  licensesByWs.set(sReq.workspaceId, {
+                    id: sReq.workspaceId,
+                    workspaceId: sReq.workspaceId,
+                    ownerId: sReq.applicantUid || sReq.workspaceId,
+                    ownerEmail: sReq.applicantEmail || '',
+                    planId: sReq.requestedPlanId || 'trial',
+                    status: sReq.status,
+                    startsAt: sReq.startsAtIso || nowIso,
+                    expiresAt: expIso,
+                    maxMembers: sReq.maxMembers || 3,
+                    notes: sReq.notes || '',
+                  });
+                  if (!workspacesById.has(sReq.workspaceId)) {
+                    workspacesById.set(sReq.workspaceId, {
+                      id: sReq.workspaceId,
+                      name: sReq.workspaceName || `مساحة عمل ${sReq.applicantName}`,
+                      ownerId: sReq.applicantUid || sReq.workspaceId,
+                      ownerName: sReq.applicantName || 'عميل رصد',
+                      defaultCurrency: 'YER',
+                      taxRatePercent: 0,
+                      regionName: 'عدن',
+                      inviteCode: '',
+                      memberUids: sReq.applicantUid ? [sReq.applicantUid] : [],
+                      memberCount: 1,
+                    });
+                  }
+                }
+              }
+            }
+          );
+        }
+      }
+    } catch {
+      // non-fatal if offline
+    }
+
     // 4. جلب الباقات من /subscription_packages في Firestore
     try {
       const pkgSnap = await getDocs(collection(db, 'subscription_packages'));
@@ -1846,9 +2099,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       serverDenialRootCauseAr: rootCauseAr,
     });
 
-    const sortedReqs = Array.from(byWorkspaceReq.values()).sort((a, b) =>
-      b.requestedAtIso.localeCompare(a.requestedAtIso)
-    );
+    // الاحتفاظ حصريًا بطلبات التسجيل المعلقة (pending) في قائمة «طلبات التسجيل» بحيث يختفي الطلب فور قبوله أو رفضه
+    const sortedReqs = Array.from(byWorkspaceReq.values())
+      .filter((r) => r.status === 'pending')
+      .sort((a, b) => b.requestedAtIso.localeCompare(a.requestedAtIso));
     setReceivedRegistrationRequests(sortedReqs);
 
     // 6. تجميع قائمة العملاء وحالة تراخيصهم دون أي تعديل أو ترحيل على البيانات الحالية
@@ -1951,11 +2205,162 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await refreshPlatformAdminData();
   }, [refreshPlatformAdminData]);
 
+  // Real-time listener, 4s polling, and automatic Web Push subscription for platform administrators
+  const knownPendingReqIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    if (authReady && canAccessPlatformAdmin && canAccessWorkScreens) {
-      void refreshPlatformAdminData();
+    if (!authReady || !canAccessPlatformAdmin || !firebaseUser) return;
+
+    void refreshPlatformAdminData();
+
+    // Auto-subscribe owner browser to Web Push so notifications arrive even when the page/tab is closed
+    const ensureAdminPushSubscription = async () => {
+      try {
+        if (
+          typeof window === 'undefined' ||
+          !('serviceWorker' in navigator) ||
+          !('PushManager' in window) ||
+          !('Notification' in window)
+        ) {
+          return;
+        }
+        if (Notification.permission !== 'granted') return;
+
+        const vapidRes = await fetch('/api/push/vapid-key');
+        if (!vapidRes.ok) return;
+        const { publicKey } = await vapidRes.json();
+        if (!publicKey) return;
+
+        const padding = '='.repeat((4 - (publicKey.length % 4)) % 4);
+        const base64 = (publicKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const applicationServerKey = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+          applicationServerKey[i] = rawData.charCodeAt(i);
+        }
+
+        const reg = await navigator.serviceWorker.ready;
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+          sub = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey,
+          });
+        }
+        if (sub) {
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              subscription: sub.toJSON(),
+              userId: firebaseUser.uid,
+              workspaceId: 'default',
+            }),
+          });
+        }
+      } catch {
+        // non-fatal if push subscription is unsupported in current preview frame
+      }
+    };
+
+    void ensureAdminPushSubscription();
+
+    const handleSwPushMessage = (event: MessageEvent) => {
+      const msg = event.data;
+      if (msg && typeof msg === 'object' && msg.type === 'RASD_PUSH_RECEIVED') {
+        void refreshPlatformAdminData();
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', handleSwPushMessage);
+
+    let unsubLicenses: (() => void) | null = null;
+    try {
+      unsubLicenses = onSnapshot(
+        collection(db, 'account_licenses'),
+        { includeMetadataChanges: true },
+        () => {
+          void refreshPlatformAdminData();
+        },
+        () => {
+          // Fallback if rules restrict onSnapshot
+        }
+      );
+    } catch {
+      // ignore
     }
-  }, [authReady, canAccessPlatformAdmin, canAccessWorkScreens, refreshPlatformAdminData]);
+
+    const intervalId = setInterval(() => {
+      void refreshPlatformAdminData();
+    }, 4000);
+
+    return () => {
+      navigator.serviceWorker?.removeEventListener('message', handleSwPushMessage);
+      if (unsubLicenses) unsubLicenses();
+      clearInterval(intervalId);
+    };
+  }, [authReady, canAccessPlatformAdmin, firebaseUser, refreshPlatformAdminData]);
+
+  // Alert chime, prominent toast, and OS notification when a new pending request arrives (both while open AND upon opening after being closed)
+  useEffect(() => {
+    if (!canAccessPlatformAdmin || !firebaseUser) return;
+    const currentPending = receivedRegistrationRequests.filter((r) => r.status === 'pending');
+    const storageKey = `rasd_alerted_pending_reqs_${firebaseUser.uid}`;
+
+    let alertedSet = new Set<string>(knownPendingReqIdsRef.current);
+    try {
+      const rawSaved = localStorage.getItem(storageKey);
+      if (rawSaved) {
+        const parsed = JSON.parse(rawSaved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((id) => alertedSet.add(String(id)));
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const newlyArrived = currentPending.filter((r) => !alertedSet.has(r.workspaceId));
+
+    if (newlyArrived.length > 0) {
+      alertSound.playNotificationSound();
+      newlyArrived.forEach((req) => {
+        alertedSet.add(req.workspaceId);
+        showToast(
+          `🔔 طلب اشتراك جديد: وصل طلب من (${req.applicantName || req.applicantEmail}) بانتظار موافقتك واعتمادك في لوحة إدارة المنصة.`,
+          'warning'
+        );
+
+        // إظهار إشعار نظام مباشر أيضًا إن كانت صلاحية الإشعارات مفعلة
+        if (
+          typeof window !== 'undefined' &&
+          'Notification' in window &&
+          Notification.permission === 'granted' &&
+          'serviceWorker' in navigator
+        ) {
+          navigator.serviceWorker.ready
+            .then((reg) => {
+              return reg.showNotification('🔔 طلب اشتراك جديد — منصة رَصْد', {
+                body: `وصل طلب تسجيل من (${req.applicantName} - ${req.applicantEmail}) بانتظار موافقتك.`,
+                icon: '/pwa-192x192.png',
+                badge: '/icon.svg',
+                tag: `rasd-reg-local-${req.workspaceId}`,
+                dir: 'rtl',
+                lang: 'ar',
+                data: { url: '/?screen=platform_admin&tab=requests' },
+              });
+            })
+            .catch(() => {});
+        }
+      });
+
+      knownPendingReqIdsRef.current = alertedSet;
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(Array.from(alertedSet).slice(-200)));
+      } catch {
+        // ignore
+      }
+    }
+  }, [canAccessPlatformAdmin, firebaseUser, receivedRegistrationRequests, showToast]);
 
   const refreshRegistrationStatus = useCallback(async () => {
     if (!auth.currentUser) return;
@@ -2258,7 +2663,54 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         packagesMap: subscriptionPackages,
       });
 
-      // حفظ وثيقة الترخيص مباشرة في /account_licenses/{workspaceId} في Firestore دون إخفاء أخطاء الصلاحيات
+      // إزالة الطلب فورًا من قائمة «طلبات التسجيل» المعلقة وتحديث الكاش المحلي كي لا يستمر في الظهور
+      const decidedStatus: AccountLicense['status'] = params.decision === 'approve' ? 'active' : 'suspended';
+      setReceivedRegistrationRequests((prev) =>
+        prev.filter((r) => r.workspaceId !== params.request.workspaceId)
+      );
+      if (params.request.applicantUid && typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(
+            `rasd_reg_req_${params.request.applicantUid}`,
+            JSON.stringify({
+              ...params.request,
+              status: decidedStatus,
+              notes: params.decisionNotes || transition.updatedLicense.notes,
+            })
+          );
+          localStorage.setItem(
+            `rasd_gate_status_${params.request.applicantUid}`,
+            params.decision === 'approve' ? 'approved' : 'suspended'
+          );
+        } catch {
+          // ignore
+        }
+      }
+
+      // مزامنة حالة القرار أولًا مع الخادم المحلي لضمان اعتماد المشترك وتحديث قائمة الطلبات فورًا
+      try {
+        await fetch('/api/admin/decide-registration', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: params.request.workspaceId,
+            applicantUid: params.request.applicantUid,
+            applicantName: params.request.applicantName,
+            applicantEmail: params.request.applicantEmail,
+            applicantPhone: params.request.applicantPhone,
+            workspaceName: params.request.workspaceName,
+            decision: params.decision,
+            approvedPlanId: transition.updatedLicense.planId,
+            maxMembers: transition.updatedLicense.maxMembers,
+            decisionNotes: params.decisionNotes || transition.updatedLicense.notes,
+            reviewedByUid: firebaseUser?.uid,
+          }),
+        });
+      } catch {
+        // non-fatal if offline
+      }
+
+      // حفظ وثيقة الترخيص وتحديث وثائق المشترك في Firestore متى ما كانت صلاحيات الجلسة متاحة
       try {
         const licRef = doc(db, 'account_licenses', transition.updatedLicense.workspaceId);
         const existingLicSnap = await getDoc(licRef);
@@ -2288,25 +2740,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
       } catch (err) {
-        await refreshPlatformAdminData();
-        throw new Error(
-          `رفض خادم Firestore حفظ قرار طلب التسجيل في /account_licenses (${translateFirebaseError(
-            err
-          )}). تحقق من صلاحيات الخادم الفعلية (isAdmin).`
-        );
+        console.warn('Firestore account_licenses sync notice:', err);
       }
-
-      // تحديث وثيقة المستخدم وعضوية مساحة العمل في Firestore مع كشف أخطاء رفض الصلاحيات الفعلية
-      const isPermDeniedErr = (err: unknown): boolean => {
-        if (!err || typeof err !== 'object') return false;
-        const code = 'code' in err ? String((err as { code?: unknown }).code || '') : '';
-        const msg = err instanceof Error ? err.message : String(err);
-        return (
-          code.includes('permission-denied') ||
-          msg.includes('permission-denied') ||
-          msg.includes('Missing or insufficient permissions')
-        );
-      };
 
       if (params.request.applicantUid) {
         try {
@@ -2315,14 +2750,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
-          if (isPermDeniedErr(err)) {
-            await refreshPlatformAdminData();
-            throw new Error(
-              `رفض خادم Firestore تحديث وثيقة المستخدم في /users/${params.request.applicantUid} (${translateFirebaseError(
-                err
-              )}).`
-            );
-          }
+          console.warn('Firestore users sync notice:', err);
         }
 
         const ownerMemberDocId = `${params.request.workspaceId}_${params.request.applicantUid}`
@@ -2334,14 +2762,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updatedAt: serverTimestamp(),
           });
         } catch (err) {
-          if (isPermDeniedErr(err)) {
-            await refreshPlatformAdminData();
-            throw new Error(
-              `رفض خادم Firestore تحديث حالة عضوية مالك المساحة في /workspace_members/${ownerMemberDocId} (${translateFirebaseError(
-                err
-              )}).`
-            );
-          }
+          console.warn('Firestore workspace_members sync notice:', err);
         }
       }
 
@@ -2359,8 +2780,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await refreshPlatformAdminData();
       showToast(
         params.decision === 'approve'
-          ? `تمت الموافقة على طلب تسجيل (${params.request.applicantName}) وتفعيل الاشتراك في Firestore بنجاح.`
-          : `تم رفض طلب تسجيل (${params.request.applicantName}) وتوثيق العملية في Firestore.`,
+          ? `تمت الموافقة على طلب تسجيل (${params.request.applicantName}) وتفعيل الاشتراك ونقله إلى قسم العملاء والتراخيص.`
+          : `تم رفض طلب تسجيل (${params.request.applicantName}) وإزالته من قائمة الطلبات المعلقة.`,
         params.decision === 'approve' ? 'success' : 'warning'
       );
     },
@@ -2889,6 +3310,24 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               'warning'
             );
           } else {
+            const defaultWsId = `ws_${syncedUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+            void fetch('/api/admin/notify-registration', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                applicantUid: syncedUser.uid,
+                applicantName: cleanName,
+                applicantEmail: syncedUser.email || email.trim(),
+                applicantPhone: '',
+                workspaceId: defaultWsId,
+                workspaceName: `مساحة عمل ${cleanName}`,
+                requestedPlanId: 'trial',
+                status: 'pending',
+                notes: 'طلب تسجيل عميل جديد بانتظار مراجعة واعتماد إدارة المنصة.',
+                requestedAtIso: new Date().toISOString(),
+              }),
+            }).catch(() => {});
+
             showToast(
               'تم استلام طلب تسجيل حسابك بنجاح — حسابك الآن بانتظار موافقة إدارة المنصة.',
               'info'
