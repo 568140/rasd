@@ -194,6 +194,7 @@ export const TaxpayersScreen: React.FC = () => {
     addPropertyUnit,
     updatePropertyUnit,
     deletePropertyUnit,
+    batchUpdatePropertyUnits,
     executeCompoundVoiceCreation,
     addFieldVisit,
     addAppointment,
@@ -284,6 +285,37 @@ export const TaxpayersScreen: React.FC = () => {
   const [propOfficesCount, setPropOfficesCount] = useState('0');
   const [propAnnexesCount, setPropAnnexesCount] = useState('0');
   const [propNotes, setPropNotes] = useState('');
+
+  // Optional Default Pricing & Occupancy during Property Creation in Dossier
+  const [propDefaultAptOccupancy, setPropDefaultAptOccupancy] = useState<OccupancyStatus>('occupied');
+  const [propDefaultAptRent, setPropDefaultAptRent] = useState('0');
+  const [propDefaultAptPeriod, setPropDefaultAptPeriod] = useState<RentPeriod>('monthly');
+  const [propDefaultShopOccupancy, setPropDefaultShopOccupancy] = useState<OccupancyStatus>('occupied');
+  const [propDefaultShopRent, setPropDefaultShopRent] = useState('0');
+  const [propDefaultShopPeriod, setPropDefaultShopPeriod] = useState<RentPeriod>('monthly');
+  const [propDefaultAnnexOccupancy, setPropDefaultAnnexOccupancy] = useState<OccupancyStatus>('occupied');
+  const [propDefaultAnnexRent, setPropDefaultAnnexRent] = useState('0');
+  const [propDefaultAnnexPeriod, setPropDefaultAnnexPeriod] = useState<RentPeriod>('monthly');
+
+  // In-Dossier Quick Bulk & Inline Units Editor Modal State
+  const [bulkModalProperty, setBulkModalProperty] = useState<Property | null>(null);
+  const [bulkUnitDrafts, setBulkUnitDrafts] = useState<
+    Array<{
+      unitId: string;
+      unitNumber: string;
+      unitType: UnitType;
+      floor: string;
+      occupancyStatus: OccupancyStatus;
+      rentAmount: string;
+      rentPeriod: RentPeriod;
+      tenantName: string;
+    }>
+  >([]);
+  const [bulkTarget, setBulkTarget] = useState<string>('all_apartments');
+  const [bulkOccupancy, setBulkOccupancy] = useState<OccupancyStatus>('occupied');
+  const [bulkRentAmount, setBulkRentAmount] = useState<string>('');
+  const [bulkRentPeriod, setBulkRentPeriod] = useState<RentPeriod>('monthly');
+  const [bulkAppliedNotice, setBulkAppliedNotice] = useState<string>('');
 
   // In-Dossier Add/Edit Unit Modal State
   const [unitModalProperty, setUnitModalProperty] = useState<Property | null>(null);
@@ -789,6 +821,15 @@ export const TaxpayersScreen: React.FC = () => {
     setPropShopsCount('0');
     setPropOfficesCount('0');
     setPropAnnexesCount('0');
+    setPropDefaultAptOccupancy('occupied');
+    setPropDefaultAptRent('0');
+    setPropDefaultAptPeriod('monthly');
+    setPropDefaultShopOccupancy('occupied');
+    setPropDefaultShopRent('0');
+    setPropDefaultShopPeriod('monthly');
+    setPropDefaultAnnexOccupancy('occupied');
+    setPropDefaultAnnexRent('0');
+    setPropDefaultAnnexPeriod('monthly');
     setPropNotes('');
     setIsPropertyModalOpen(true);
   };
@@ -858,6 +899,24 @@ export const TaxpayersScreen: React.FC = () => {
           shopsCount: shopsNum,
           officesCount: officesNum,
           annexesCount: annexesNum,
+          defaultApartmentOccupancy: propDefaultAptOccupancy,
+          defaultApartmentRent:
+            propDefaultAptOccupancy === 'occupied'
+              ? Math.max(0, parseFloat(propDefaultAptRent || '0') || 0)
+              : 0,
+          defaultApartmentRentPeriod: propDefaultAptPeriod,
+          defaultShopOccupancy: propDefaultShopOccupancy,
+          defaultShopRent:
+            propDefaultShopOccupancy === 'occupied'
+              ? Math.max(0, parseFloat(propDefaultShopRent || '0') || 0)
+              : 0,
+          defaultShopRentPeriod: propDefaultShopPeriod,
+          defaultAnnexOccupancy: propDefaultAnnexOccupancy,
+          defaultAnnexRent:
+            propDefaultAnnexOccupancy === 'occupied'
+              ? Math.max(0, parseFloat(propDefaultAnnexRent || '0') || 0)
+              : 0,
+          defaultAnnexRentPeriod: propDefaultAnnexPeriod,
           notes: propNotes,
         });
       } else {
@@ -886,6 +945,142 @@ export const TaxpayersScreen: React.FC = () => {
       }
       setIsPropertyModalOpen(false);
       setDossierTab('properties_and_units');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Quick Bulk & Inline Units Editor inside Dossier
+  const openQuickBulkUnitsModal = (prop: Property) => {
+    const pUnits = propertyUnits.filter((u) => u.propertyId === prop.id);
+    if (pUnits.length === 0) {
+      showToast('لا توجد وحدات مسجلة في هذا العقار بعد. أضف وحدة أولاً أو حدد عدد الشقق.', 'info');
+      return;
+    }
+    const floorGroups = groupPropertyUnitsByFloor(prop, pUnits);
+    const orderedUnits = floorGroups.flatMap((fg) => fg.units);
+
+    const drafts = orderedUnits.map((u) => {
+      const rentInfo = getUnitRentDisplayInfo(u);
+      return {
+        unitId: u.id,
+        unitNumber: u.unitNumber,
+        unitType: u.unitType,
+        floor: normalizeFloorLabel(u.floor, u.unitType),
+        occupancyStatus: u.occupancyStatus,
+        rentAmount: String(
+          u.occupancyStatus === 'occupied'
+            ? rentInfo.activeRentAmount || u.annualRentEstimate || 0
+            : 0
+        ),
+        rentPeriod: (u.rentPeriod || 'monthly') as RentPeriod,
+        tenantName: u.tenantName || '',
+      };
+    });
+
+    const hasApts = drafts.some((d) => d.unitType === 'apartment');
+    const hasShops = drafts.some((d) => d.unitType === 'shop');
+    setBulkModalProperty(prop);
+    setBulkUnitDrafts(drafts);
+    setBulkTarget(hasApts ? 'all_apartments' : hasShops ? 'all_shops' : 'all_units');
+    setBulkOccupancy('occupied');
+    const firstAptRent = drafts.find((d) => d.unitType === 'apartment' && Number(d.rentAmount) > 0)?.rentAmount;
+    setBulkRentAmount(firstAptRent || '');
+    setBulkRentPeriod('monthly');
+    setBulkAppliedNotice('');
+  };
+
+  const handleApplyBulkRuleToDrafts = () => {
+    const isOcc = bulkOccupancy === 'occupied';
+    const cleanRent = isOcc ? String(Math.max(0, parseFloat(bulkRentAmount || '0') || 0)) : '0';
+    let affectedCount = 0;
+
+    setBulkUnitDrafts((prev) =>
+      prev.map((d) => {
+        let matches = false;
+        if (bulkTarget === 'all_units') {
+          matches = true;
+        } else if (bulkTarget === 'all_apartments') {
+          matches = d.unitType === 'apartment';
+        } else if (bulkTarget === 'all_shops') {
+          matches = d.unitType === 'shop';
+        } else if (bulkTarget === 'all_annexes') {
+          matches = d.unitType === 'annex' || d.floor === 'السطح / الملاحق';
+        } else if (bulkTarget.startsWith('floor:')) {
+          const targetFloor = bulkTarget.replace('floor:', '');
+          matches = d.floor === targetFloor;
+        }
+
+        if (!matches) return d;
+        affectedCount++;
+        return {
+          ...d,
+          occupancyStatus: bulkOccupancy,
+          rentAmount: cleanRent,
+          rentPeriod: isOcc ? bulkRentPeriod : d.rentPeriod,
+          tenantName: isOcc ? d.tenantName : '',
+        };
+      })
+    );
+
+    setBulkAppliedNotice(
+      `تم تطبيق الحالة والسعر الموحد على (${affectedCount}) وحدة في الجدول أدناه — يمكنك الآن تعديل أي شقة مستثناة أو فارغة فرديًا ثم الضغط على حفظ.`
+    );
+  };
+
+  const handleUpdateSingleBulkDraft = (
+    unitId: string,
+    patch: Partial<{
+      occupancyStatus: OccupancyStatus;
+      rentAmount: string;
+      rentPeriod: RentPeriod;
+      tenantName: string;
+    }>
+  ) => {
+    setBulkUnitDrafts((prev) =>
+      prev.map((d) => {
+        if (d.unitId !== unitId) return d;
+        const nextOcc = patch.occupancyStatus ?? d.occupancyStatus;
+        const isOcc = nextOcc === 'occupied';
+        const nextRent =
+          patch.occupancyStatus && patch.occupancyStatus !== 'occupied'
+            ? '0'
+            : patch.rentAmount !== undefined
+            ? patch.rentAmount
+            : d.rentAmount;
+        return {
+          ...d,
+          ...patch,
+          occupancyStatus: nextOcc,
+          rentAmount: nextRent,
+          tenantName: isOcc ? (patch.tenantName ?? d.tenantName) : '',
+        };
+      })
+    );
+  };
+
+  const handleSaveQuickBulkUnits = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkModalProperty || submitting) return;
+    setSubmitting(true);
+    try {
+      await batchUpdatePropertyUnits(
+        bulkModalProperty.id,
+        bulkModalProperty.title,
+        bulkUnitDrafts.map((d) => ({
+          unitId: d.unitId,
+          occupancyStatus: d.occupancyStatus,
+          rentAmount:
+            d.occupancyStatus === 'occupied'
+              ? Math.max(0, parseFloat(d.rentAmount || '0') || 0)
+              : 0,
+          rentPeriod: d.occupancyStatus === 'occupied' ? d.rentPeriod : undefined,
+          tenantName: d.occupancyStatus === 'occupied' ? d.tenantName.trim() : '',
+        }))
+      );
+      setBulkModalProperty(null);
+      setBulkUnitDrafts([]);
+      setBulkAppliedNotice('');
     } finally {
       setSubmitting(false);
     }
@@ -1770,6 +1965,17 @@ export const TaxpayersScreen: React.FC = () => {
                           <Wallet className="w-3.5 h-3.5" />
                           <span>تحصيل</span>
                         </button>
+                        {units.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => openQuickBulkUnitsModal(prop)}
+                            className="min-h-[36px] px-3 rounded-xl bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 border border-amber-200/80 dark:border-amber-800/70 text-[#B48327] dark:text-amber-300 text-xs font-extrabold flex items-center gap-1 cursor-pointer shadow-2xs"
+                            title="تسعير وتعديل جماعي سريع لحالة وإيجار الشقق والوحدات"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-[#B48327]" />
+                            <span>تسعير وتعديل سريع</span>
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openAddUnitModal(prop)}
@@ -1908,11 +2114,21 @@ export const TaxpayersScreen: React.FC = () => {
 
                     {/* Units Grouped by Floor inside Property */}
                     <div className="mt-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-between">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-xs font-extrabold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                           <Layers className="w-4 h-4 text-[#0D9488]" />
                           الطوابق والوحدات التابعة ({units.length} وحدة):
                         </span>
+                        {units.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => openQuickBulkUnitsModal(prop)}
+                            className="px-3 py-1.5 rounded-xl bg-gradient-to-l from-[#0B192C] to-[#132A46] hover:opacity-95 text-white text-[11px] font-extrabold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-[#B48327]" />
+                            <span>تسعير جماعي وتعديل الاستثناءات ({units.length} وحدة)</span>
+                          </button>
+                        )}
                       </div>
 
                       {floorGroups.map((fg) => (
@@ -2642,6 +2858,218 @@ export const TaxpayersScreen: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Optional Default Unit Pricing & Occupancy at Property Creation */}
+                {!editingProperty &&
+                  (parseInt(propApartmentsCount || '0', 10) > 0 ||
+                    parseInt(propShopsCount || '0', 10) > 0 ||
+                    parseInt(propAnnexesCount || '0', 10) > 0) && (
+                    <div className="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-800/60 space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-xs font-extrabold text-[#0B192C] dark:text-white flex items-center gap-1.5">
+                            <Sparkles className="w-4 h-4 text-[#0D9488] shrink-0" />
+                            <span>تسعير وحالة افتراضية للوحدات عند الإنشاء (اختياري لتوفير الوقت)</span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            حدد الحالة والسعر السائد للشقق أو المحلات ليتم تطبيقه تلقائياً، وبعد الحفظ يمكنك استثناء أي شقة فارغة أو تغيير سعرها بضغطة واحدة.
+                          </p>
+                        </div>
+                      </div>
+
+                      {parseInt(propApartmentsCount || '0', 10) > 0 && (
+                        <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 space-y-2">
+                          <div className="text-[11px] font-extrabold text-[#0284C7] dark:text-sky-400">
+                            الإعداد الافتراضي لجميع الشقق ({propApartmentsCount} شقة):
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                حالة الشقق
+                              </label>
+                              <select
+                                value={propDefaultAptOccupancy}
+                                onChange={(e) =>
+                                  setPropDefaultAptOccupancy(e.target.value as OccupancyStatus)
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                              >
+                                {Object.entries(OCCUPANCY_LABELS).map(([k, v]) => (
+                                  <option key={k} value={k}>
+                                    {v}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {propDefaultAptOccupancy === 'occupied' && (
+                              <>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    إيجار الشقة الواحدة ({defaultCurrency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={propDefaultAptRent}
+                                    onChange={(e) => setPropDefaultAptRent(e.target.value)}
+                                    placeholder="مثال: 50000"
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    فترة الإيجار
+                                  </label>
+                                  <select
+                                    value={propDefaultAptPeriod}
+                                    onChange={(e) =>
+                                      setPropDefaultAptPeriod(e.target.value as RentPeriod)
+                                    }
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                                  >
+                                    {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                                      <option key={k} value={k}>
+                                        {v}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {parseInt(propShopsCount || '0', 10) > 0 && (
+                        <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 space-y-2">
+                          <div className="text-[11px] font-extrabold text-[#0D9488] dark:text-teal-400">
+                            الإعداد الافتراضي لجميع المحلات التجارية ({propShopsCount} محل):
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                حالة المحلات
+                              </label>
+                              <select
+                                value={propDefaultShopOccupancy}
+                                onChange={(e) =>
+                                  setPropDefaultShopOccupancy(e.target.value as OccupancyStatus)
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                              >
+                                {Object.entries(OCCUPANCY_LABELS).map(([k, v]) => (
+                                  <option key={k} value={k}>
+                                    {v}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {propDefaultShopOccupancy === 'occupied' && (
+                              <>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    إيجار المحل الواحد ({defaultCurrency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={propDefaultShopRent}
+                                    onChange={(e) => setPropDefaultShopRent(e.target.value)}
+                                    placeholder="مثال: 80000"
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    فترة الإيجار
+                                  </label>
+                                  <select
+                                    value={propDefaultShopPeriod}
+                                    onChange={(e) =>
+                                      setPropDefaultShopPeriod(e.target.value as RentPeriod)
+                                    }
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                                  >
+                                    {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                                      <option key={k} value={k}>
+                                        {v}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {parseInt(propAnnexesCount || '0', 10) > 0 && (
+                        <div className="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 space-y-2">
+                          <div className="text-[11px] font-extrabold text-[#B48327]">
+                            الإعداد الافتراضي لجميع الملحقات ({propAnnexesCount} ملحق):
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                حالة الملحقات
+                              </label>
+                              <select
+                                value={propDefaultAnnexOccupancy}
+                                onChange={(e) =>
+                                  setPropDefaultAnnexOccupancy(e.target.value as OccupancyStatus)
+                                }
+                                className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                              >
+                                {Object.entries(OCCUPANCY_LABELS).map(([k, v]) => (
+                                  <option key={k} value={k}>
+                                    {v}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {propDefaultAnnexOccupancy === 'occupied' && (
+                              <>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    إيجار الملحق الواحد ({defaultCurrency})
+                                  </label>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    value={propDefaultAnnexRent}
+                                    onChange={(e) => setPropDefaultAnnexRent(e.target.value)}
+                                    placeholder="مثال: 30000"
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                                    فترة الإيجار
+                                  </label>
+                                  <select
+                                    value={propDefaultAnnexPeriod}
+                                    onChange={(e) =>
+                                      setPropDefaultAnnexPeriod(e.target.value as RentPeriod)
+                                    }
+                                    className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#F4F7FA] dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                                  >
+                                    {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                                      <option key={k} value={k}>
+                                        {v}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
@@ -2657,6 +3085,367 @@ export const TaxpayersScreen: React.FC = () => {
                   >
                     {submitting ? 'جارٍ الحفظ...' : 'حفظ العقار في ملف المكلف'}
                   </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* In-Dossier Quick Bulk & Inline Units Editor Modal (تسعير جماعي وتعديل الاستثناءات والفراغات) */}
+        {bulkModalProperty && (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="w-full max-w-3xl bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl border border-slate-200 dark:border-slate-800 max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+              {/* Modal Header */}
+              <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex items-start justify-between gap-3 bg-[#F4F6F9]/70 dark:bg-slate-900/70">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-[#B48327] dark:text-amber-300 text-[11px] font-extrabold flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      إدخال سريع وموحد + تعديل الفوارق
+                    </span>
+                    <span className="text-xs font-mono font-bold text-slate-500">
+                      ({bulkUnitDrafts.length} وحدة)
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-extrabold text-[#0B192C] dark:text-white mt-1 font-display">
+                    تسعير وحالة وحدات العقار: «{bulkModalProperty.title}»
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    عمم السعر أو الحالة على جميع الشقق دفعة واحدة، ثم عدّل الشقق الفارغة أو المختلفة في السعر من الجدول أدناه مباشرة.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkModalProperty(null);
+                    setBulkUnitDrafts([]);
+                    setBulkAppliedNotice('');
+                  }}
+                  className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-800 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Scrollable Body */}
+              <form onSubmit={handleSaveQuickBulkUnits} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+                {/* Step 1: Top Bulk-Apply Bar */}
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-[#0B192C] to-[#152C4A] text-white space-y-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4" />
+                      الخطوة 1: تعميم سريع بضغطة واحدة (اختياري)
+                    </span>
+                    <span className="text-[11px] text-sky-200">
+                      يطبق على الفئة المختارة في الجدول أدناه فوراً
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-bold text-sky-200 mb-1">
+                        الفئة المستهدفة بالتعميم
+                      </label>
+                      <select
+                        value={bulkTarget}
+                        onChange={(e) => setBulkTarget(e.target.value)}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white/10 border border-white/20 text-white text-xs font-bold [&>option]:text-slate-900"
+                      >
+                        <option value="all_apartments">
+                          جميع الشقق ({bulkUnitDrafts.filter((d) => d.unitType === 'apartment').length})
+                        </option>
+                        <option value="all_shops">
+                          جميع المحلات ({bulkUnitDrafts.filter((d) => d.unitType === 'shop').length})
+                        </option>
+                        <option value="all_annexes">
+                          جميع الملحقات (
+                          {
+                            bulkUnitDrafts.filter(
+                              (d) => d.unitType === 'annex' || d.floor === 'السطح / الملاحق'
+                            ).length
+                          }
+                          )
+                        </option>
+                        <option value="all_units">جميع وحدات العقار ({bulkUnitDrafts.length})</option>
+                        {Array.from(new Set(bulkUnitDrafts.map((d) => d.floor))).map((fl) => (
+                          <option key={fl} value={`floor:${fl}`}>
+                            وحدات {fl} ({bulkUnitDrafts.filter((d) => d.floor === fl).length})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-sky-200 mb-1">
+                        الحالة الموحدة
+                      </label>
+                      <select
+                        value={bulkOccupancy}
+                        onChange={(e) => setBulkOccupancy(e.target.value as OccupancyStatus)}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white/10 border border-white/20 text-white text-xs font-bold [&>option]:text-slate-900"
+                      >
+                        {Object.entries(OCCUPANCY_LABELS).map(([k, v]) => (
+                          <option key={k} value={k}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {bulkOccupancy === 'occupied' ? (
+                      <>
+                        <div>
+                          <label className="block text-[11px] font-bold text-sky-200 mb-1">
+                            سعر الإيجار الموحد ({defaultCurrency})
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={bulkRentAmount}
+                            onChange={(e) => setBulkRentAmount(e.target.value)}
+                            placeholder="مثال: 50000"
+                            className="w-full min-h-[38px] px-3 rounded-xl bg-white text-[#0B192C] text-xs font-mono font-extrabold placeholder:text-slate-400"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-sky-200 mb-1">
+                            فترة الإيجار
+                          </label>
+                          <select
+                            value={bulkRentPeriod}
+                            onChange={(e) => setBulkRentPeriod(e.target.value as RentPeriod)}
+                            className="w-full min-h-[38px] px-2.5 rounded-xl bg-white/10 border border-white/20 text-white text-xs font-bold [&>option]:text-slate-900"
+                          >
+                            {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                              <option key={k} value={k}>
+                                {v}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="sm:col-span-2 flex items-end">
+                        <div className="w-full min-h-[38px] px-3 rounded-xl bg-white/10 border border-white/15 flex items-center text-xs text-sky-200">
+                          سيتم تصفير الإيجار تلقائياً للوحدات غير المؤجرة
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleApplyBulkRuleToDrafts}
+                      className="min-h-[38px] px-4 rounded-xl bg-[#B48327] hover:bg-amber-600 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>تطبيق التعميم على الفئة المختارة في الجدول</span>
+                    </button>
+
+                    {bulkAppliedNotice && (
+                      <span className="text-[11px] text-emerald-300 font-bold">
+                        {bulkAppliedNotice}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Step 2: Per-Unit Inline Exceptions Table Grouped by Floor */}
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-xs font-extrabold text-[#0B192C] dark:text-white flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-[#0D9488]" />
+                      الخطوة 2: مراجعة الوحدات وتعديل الشقق المستثناة أو الفارغة فردياً:
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                        مؤجرة: {bulkUnitDrafts.filter((d) => d.occupancyStatus === 'occupied').length}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300">
+                        شاغرة: {bulkUnitDrafts.filter((d) => d.occupancyStatus === 'vacant').length}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 dark:bg-sky-950/60 dark:text-sky-300">
+                        يستخدمها المالك:{' '}
+                        {bulkUnitDrafts.filter((d) => d.occupancyStatus === 'owner_used').length}
+                      </span>
+                    </div>
+                  </div>
+
+                  {Array.from(new Set(bulkUnitDrafts.map((d) => d.floor))).map((floorLabel) => {
+                    const floorDrafts = bulkUnitDrafts.filter((d) => d.floor === floorLabel);
+                    return (
+                      <div
+                        key={floorLabel}
+                        className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden"
+                      >
+                        <div className="px-3.5 py-2 bg-[#F4F6F9] dark:bg-slate-900 flex items-center justify-between text-xs">
+                          <span className="font-extrabold text-[#0B192C] dark:text-white">
+                            {floorLabel} ({floorDrafts.length} وحدة)
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            مؤجرة:{' '}
+                            {floorDrafts.filter((u) => u.occupancyStatus === 'occupied').length} من{' '}
+                            {floorDrafts.length}
+                          </span>
+                        </div>
+
+                        <div className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-[#0D1829]">
+                          {floorDrafts.map((draft) => {
+                            const isOcc = draft.occupancyStatus === 'occupied';
+                            const badgeStyle = OCCUPANCY_BADGE_STYLES[draft.occupancyStatus];
+                            return (
+                              <div
+                                key={draft.unitId}
+                                className={`p-3 grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center transition ${
+                                  !isOcc
+                                    ? 'bg-amber-50/30 dark:bg-amber-950/10'
+                                    : 'hover:bg-slate-50/70 dark:hover:bg-slate-900/40'
+                                }`}
+                              >
+                                {/* Unit Name & Type (3 cols) */}
+                                <div className="sm:col-span-3 flex items-center gap-2">
+                                  <span className="text-xs font-extrabold text-[#0B192C] dark:text-white">
+                                    {draft.unitNumber}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#F4F6F9] dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                    {UNIT_TYPE_LABELS[draft.unitType]}
+                                  </span>
+                                </div>
+
+                                {/* Occupancy Status Selector (3 cols) */}
+                                <div className="sm:col-span-3">
+                                  <select
+                                    value={draft.occupancyStatus}
+                                    onChange={(e) =>
+                                      handleUpdateSingleBulkDraft(draft.unitId, {
+                                        occupancyStatus: e.target.value as OccupancyStatus,
+                                      })
+                                    }
+                                    className={`w-full min-h-[36px] px-2.5 rounded-xl border text-xs font-extrabold ${badgeStyle.bg} ${badgeStyle.text} ${badgeStyle.border}`}
+                                  >
+                                    {Object.entries(OCCUPANCY_LABELS).map(([k, v]) => (
+                                      <option key={k} value={k}>
+                                        {v}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+
+                                {/* Rent Amount + Period + Tenant Name (6 cols) */}
+                                {isOcc ? (
+                                  <>
+                                    <div className="sm:col-span-2">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={draft.rentAmount}
+                                        onChange={(e) =>
+                                          handleUpdateSingleBulkDraft(draft.unitId, {
+                                            rentAmount: e.target.value,
+                                          })
+                                        }
+                                        placeholder="الإيجار"
+                                        className="w-full min-h-[36px] px-2.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-extrabold text-[#0B192C] dark:text-white"
+                                      />
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <select
+                                        value={draft.rentPeriod}
+                                        onChange={(e) =>
+                                          handleUpdateSingleBulkDraft(draft.unitId, {
+                                            rentPeriod: e.target.value as RentPeriod,
+                                          })
+                                        }
+                                        className="w-full min-h-[36px] px-2 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-bold"
+                                      >
+                                        {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                                          <option key={k} value={k}>
+                                            {v}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div className="sm:col-span-2">
+                                      <input
+                                        type="text"
+                                        value={draft.tenantName}
+                                        onChange={(e) =>
+                                          handleUpdateSingleBulkDraft(draft.unitId, {
+                                            tenantName: e.target.value,
+                                          })
+                                        }
+                                        placeholder="اسم المستأجر (اختياري)"
+                                        className="w-full min-h-[36px] px-2.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px]"
+                                      />
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="sm:col-span-6 flex items-center justify-between px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800 text-[11px] text-slate-500">
+                                    <span>
+                                      الوحدة «<strong>{OCCUPANCY_LABELS[draft.occupancyStatus]}</strong>» — الإيجار: 0 {defaultCurrency}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleUpdateSingleBulkDraft(draft.unitId, {
+                                          occupancyStatus: 'occupied',
+                                          rentAmount: bulkRentAmount || '0',
+                                        })
+                                      }
+                                      className="text-[11px] font-bold text-[#0D9488] hover:underline cursor-pointer"
+                                    >
+                                      تحويل إلى مؤجرة
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Sticky Footer inside Form */}
+                <div className="sticky bottom-0 pt-3 pb-1 bg-white dark:bg-[#0D1829] border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-xs text-slate-600 dark:text-slate-300 font-bold">
+                    إجمالي الإيجارات المؤجرة في هذا الجدول:{' '}
+                    <span className="font-mono font-extrabold text-[#059669] dark:text-emerald-400">
+                      {bulkUnitDrafts
+                        .filter((d) => d.occupancyStatus === 'occupied')
+                        .reduce((acc, d) => acc + (parseFloat(d.rentAmount || '0') || 0), 0)
+                        .toLocaleString('en-US')}{' '}
+                      {defaultCurrency}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBulkModalProperty(null);
+                        setBulkUnitDrafts([]);
+                        setBulkAppliedNotice('');
+                      }}
+                      className="min-h-[42px] px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold cursor-pointer"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="min-h-[42px] px-6 rounded-xl bg-[#0D9488] hover:bg-teal-700 text-white text-xs font-extrabold cursor-pointer shadow-sm"
+                    >
+                      {submitting
+                        ? 'جارٍ حفظ جميع الوحدات...'
+                        : `حفظ جميع التعديلات دفعة واحدة (${bulkUnitDrafts.length} وحدة)`}
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>

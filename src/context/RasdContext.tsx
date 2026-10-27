@@ -77,6 +77,7 @@ import {
   FinancialAssessment,
   FinancialTransaction,
   NotificationItem,
+  OccupancyStatus,
   OperationType,
   PlatformAdminAuditEntry,
   PlatformAdminOperation,
@@ -87,6 +88,7 @@ import {
   PropertyNavigationOrigin,
   PropertyUnit,
   RegistrationRequestMetadata,
+  RentPeriod,
   ScreenId,
   SubscriptionPackage,
   SubscriptionPlanId,
@@ -326,6 +328,19 @@ interface RasdContextValue {
   addPropertyUnit: (input: Omit<PropertyUnit, 'id' | 'workspaceId' | 'ownerId' | 'memberUids' | 'createdBy' | 'createdAt' | 'updatedAt'>) => Promise<string>;
   updatePropertyUnit: (id: string, input: Partial<PropertyUnit>) => Promise<void>;
   deletePropertyUnit: (unit: PropertyUnit) => Promise<void>;
+  batchUpdatePropertyUnits: (
+    propertyId: string,
+    propertyTitle: string,
+    updates: Array<{
+      unitId: string;
+      occupancyStatus: OccupancyStatus;
+      rentAmount: number;
+      rentPeriod?: RentPeriod;
+      tenantName?: string;
+      unitNumber?: string;
+      floor?: string;
+    }>
+  ) => Promise<void>;
 
   executeCompoundVoiceCreation: (input: {
     existingTaxpayerId?: string;
@@ -341,6 +356,18 @@ interface RasdContextValue {
     shopsCount: number;
     officesCount: number;
     annexesCount?: number;
+    defaultApartmentOccupancy?: OccupancyStatus;
+    defaultApartmentRent?: number;
+    defaultApartmentRentPeriod?: RentPeriod;
+    defaultShopOccupancy?: OccupancyStatus;
+    defaultShopRent?: number;
+    defaultShopRentPeriod?: RentPeriod;
+    defaultOfficeOccupancy?: OccupancyStatus;
+    defaultOfficeRent?: number;
+    defaultOfficeRentPeriod?: RentPeriod;
+    defaultAnnexOccupancy?: OccupancyStatus;
+    defaultAnnexRent?: number;
+    defaultAnnexRentPeriod?: RentPeriod;
     agentName?: string;
     agentPhone?: string;
     notes?: string;
@@ -4098,6 +4125,119 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [isOwner, properties, updateProperty, writeAuditLog, showToast]
   );
 
+  const batchUpdatePropertyUnits = useCallback(
+    async (
+      propertyId: string,
+      propertyTitle: string,
+      updates: Array<{
+        unitId: string;
+        occupancyStatus: OccupancyStatus;
+        rentAmount: number;
+        rentPeriod?: RentPeriod;
+        tenantName?: string;
+        unitNumber?: string;
+        floor?: string;
+      }>
+    ) => {
+      if (!firebaseUser || !workspace || !userProfile) return;
+      if (!updates || updates.length === 0) return;
+
+      try {
+        const batch = writeBatch(db);
+        let updatedCount = 0;
+
+        for (const item of updates) {
+          const existing = propertyUnits.find((u) => u.id === item.unitId);
+          if (!existing) continue;
+
+          const nextOccupancy = item.occupancyStatus ?? existing.occupancyStatus;
+          const nextUnitType = existing.unitType;
+          const isOccupied = nextOccupancy === 'occupied';
+
+          const nextRentAmount = isOccupied
+            ? Math.max(0, Number(item.rentAmount) || 0)
+            : 0;
+          const nextRentPeriod: RentPeriod | undefined = isOccupied
+            ? item.rentPeriod || existing.rentPeriod || 'monthly'
+            : undefined;
+
+          const compliantUnitType =
+            nextUnitType === 'annex' ? 'other' : nextUnitType;
+          const compliantOccupancyStatus =
+            nextOccupancy === 'owner_used' ? 'vacant' : nextOccupancy;
+
+          const existingRawMeta =
+            ((existing as unknown as { _rawMeta?: Record<string, unknown> })._rawMeta) || {};
+          const metaToStore: Record<string, unknown> = {
+            ...existingRawMeta,
+            occupancyStatus: nextOccupancy,
+            unitType: nextUnitType,
+          };
+          if (nextRentPeriod) {
+            metaToStore.rentAmount = nextRentAmount;
+            metaToStore.rentPeriod = nextRentPeriod;
+          } else {
+            delete metaToStore.rentPeriod;
+            if (!isOccupied) {
+              metaToStore.rentAmount = 0;
+            } else {
+              delete metaToStore.rentAmount;
+            }
+          }
+
+          const encodedNotes = validateAndEncodeMetaIntoNotes(
+            existing.notes || '',
+            metaToStore,
+            500
+          );
+
+          batch.update(doc(db, 'property_units', existing.id), {
+            propertyTitle: sanitizeText(propertyTitle || existing.propertyTitle, 150, 1, existing.propertyTitle),
+            unitNumber: sanitizeText(item.unitNumber ?? existing.unitNumber, 50, 1, existing.unitNumber),
+            unitType: compliantUnitType,
+            floor: sanitizeText(item.floor ?? existing.floor, 40),
+            areaSqm: Math.max(0, Math.min(1000000, Number(existing.areaSqm) || 0)),
+            occupancyStatus: compliantOccupancyStatus,
+            tenantName: isOccupied ? sanitizeText(item.tenantName ?? existing.tenantName, 150) : '',
+            annualRentEstimate: nextRentAmount,
+            notes: encodedNotes,
+            memberUids: workspace.memberUids,
+            updatedAt: serverTimestamp(),
+          });
+          updatedCount++;
+        }
+
+        if (updatedCount === 0) return;
+
+        const auditId = generateSafeId('audit');
+        batch.set(doc(db, 'audit_logs', auditId), {
+          workspaceId: workspace.id,
+          ownerId: workspace.ownerId,
+          actionType: 'update',
+          entityType: 'property',
+          entityId: propertyId,
+          summary: sanitizeText(
+            `تحديث وتسعير جماعي سريع لـ (${updatedCount}) وحدة عقارية في العقار: ${propertyTitle}`,
+            500,
+            2,
+            'تحديث جماعي للوحدات'
+          ),
+          actorId: firebaseUser.uid,
+          actorName: sanitizeText(userProfile.displayName, 120, 1, 'مستخدم'),
+          memberUids: workspace.memberUids,
+          createdAt: serverTimestamp(),
+        });
+
+        await batch.commit();
+        showToast(`تم حفظ وتحديث (${updatedCount}) وحدة عقارية دفعة واحدة بنجاح`, 'success');
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : translateFirebaseError(error), 'error');
+        handleFirestoreError(error, OperationType.UPDATE, `property_units/batch_${propertyId}`);
+      }
+    },
+    [firebaseUser, workspace, userProfile, propertyUnits, showToast]
+  );
+
   const executeCompoundVoiceCreation = useCallback(
     async (input: {
       existingTaxpayerId?: string;
@@ -4113,6 +4253,18 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       shopsCount: number;
       officesCount: number;
       annexesCount?: number;
+      defaultApartmentOccupancy?: OccupancyStatus;
+      defaultApartmentRent?: number;
+      defaultApartmentRentPeriod?: RentPeriod;
+      defaultShopOccupancy?: OccupancyStatus;
+      defaultShopRent?: number;
+      defaultShopRentPeriod?: RentPeriod;
+      defaultOfficeOccupancy?: OccupancyStatus;
+      defaultOfficeRent?: number;
+      defaultOfficeRentPeriod?: RentPeriod;
+      defaultAnnexOccupancy?: OccupancyStatus;
+      defaultAnnexRent?: number;
+      defaultAnnexRentPeriod?: RentPeriod;
       agentName?: string;
       agentPhone?: string;
       notes?: string;
@@ -4248,14 +4400,23 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const residentialFloorsCount = Math.max(1, floors > startFloorIdx ? floors - startFloorIdx : floors || 1);
         const aptsPerFloor = aptsCount > 0 ? Math.ceil(aptsCount / residentialFloorsCount) : 0;
 
+        const shopOcc: OccupancyStatus = input.defaultShopOccupancy || 'occupied';
+        const shopIsOccupied = shopOcc === 'occupied';
+        const shopRent = shopIsOccupied ? Math.max(0, Number(input.defaultShopRent) || 0) : 0;
+        const shopPeriod: RentPeriod | undefined = shopIsOccupied
+          ? input.defaultShopRentPeriod || (shopRent > 0 ? 'monthly' : undefined)
+          : undefined;
+        const compliantShopOcc = shopOcc === 'owner_used' ? 'vacant' : shopOcc;
+
         for (let i = 1; i <= shopsCount; i++) {
           const unitId = generateSafeId(`unit_shop${i}`);
           const unitNumber = `محل ${i}`;
           createdUnitNumbers.push(unitNumber);
-          const unitMeta = {
-            occupancyStatus: 'occupied',
+          const unitMeta: Record<string, unknown> = {
+            occupancyStatus: shopOcc,
             unitType: 'shop',
-            rentAmount: 0,
+            rentAmount: shopRent,
+            ...(shopPeriod ? { rentPeriod: shopPeriod } : {}),
           };
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
@@ -4267,9 +4428,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             unitType: 'shop',
             floor: sanitizeText('الطابق الأرضي', 40),
             areaSqm: 0,
-            occupancyStatus: 'occupied',
+            occupancyStatus: compliantShopOcc,
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: shopRent,
             notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -4277,6 +4438,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             updatedAt: serverTimestamp(),
           });
         }
+
+        const aptOcc: OccupancyStatus = input.defaultApartmentOccupancy || 'occupied';
+        const aptIsOccupied = aptOcc === 'occupied';
+        const aptRent = aptIsOccupied ? Math.max(0, Number(input.defaultApartmentRent) || 0) : 0;
+        const aptPeriod: RentPeriod | undefined = aptIsOccupied
+          ? input.defaultApartmentRentPeriod || (aptRent > 0 ? 'monthly' : undefined)
+          : undefined;
+        const compliantAptOcc = aptOcc === 'owner_used' ? 'vacant' : aptOcc;
 
         for (let i = 1; i <= aptsCount; i++) {
           const unitId = generateSafeId(`unit_apt${i}`);
@@ -4288,10 +4457,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             startFloorIdx + floorOffset
           );
           const currentFloor = getFloorName(floorIdx);
-          const unitMeta = {
-            occupancyStatus: 'occupied',
+          const unitMeta: Record<string, unknown> = {
+            occupancyStatus: aptOcc,
             unitType: 'apartment',
-            rentAmount: 0,
+            rentAmount: aptRent,
+            ...(aptPeriod ? { rentPeriod: aptPeriod } : {}),
           };
 
           batch.set(doc(db, 'property_units', unitId), {
@@ -4304,9 +4474,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             unitType: 'apartment',
             floor: sanitizeText(currentFloor, 40),
             areaSqm: 0,
-            occupancyStatus: 'occupied',
+            occupancyStatus: compliantAptOcc,
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: aptRent,
             notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -4315,14 +4485,23 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
 
+        const offOcc: OccupancyStatus = input.defaultOfficeOccupancy || 'occupied';
+        const offIsOccupied = offOcc === 'occupied';
+        const offRent = offIsOccupied ? Math.max(0, Number(input.defaultOfficeRent) || 0) : 0;
+        const offPeriod: RentPeriod | undefined = offIsOccupied
+          ? input.defaultOfficeRentPeriod || (offRent > 0 ? 'monthly' : undefined)
+          : undefined;
+        const compliantOffOcc = offOcc === 'owner_used' ? 'vacant' : offOcc;
+
         for (let i = 1; i <= officesCount; i++) {
           const unitId = generateSafeId(`unit_off${i}`);
           const unitNumber = `مكتب ${i}`;
           createdUnitNumbers.push(unitNumber);
-          const unitMeta = {
-            occupancyStatus: 'occupied',
+          const unitMeta: Record<string, unknown> = {
+            occupancyStatus: offOcc,
             unitType: 'office',
-            rentAmount: 0,
+            rentAmount: offRent,
+            ...(offPeriod ? { rentPeriod: offPeriod } : {}),
           };
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
@@ -4334,9 +4513,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             unitType: 'office',
             floor: sanitizeText(floors > 1 ? 'الطابق الأول' : 'الطابق الأرضي', 40),
             areaSqm: 0,
-            occupancyStatus: 'occupied',
+            occupancyStatus: compliantOffOcc,
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: offRent,
             notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -4345,14 +4524,23 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
 
+        const anxOcc: OccupancyStatus = input.defaultAnnexOccupancy || 'occupied';
+        const anxIsOccupied = anxOcc === 'occupied';
+        const anxRent = anxIsOccupied ? Math.max(0, Number(input.defaultAnnexRent) || 0) : 0;
+        const anxPeriod: RentPeriod | undefined = anxIsOccupied
+          ? input.defaultAnnexRentPeriod || (anxRent > 0 ? 'monthly' : undefined)
+          : undefined;
+        const compliantAnxOcc = anxOcc === 'owner_used' ? 'vacant' : anxOcc;
+
         for (let i = 1; i <= annexesCount; i++) {
           const unitId = generateSafeId(`unit_anx${i}`);
           const unitNumber = `ملحق ${i}`;
           createdUnitNumbers.push(unitNumber);
-          const unitMeta = {
-            occupancyStatus: 'occupied',
+          const unitMeta: Record<string, unknown> = {
+            occupancyStatus: anxOcc,
             unitType: 'annex',
-            rentAmount: 0,
+            rentAmount: anxRent,
+            ...(anxPeriod ? { rentPeriod: anxPeriod } : {}),
           };
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
@@ -4364,9 +4552,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             unitType: 'other',
             floor: sanitizeText('السطح / الملاحق', 40),
             areaSqm: 0,
-            occupancyStatus: 'occupied',
+            occupancyStatus: compliantAnxOcc,
             tenantName: '',
-            annualRentEstimate: 0,
+            annualRentEstimate: anxRent,
             notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
@@ -5821,6 +6009,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     addPropertyUnit,
     updatePropertyUnit,
     deletePropertyUnit,
+    batchUpdatePropertyUnits,
     executeCompoundVoiceCreation,
     addFieldVisit,
     updateFieldVisitStatus,
