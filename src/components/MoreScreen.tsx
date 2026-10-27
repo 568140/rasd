@@ -22,6 +22,7 @@ import {
   KeyRound,
   Database,
   Upload,
+  Trash2,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { usePWAInstall } from '../hooks/usePWAInstall';
@@ -65,6 +66,7 @@ export const MoreScreen: React.FC = () => {
     showToast,
     receivedRegistrationRequests,
     refreshReceivedRegistrationRequests,
+    purgeAllWorkspaceAndTestData,
   } = useRasd();
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
@@ -95,6 +97,8 @@ export const MoreScreen: React.FC = () => {
   const [wsRegion, setWsRegion] = useState(workspace?.regionName || 'عدن');
 
   const [isVerifyingOwnerAction, setIsVerifyingOwnerAction] = useState(false);
+  const [confirmPurgeDb, setConfirmPurgeDb] = useState(false);
+  const [isPurgingDb, setIsPurgingDb] = useState(false);
 
   const showPlatformAdminEntry =
     isPlatformAdmin ||
@@ -1175,20 +1179,63 @@ export const MoreScreen: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setSubPanel('none')}
-              className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
-            >
-              إغلاق
-            </button>
-            <button
-              type="submit"
-              className="min-h-[40px] px-5 rounded-xl bg-[#0D9488] text-white text-xs font-bold cursor-pointer"
-            >
-              حفظ إعدادات المساحة
-            </button>
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            {!confirmPurgeDb ? (
+              <button
+                type="button"
+                onClick={() => setConfirmPurgeDb(true)}
+                className="min-h-[40px] px-4 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 text-xs font-extrabold flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>تنظيف وحذف كافة بيانات التجربة من قاعدة البيانات نهائيًا</span>
+              </button>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 bg-rose-50 dark:bg-rose-950/50 border border-rose-300 dark:border-rose-800 px-3.5 py-2 rounded-2xl">
+                <span className="text-xs font-extrabold text-rose-800 dark:text-rose-200">
+                  تأكيد الحذف النهائي لجميع المكلفين والعقارات والمواعيد والسجلات من قاعدة البيانات؟
+                </span>
+                <button
+                  type="button"
+                  disabled={isPurgingDb}
+                  onClick={async () => {
+                    setIsPurgingDb(true);
+                    try {
+                      await purgeAllWorkspaceAndTestData({ silent: false });
+                      setConfirmPurgeDb(false);
+                    } finally {
+                      setIsPurgingDb(false);
+                    }
+                  }}
+                  className="min-h-[34px] px-3.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold cursor-pointer disabled:opacity-50"
+                >
+                  {isPurgingDb ? 'جاري الحذف من القاعدة...' : 'نعم، احذف الكل نهائيًا'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isPurgingDb}
+                  onClick={() => setConfirmPurgeDb(false)}
+                  className="min-h-[34px] px-3 rounded-xl bg-white dark:bg-slate-800 text-xs font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 ms-auto">
+              <button
+                type="button"
+                onClick={() => setSubPanel('none')}
+                className="min-h-[40px] px-4 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold cursor-pointer"
+              >
+                إغلاق
+              </button>
+              <button
+                type="submit"
+                className="min-h-[40px] px-5 rounded-xl bg-[#0D9488] text-white text-xs font-bold cursor-pointer"
+              >
+                حفظ إعدادات المساحة
+              </button>
+            </div>
           </div>
         </form>
       )}

@@ -1102,7 +1102,11 @@ service cloud.firestore {
         isWorkspaceLicenseActive(incoming().workspaceId) &&
         exists(/databases/$(database)/documents/appointments/$(incoming().appointmentId)) &&
         get(/databases/$(database)/documents/appointments/$(incoming().appointmentId)).data.workspaceId == incoming().workspaceId;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(postponementId) && (
+        (isWorkspaceLicenseActive(existing().workspaceId) && isWorkspaceOwner(existing().workspaceId)) ||
+        isAdmin()
+      );
     }
 
     // Collection 10: /financial_assessments/{assessmentId} (Terminal State Locking on Approved/Cancelled)
@@ -1152,7 +1156,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'memberUids', 'updatedAt'])
           )
         );
-      allow delete: if isVerifiedUser() && isValidId(assessmentId) && existing().status == 'draft' && (
+      allow delete: if isVerifiedUser() && isValidId(assessmentId) && (
         (isWorkspaceLicenseActive(existing().workspaceId) && isWorkspaceOwner(existing().workspaceId)) ||
         isAdmin()
       );
@@ -1194,7 +1198,10 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'memberUids', 'updatedAt'])
           )
         );
-      allow delete: if false;
+      allow delete: if isVerifiedUser() && isValidId(transactionId) && (
+        (isWorkspaceLicenseActive(existing().workspaceId) && isWorkspaceOwner(existing().workspaceId)) ||
+        isAdmin()
+      );
     }
 
     // Collection 12: /notifications/{notificationId}
@@ -1256,7 +1263,8 @@ service cloud.firestore {
           isActivePlatformStaff() ||
           (isWorkspaceMember(incoming().workspaceId) && isWorkspaceLicenseActive(incoming().workspaceId))
         );
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(logId);
     }
   }
 }

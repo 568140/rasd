@@ -387,6 +387,7 @@ interface RasdContextValue {
   deleteNotification: (id: string) => Promise<void>;
   clearAllNotifications: () => Promise<void>;
   recordVoiceAudit: (transcript: string, summary: string) => Promise<void>;
+  purgeAllWorkspaceAndTestData: (options?: { silent?: boolean }) => Promise<{ deletedCount: number }>;
 }
 
 const RasdContext = createContext<RasdContextValue | undefined>(undefined);
@@ -3630,26 +3631,71 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const deleteTaxpayer = useCallback(
     async (id: string) => {
-      if (!isOwner) {
+      if (!isOwner && !isPlatformAdmin) {
         showToast('فقط مالك مساحة العمل يملك صلاحية حذف السجلات.', 'error');
-        return;
-      }
-      const linkedProps = properties.filter((p) => p.taxpayerId === id);
-      if (linkedProps.length > 0) {
-        showToast(`لا يمكن حذف المكلف لوجود ${linkedProps.length} عقارات مرتبطة به. يرجى معالجة العقارات أولًا.`, 'error');
         return;
       }
       const target = taxpayers.find((t) => t.id === id);
       const path = `taxpayers/${id}`;
       try {
+        const linkedProps = properties.filter((p) => p.taxpayerId === id);
+        const linkedPropIds = new Set(linkedProps.map((p) => p.id));
+
+        const linkedUnits = propertyUnits.filter((u) => linkedPropIds.has(u.propertyId));
+        const linkedVisits = fieldVisits.filter((v) => v.taxpayerId === id || linkedPropIds.has(v.propertyId));
+        const linkedAppointments = appointments.filter(
+          (a) => a.taxpayerId === id || (a.propertyId && linkedPropIds.has(a.propertyId))
+        );
+        const linkedAppIds = new Set(linkedAppointments.map((a) => a.id));
+        const linkedPostponements = postponements.filter((p) => linkedAppIds.has(p.appointmentId));
+        const linkedAssessments = assessments.filter((a) => a.taxpayerId === id || linkedPropIds.has(a.propertyId));
+        const linkedTx = transactions.filter((t) => t.taxpayerId === id || linkedPropIds.has(t.propertyId));
+
+        for (const u of linkedUnits) {
+          await deleteDoc(doc(db, 'property_units', u.id)).catch(() => {});
+        }
+        for (const v of linkedVisits) {
+          await deleteDoc(doc(db, 'field_visits', v.id)).catch(() => {});
+        }
+        for (const postp of linkedPostponements) {
+          await deleteDoc(doc(db, 'appointment_postponements', postp.id)).catch(() => {});
+        }
+        for (const app of linkedAppointments) {
+          await deleteDoc(doc(db, 'appointments', app.id)).catch(() => {});
+        }
+        for (const tx of linkedTx) {
+          await deleteDoc(doc(db, 'financial_transactions', tx.id)).catch(() => {});
+        }
+        for (const ass of linkedAssessments) {
+          await deleteDoc(doc(db, 'financial_assessments', ass.id)).catch(() => {});
+        }
+        for (const prop of linkedProps) {
+          await deleteDoc(doc(db, 'properties', prop.id)).catch(() => {});
+        }
+
         await deleteDoc(doc(db, 'taxpayers', id));
-        await writeAuditLog('delete', 'taxpayer', id, `حذف المكلف: ${target?.fullName || id}`);
-        showToast('تم حذف سجل المكلف', 'info');
+        if (selectedTaxpayerId === id) setSelectedTaxpayerId(null);
+        await writeAuditLog('delete', 'taxpayer', id, `حذف المكلف وكافة متعلقاته: ${target?.fullName || id}`);
+        showToast('تم حذف سجل المكلف وكافة العقارات والمواعيد المرتبطة به نهائيًا', 'info');
       } catch (error) {
         handleFirestoreError(error, OperationType.DELETE, path);
       }
     },
-    [isOwner, properties, taxpayers, writeAuditLog, showToast]
+    [
+      isOwner,
+      isPlatformAdmin,
+      properties,
+      propertyUnits,
+      fieldVisits,
+      appointments,
+      postponements,
+      assessments,
+      transactions,
+      taxpayers,
+      selectedTaxpayerId,
+      writeAuditLog,
+      showToast,
+    ]
   );
 
   // Property Mutations
@@ -3804,38 +3850,55 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const deleteProperty = useCallback(
     async (id: string) => {
-      if (!isOwner) {
+      if (!isOwner && !isPlatformAdmin) {
         showToast('فقط مالك مساحة العمل يملك صلاحية حذف العقار.', 'error');
         return;
       }
       const linkedUnits = propertyUnits.filter((u) => u.propertyId === id);
       const linkedVisits = fieldVisits.filter((v) => v.propertyId === id);
+      const linkedAppointments = appointments.filter((a) => a.propertyId === id);
+      const linkedAppIds = new Set(linkedAppointments.map((a) => a.id));
+      const linkedPostponements = postponements.filter((p) => linkedAppIds.has(p.appointmentId));
       const linkedAssessments = assessments.filter((a) => a.propertyId === id);
       const linkedTx = transactions.filter((t) => t.propertyId === id);
-
-      if (linkedUnits.length > 0 || linkedVisits.length > 0 || linkedAssessments.length > 0 || linkedTx.length > 0) {
-        showToast(
-          `لا يمكن حذف العقار لارتباطه بـ (${linkedUnits.length} وحدة، ${linkedVisits.length} زيارة، ${linkedAssessments.length} تقييم، ${linkedTx.length} معاملة).`,
-          'error'
-        );
-        return;
-      }
 
       const target = properties.find((p) => p.id === id);
       const path = `properties/${id}`;
       try {
+        for (const u of linkedUnits) {
+          await deleteDoc(doc(db, 'property_units', u.id)).catch(() => {});
+        }
+        for (const v of linkedVisits) {
+          await deleteDoc(doc(db, 'field_visits', v.id)).catch(() => {});
+        }
+        for (const postp of linkedPostponements) {
+          await deleteDoc(doc(db, 'appointment_postponements', postp.id)).catch(() => {});
+        }
+        for (const app of linkedAppointments) {
+          await deleteDoc(doc(db, 'appointments', app.id)).catch(() => {});
+        }
+        for (const tx of linkedTx) {
+          await deleteDoc(doc(db, 'financial_transactions', tx.id)).catch(() => {});
+        }
+        for (const ass of linkedAssessments) {
+          await deleteDoc(doc(db, 'financial_assessments', ass.id)).catch(() => {});
+        }
+
         await deleteDoc(doc(db, 'properties', id));
-        await writeAuditLog('delete', 'property', id, `حذف العقار: ${target?.title || id}`);
+        await writeAuditLog('delete', 'property', id, `حذف العقار وكافة وحداته: ${target?.title || id}`);
         if (selectedPropertyId === id) setSelectedPropertyId(null);
-        showToast('تم حذف العقار بنجاح', 'info');
+        showToast('تم حذف العقار وكافة الوحدات والسجلات المرتبطة به نهائيًا', 'info');
       } catch (error) {
         handleFirestoreError(error, OperationType.DELETE, path);
       }
     },
     [
       isOwner,
+      isPlatformAdmin,
       propertyUnits,
       fieldVisits,
+      appointments,
+      postponements,
       assessments,
       transactions,
       properties,
@@ -5477,6 +5540,207 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [writeAuditLog, workspace?.id]
   );
 
+  const purgeAllWorkspaceAndTestData = useCallback(
+    async (options?: { silent?: boolean }): Promise<{ deletedCount: number }> => {
+      if (!firebaseUser) return { deletedCount: 0 };
+
+      let deletedCount = 0;
+
+      // 1. Clear server-side pending registrations & alert idempotency cache
+      try {
+        await fetch('/api/admin/clear-all-test-data', { method: 'POST' });
+      } catch {
+        // Ignore network errors if offline
+      }
+
+      // 2. Clear localStorage test registration keys & cached security logs
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (
+            k &&
+            (k.startsWith('rasd_reg_req_') ||
+              k.startsWith('rasd_alerted_pending_reqs_') ||
+              k === 'rasd_security_audit_denied_logs')
+          ) {
+            keysToRemove.push(k);
+          }
+        }
+        for (const k of keysToRemove) {
+          localStorage.removeItem(k);
+        }
+      } catch {
+        // Ignore storage errors
+      }
+
+      // 3. Delete all operational records from Firestore database
+      const operationalCollections = [
+        'property_units',
+        'field_visits',
+        'appointment_postponements',
+        'appointments',
+        'financial_transactions',
+        'financial_assessments',
+        'properties',
+        'taxpayers',
+        'notifications',
+        'audit_logs',
+      ];
+
+      for (const colName of operationalCollections) {
+        const docIdsToDelete = new Set<string>();
+
+        try {
+          const memberSnap = await getDocs(
+            query(collection(db, colName), where('memberUids', 'array-contains', firebaseUser.uid))
+          );
+          memberSnap.docs.forEach((d) => docIdsToDelete.add(d.id));
+        } catch {
+          // Ignore query error
+        }
+
+        if (isPlatformAdmin) {
+          try {
+            const allSnap = await getDocs(collection(db, colName));
+            allSnap.docs.forEach((d) => docIdsToDelete.add(d.id));
+          } catch {
+            // Ignore if collection query restricted
+          }
+        }
+
+        for (const docId of docIdsToDelete) {
+          try {
+            await deleteDoc(doc(db, colName, docId));
+            deletedCount++;
+          } catch {
+            // Ignore individual doc error
+          }
+        }
+      }
+
+      // 4. If Platform Admin, also delete any non-owner test client licenses, workspaces, members, and users
+      if (isPlatformAdmin) {
+        try {
+          const licSnap = await getDocs(collection(db, 'account_licenses'));
+          for (const d of licSnap.docs) {
+            const data = d.data();
+            const ownerEmail = String(data.ownerEmail || '').trim().toLowerCase();
+            const ownerUid = String(data.ownerUid || '');
+            if (!isPermanentPlatformOwnerEmail(ownerEmail) && ownerUid !== firebaseUser.uid) {
+              await deleteDoc(doc(db, 'account_licenses', d.id)).catch(() => {});
+              deletedCount++;
+            }
+          }
+        } catch {
+          // Ignore
+        }
+
+        try {
+          const memSnap = await getDocs(collection(db, 'workspace_members'));
+          for (const d of memSnap.docs) {
+            const data = d.data();
+            const email = String(data.email || '').trim().toLowerCase();
+            const uid = String(data.uid || '');
+            const wsId = String(data.workspaceId || '');
+            if (
+              !isPermanentPlatformOwnerEmail(email) &&
+              uid !== firebaseUser.uid &&
+              wsId !== workspace?.id
+            ) {
+              await deleteDoc(doc(db, 'workspace_members', d.id)).catch(() => {});
+              deletedCount++;
+            }
+          }
+        } catch {
+          // Ignore
+        }
+
+        try {
+          const wsSnap = await getDocs(collection(db, 'workspaces'));
+          for (const d of wsSnap.docs) {
+            const data = d.data();
+            const ownerId = String(data.ownerId || '');
+            if (d.id !== workspace?.id && ownerId !== firebaseUser.uid) {
+              await deleteDoc(doc(db, 'workspaces', d.id)).catch(() => {});
+              deletedCount++;
+            }
+          }
+        } catch {
+          // Ignore
+        }
+
+        try {
+          const usersSnap = await getDocs(collection(db, 'users'));
+          for (const d of usersSnap.docs) {
+            const data = d.data();
+            const email = String(data.email || '').trim().toLowerCase();
+            if (!isPermanentPlatformOwnerEmail(email) && d.id !== firebaseUser.uid) {
+              await deleteDoc(doc(db, 'users', d.id)).catch(() => {});
+              deletedCount++;
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      // 5. Reset local React state immediately
+      setTaxpayers([]);
+      setProperties([]);
+      setPropertyUnits([]);
+      setFieldVisits([]);
+      setAppointments([]);
+      setPostponements([]);
+      setAssessments([]);
+      setTransactions([]);
+      setNotifications([]);
+      setAuditLogs([]);
+      setReceivedRegistrationRequests([]);
+      setPlatformAdminAuditLogs([]);
+      setSelectedPropertyId(null);
+      setSelectedTaxpayerId(null);
+      setSelectedAppointmentId(null);
+
+      if (!options?.silent) {
+        showToast(
+          deletedCount > 0
+            ? `تم تنظيف وحذف جميع بيانات التجربة (${deletedCount} سجل) من قاعدة البيانات نهائيًا.`
+            : 'تم تنظيف وتصفير جميع بيانات التجربة؛ قاعدة البيانات نظيفة بالكامل.',
+          'success'
+        );
+      }
+
+      return { deletedCount };
+    },
+    [firebaseUser, isPlatformAdmin, workspace?.id, showToast]
+  );
+
+  // Automatic one-time clean launch purge of all test data from Firestore
+  useEffect(() => {
+    const CLEAN_LAUNCH_PURGE_KEY = 'rasd_clean_launch_purge_v2026_10_27_done';
+    if (!authReady || !firebaseUser) return;
+    if (!canAccessWorkScreens && !isPlatformAdmin) return;
+    if (localStorage.getItem(CLEAN_LAUNCH_PURGE_KEY) === 'true') return;
+
+    let cancelled = false;
+    const runCleanLaunchPurge = async () => {
+      try {
+        await purgeAllWorkspaceAndTestData({ silent: false });
+        if (!cancelled) {
+          localStorage.setItem(CLEAN_LAUNCH_PURGE_KEY, 'true');
+        }
+      } catch {
+        // Will retry next session if interrupted
+      }
+    };
+
+    void runCleanLaunchPurge();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, firebaseUser, canAccessWorkScreens, isPlatformAdmin, purgeAllWorkspaceAndTestData]);
+
   const value: RasdContextValue = {
     firebaseUser,
     userProfile,
@@ -5577,6 +5841,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     deleteNotification,
     clearAllNotifications,
     recordVoiceAudit,
+    purgeAllWorkspaceAndTestData,
   };
 
   return <RasdContext.Provider value={value}>{children}</RasdContext.Provider>;

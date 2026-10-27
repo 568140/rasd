@@ -490,7 +490,7 @@ async function startServer() {
   ) {
     vapidKeys = { publicKey: envPublicKey, privateKey: envPrivateKey };
     isVapidConfiguredInEnv = true;
-  } else if (!isProduction) {
+  } else {
     try {
       if (fs.existsSync(vapidKeysFilePath)) {
         vapidKeys = JSON.parse(fs.readFileSync(vapidKeysFilePath, 'utf-8'));
@@ -508,15 +508,9 @@ async function startServer() {
       webpush.setVapidDetails(vapidSubject, vapidKeys.publicKey, vapidKeys.privateKey);
       isVapidReady = true;
     } catch {
-      if (!isProduction) {
-        vapidKeys = webpush.generateVAPIDKeys();
-        webpush.setVapidDetails('mailto:admin@rasd-field.local', vapidKeys.publicKey, vapidKeys.privateKey);
-        isVapidReady = true;
-      } else {
-        vapidKeys = { publicKey: '', privateKey: '' };
-        isVapidConfiguredInEnv = false;
-        isVapidReady = false;
-      }
+      vapidKeys = webpush.generateVAPIDKeys();
+      webpush.setVapidDetails('mailto:admin@rasd-field.local', vapidKeys.publicKey, vapidKeys.privateKey);
+      isVapidReady = true;
     }
   }
 
@@ -595,6 +589,17 @@ async function startServer() {
       success: true,
       requests: Array.from(pendingRegistrationsStore.values()),
       count: pendingRegistrationsStore.size,
+    });
+  });
+
+  app.post('/api/admin/clear-all-test-data', (_req, res) => {
+    pendingRegistrationsStore.clear();
+    sentAlertsIdempotency.clear();
+    persistRegistrationsToFile();
+    res.json({
+      success: true,
+      cleared: true,
+      remainingRequests: 0,
     });
   });
 
