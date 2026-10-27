@@ -145,8 +145,8 @@ export const MoreScreen: React.FC = () => {
     },
     {
       id: 'visits',
-      label: 'الزيارات الميدانية',
-      desc: 'تسجيل المعاينات الميدانية وإحداثيات GPS والصور والعمل دون اتصال',
+      label: 'المحاضر والزيارات الميدانية',
+      desc: 'توثيق المحاضر والمعاينات الميدانية وإحداثيات GPS والصور والعمل دون اتصال',
       icon: <MapPin className="w-5 h-5 text-[#0D9488]" />,
       badgeBg: 'bg-teal-50 dark:bg-teal-950/60',
     },

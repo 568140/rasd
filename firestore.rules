@@ -415,10 +415,10 @@ service cloud.firestore {
         data.propertyTitle is string && data.propertyTitle.size() >= 1 && data.propertyTitle.size() <= 150 &&
         isValidId(data.taxpayerId) &&
         data.unitNumber is string && data.unitNumber.size() >= 1 && data.unitNumber.size() <= 50 &&
-        data.unitType is string && data.unitType.size() <= 30 && data.unitType in ['apartment', 'shop', 'office', 'warehouse', 'other'] &&
+        data.unitType is string && data.unitType.size() <= 30 && data.unitType in ['apartment', 'shop', 'office', 'warehouse', 'annex', 'other'] &&
         data.floor is string && data.floor.size() <= 40 &&
         data.areaSqm is number && data.areaSqm >= 0 && data.areaSqm <= 1000000 &&
-        data.occupancyStatus is string && data.occupancyStatus.size() <= 30 && data.occupancyStatus in ['occupied', 'vacant', 'under_maintenance'] &&
+        data.occupancyStatus is string && data.occupancyStatus.size() <= 30 && data.occupancyStatus in ['occupied', 'vacant', 'owner_used', 'under_maintenance'] &&
         data.tenantName is string && data.tenantName.size() <= 150 &&
         data.annualRentEstimate is number && data.annualRentEstimate >= 0 &&
         data.notes is string && data.notes.size() <= 500 &&

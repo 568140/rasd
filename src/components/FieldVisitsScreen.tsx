@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   MapPin,
   Plus,
@@ -219,6 +219,23 @@ export const FieldVisitsScreen: React.FC = () => {
     setIsFormOpen(true);
   };
 
+  useEffect(() => {
+    try {
+      const quickAction = sessionStorage.getItem('rasd_quick_action');
+      if (quickAction === 'view_all_visits') {
+        sessionStorage.removeItem('rasd_quick_action');
+        setActiveTab('all');
+      } else if (quickAction === 'open_add_visit') {
+        sessionStorage.removeItem('rasd_quick_action');
+        if (properties.length > 0) {
+          openNewVisitModal();
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [properties.length]);
+
   const handleCaptureGPS = () => {
     if (!navigator.geolocation) {
       showToast('جهازك لا يدعم خدمة تحديد المواقع الجغرافية.', 'error');
@@ -304,10 +321,10 @@ export const FieldVisitsScreen: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-[#0B192C] dark:text-white font-display">
-            الزيارات الميدانية والخطة اليومية
+            المحاضر والزيارات الميدانية والخطة اليومية
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            توثيق المسح والمعاينة وإدارة مؤشرات إنجاز الخطة اليومية بالمناطق
+            توثيق المحاضر والمسح والمعاينة وإدارة مؤشرات إنجاز الخطة اليومية بالمناطق
           </p>
         </div>
 

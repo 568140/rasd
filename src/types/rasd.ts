@@ -42,6 +42,18 @@ export type ScreenId =
   | 'settings'
   | 'platform_admin';
 
+export type DossierTabId =
+  | 'properties_and_units'
+  | 'financial_file'
+  | 'visits_and_appointments'
+  | 'activity_timeline';
+
+export interface PropertyNavigationOrigin {
+  source: 'taxpayer_dossier' | 'properties_list' | 'taxpayers_properties_directory';
+  taxpayerId?: string | null;
+  dossierTab?: DossierTabId;
+}
+
 export type WorkspaceRole = 'owner' | 'field_assistant' | 'finance_assistant' | 'viewer';
 export type MemberStatus = 'active' | 'invited' | 'suspended';
 
@@ -142,6 +154,19 @@ export interface Taxpayer extends SyncMeta {
 
 export type PropertyType = 'residential' | 'commercial' | 'industrial' | 'agricultural' | 'mixed';
 export type PropertyStatus = 'active' | 'under_inspection' | 'disputed' | 'exempt' | 'archived';
+export type UnitType = 'apartment' | 'shop' | 'office' | 'warehouse' | 'annex' | 'other';
+export type OccupancyStatus = 'occupied' | 'vacant' | 'owner_used' | 'under_maintenance';
+export type RentPeriod = 'monthly' | 'quarterly' | 'semi_annual' | 'annual';
+
+export interface PropertyFloorConfig {
+  floorKey: string;
+  floorLabel: string;
+  floorOrder: number;
+  apartmentsCount: number;
+  shopsCount: number;
+  officesCount: number;
+  annexesCount: number;
+}
 
 export interface Property extends SyncMeta {
   workspaceId: string;
@@ -154,11 +179,22 @@ export interface Property extends SyncMeta {
   status: PropertyStatus;
   region: string;
   address: string;
+  governorateId?: string;
+  directorateId?: string;
+  zone?: string;
+  street?: string;
   latitude: number;
   longitude: number;
   hasCoordinates: boolean;
   unitsCount: number;
   areaSqm: number;
+  floorsCount?: number;
+  hasBasement?: boolean;
+  apartmentsCount?: number;
+  shopsCount?: number;
+  officesCount?: number;
+  annexesCount?: number;
+  floorsConfig?: PropertyFloorConfig[];
   notes: string;
   memberUids: string[];
   createdBy: string;
@@ -166,9 +202,6 @@ export interface Property extends SyncMeta {
   createdAt?: unknown;
   updatedAt?: unknown;
 }
-
-export type UnitType = 'apartment' | 'shop' | 'office' | 'warehouse' | 'other';
-export type OccupancyStatus = 'occupied' | 'vacant' | 'under_maintenance';
 
 export interface PropertyUnit extends SyncMeta {
   workspaceId: string;
@@ -182,6 +215,8 @@ export interface PropertyUnit extends SyncMeta {
   areaSqm: number;
   occupancyStatus: OccupancyStatus;
   tenantName: string;
+  rentAmount?: number;
+  rentPeriod?: RentPeriod;
   annualRentEstimate: number;
   notes: string;
   memberUids: string[];

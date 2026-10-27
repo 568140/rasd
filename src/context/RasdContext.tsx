@@ -72,6 +72,7 @@ import {
   AuditEntityType,
   AuditLog,
   CurrencyCode,
+  DossierTabId,
   FieldVisit,
   FinancialAssessment,
   FinancialTransaction,
@@ -83,6 +84,7 @@ import {
   PlatformStaff,
   PlatformStaffPermissions,
   Property,
+  PropertyNavigationOrigin,
   PropertyUnit,
   RegistrationRequestMetadata,
   ScreenId,
@@ -105,19 +107,74 @@ import {
 import { alertSound } from '../services/alertSound';
 import { pushService } from '../services/pushService';
 
-export function encodeMetaIntoNotes(notes: string, meta: Record<string, unknown>): string {
-  const cleanNotes = (notes || '').replace(/\[META:\{.*?\}\]/g, '').trim();
+export function validateAndEncodeMetaIntoNotes(
+  notes: string,
+  meta: Record<string, unknown>,
+  maxTotalLength = 1000
+): string {
+  const cleanNotes = (notes || '').replace(/\[META:\{[\s\S]*\}\]/g, '').trim();
+  const hasMeta = Object.keys(meta).length > 0;
+  if (!hasMeta) {
+    if (cleanNotes.length > maxTotalLength) {
+      throw new Error(
+        `طول الملاحظات (${cleanNotes.length} حرفًا) يتجاوز الحد الأقصى المسموح به (${maxTotalLength} حرفًا). يرجى اختصار النص قبل الحفظ.`
+      );
+    }
+    return cleanNotes;
+  }
+
   const metaStr = `[META:${JSON.stringify(meta)}]`;
-  return cleanNotes ? `${cleanNotes}\n${metaStr}` : metaStr;
+  if (metaStr.length > maxTotalLength) {
+    throw new Error(
+      `حجم البيانات الوصفية (${metaStr.length} حرفًا) يتجاوز السعة المسموحة (${maxTotalLength} حرفًا). يتعذر الحفظ لتجنب إتلاف البيانات.`
+    );
+  }
+
+  if (!cleanNotes) {
+    return metaStr;
+  }
+
+  const availableForNotes = maxTotalLength - metaStr.length - 1;
+  if (cleanNotes.length > Math.max(0, availableForNotes)) {
+    throw new Error(
+      `طول الملاحظات (${cleanNotes.length} حرفًا) يتجاوز المساحة المتاحة للحفظ الآمن (${Math.max(
+        0,
+        availableForNotes
+      )} حرفًا) بعد تضمين بيانات البنية. يرجى اختصار الملاحظات لتجنب اقتطاع البيانات.`
+    );
+  }
+
+  return `${cleanNotes}\n${metaStr}`;
+}
+
+export function encodeMetaIntoNotes(
+  notes: string,
+  meta: Record<string, unknown>,
+  maxTotalLength = 1000
+): string {
+  const cleanNotes = (notes || '').replace(/\[META:\{[\s\S]*\}\]/g, '').trim();
+  const metaStr = `[META:${JSON.stringify(meta)}]`;
+  if (metaStr.length > maxTotalLength) {
+    return cleanNotes.slice(0, maxTotalLength);
+  }
+  if (!cleanNotes) {
+    return metaStr;
+  }
+  const availableForNotes = Math.max(0, maxTotalLength - metaStr.length - 1);
+  if (availableForNotes <= 0) {
+    return metaStr;
+  }
+  const safeCleanNotes = cleanNotes.slice(0, availableForNotes).trim();
+  return safeCleanNotes ? `${safeCleanNotes}\n${metaStr}` : metaStr;
 }
 
 export function decodeMetaFromNotes<T extends Record<string, unknown>>(notes: string): { notes: string; meta: Partial<T> } {
   if (!notes) return { notes: '', meta: {} };
-  const match = notes.match(/\[META:(\{.*?\})\]/);
+  const match = notes.match(/\[META:(\{[\s\S]*\})\]/);
   if (!match) return { notes, meta: {} };
   try {
     const meta = JSON.parse(match[1]);
-    const cleanNotes = notes.replace(/\[META:\{.*?\}\]/g, '').trim();
+    const cleanNotes = notes.replace(/\[META:\{[\s\S]*\}\]/g, '').trim();
     return { notes: cleanNotes, meta };
   } catch {
     return { notes, meta: {} };
@@ -146,6 +203,10 @@ interface RasdContextValue {
   setSelectedTaxpayerId: (id: string | null) => void;
   selectedAppointmentId: string | null;
   setSelectedAppointmentId: (id: string | null) => void;
+  propertyNavigationOrigin: PropertyNavigationOrigin | null;
+  setPropertyNavigationOrigin: (origin: PropertyNavigationOrigin | null) => void;
+  activeDossierTab: DossierTabId;
+  setActiveDossierTab: (tab: DossierTabId) => void;
   toasts: ToastMessage[];
   showToast: (text: string, type?: ToastMessage['type']) => void;
   dismissToast: (id: string) => void;
@@ -275,9 +336,11 @@ interface RasdContextValue {
     propertyTitle: string;
     propertyType: Property['propertyType'];
     floorsCount: number;
+    hasBasement?: boolean;
     apartmentsCount: number;
     shopsCount: number;
     officesCount: number;
+    annexesCount?: number;
     agentName?: string;
     agentPhone?: string;
     notes?: string;
@@ -342,6 +405,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [selectedTaxpayerId, setSelectedTaxpayerId] = useState<string | null>(null);
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
+  const [propertyNavigationOrigin, setPropertyNavigationOrigin] =
+    useState<PropertyNavigationOrigin | null>(null);
+  const [activeDossierTab, setActiveDossierTab] = useState<DossierTabId>('properties_and_units');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -440,6 +506,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPlatformClientAccounts([]);
     setSelectedPropertyId(null);
     setSelectedTaxpayerId(null);
+    setPropertyNavigationOrigin(null);
+    setActiveDossierTab('properties_and_units');
     setActiveScreen('home');
     if (bootstrappingPromiseRef.current) {
       bootstrappingPromiseRef.current = null;
@@ -1444,6 +1512,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ...raw,
                 notes: decodedNotes,
                 ...meta,
+                _rawMeta: meta,
                 status: exactStatus,
                 id: d.id,
                 isPendingSync: d.metadata.hasPendingWrites,
@@ -3595,6 +3664,35 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const id = generateSafeId('prop');
       const path = `properties/${id}`;
       try {
+        const metaToStore: Record<string, unknown> = {};
+        if (typeof input.floorsCount === 'number') {
+          metaToStore.floorsCount = Math.max(0, Math.min(200, Math.round(input.floorsCount)));
+        }
+        if (typeof input.hasBasement === 'boolean') {
+          metaToStore.hasBasement = input.hasBasement;
+        }
+        if (typeof input.apartmentsCount === 'number') {
+          metaToStore.apartmentsCount = Math.max(0, Math.min(5000, Math.round(input.apartmentsCount)));
+        }
+        if (typeof input.shopsCount === 'number') {
+          metaToStore.shopsCount = Math.max(0, Math.min(5000, Math.round(input.shopsCount)));
+        }
+        if (typeof input.officesCount === 'number') {
+          metaToStore.officesCount = Math.max(0, Math.min(5000, Math.round(input.officesCount)));
+        }
+        if (typeof input.annexesCount === 'number') {
+          metaToStore.annexesCount = Math.max(0, Math.min(5000, Math.round(input.annexesCount)));
+        }
+        if (Array.isArray(input.floorsConfig) && input.floorsConfig.length > 0) {
+          metaToStore.floorsConfig = input.floorsConfig;
+        }
+
+        const encodedNotes = validateAndEncodeMetaIntoNotes(
+          input.notes || '',
+          metaToStore,
+          1000
+        );
+
         await setDoc(doc(db, 'properties', id), {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
@@ -3611,7 +3709,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           hasCoordinates: Boolean(input.hasCoordinates),
           unitsCount: Math.max(0, Math.min(10000, Math.round(Number(input.unitsCount) || 0))),
           areaSqm: Math.max(0, Math.min(10000000, Number(input.areaSqm) || 0)),
-          notes: sanitizeText(input.notes, 1000),
+          notes: encodedNotes,
           memberUids: workspace.memberUids,
           createdBy: firebaseUser.uid,
           createdByName: sanitizeText(userProfile.displayName, 120, 1, 'مستخدم'),
@@ -3622,6 +3720,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         showToast(isOnline ? 'تم حفظ العقار بنجاح' : 'تم حفظ العقار محليًا بانتظار المزامنة', 'success');
         return id;
       } catch (error) {
+        showToast(error instanceof Error ? error.message : translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.CREATE, path);
       }
     },
@@ -3635,6 +3734,46 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!existing) return;
       const path = `properties/${id}`;
       try {
+        const mergedFloorsCount = input.floorsCount ?? existing.floorsCount;
+        const mergedHasBasement = input.hasBasement ?? existing.hasBasement;
+        const mergedAptsCount = input.apartmentsCount ?? existing.apartmentsCount;
+        const mergedShopsCount = input.shopsCount ?? existing.shopsCount;
+        const mergedOfficesCount = input.officesCount ?? existing.officesCount;
+        const mergedAnnexesCount = input.annexesCount ?? existing.annexesCount;
+        const mergedFloorsConfig = input.floorsConfig ?? existing.floorsConfig;
+
+        const existingRawMeta =
+          ((existing as unknown as { _rawMeta?: Record<string, unknown> })._rawMeta) || {};
+        const metaToStore: Record<string, unknown> = { ...existingRawMeta };
+        if (typeof mergedFloorsCount === 'number') {
+          metaToStore.floorsCount = Math.max(0, Math.min(200, Math.round(mergedFloorsCount)));
+        }
+        if (typeof mergedHasBasement === 'boolean') {
+          metaToStore.hasBasement = mergedHasBasement;
+        }
+        if (typeof mergedAptsCount === 'number') {
+          metaToStore.apartmentsCount = Math.max(0, Math.min(5000, Math.round(mergedAptsCount)));
+        }
+        if (typeof mergedShopsCount === 'number') {
+          metaToStore.shopsCount = Math.max(0, Math.min(5000, Math.round(mergedShopsCount)));
+        }
+        if (typeof mergedOfficesCount === 'number') {
+          metaToStore.officesCount = Math.max(0, Math.min(5000, Math.round(mergedOfficesCount)));
+        }
+        if (typeof mergedAnnexesCount === 'number') {
+          metaToStore.annexesCount = Math.max(0, Math.min(5000, Math.round(mergedAnnexesCount)));
+        }
+        if (Array.isArray(mergedFloorsConfig) && mergedFloorsConfig.length > 0) {
+          metaToStore.floorsConfig = mergedFloorsConfig;
+        }
+
+        const baseNotes = input.notes ?? existing.notes;
+        const encodedNotes = validateAndEncodeMetaIntoNotes(
+          baseNotes || '',
+          metaToStore,
+          1000
+        );
+
         await updateDoc(doc(db, 'properties', id), {
           taxpayerId: input.taxpayerId ?? existing.taxpayerId,
           taxpayerName: sanitizeText(input.taxpayerName ?? existing.taxpayerName, 150, 1, existing.taxpayerName),
@@ -3649,13 +3788,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           hasCoordinates: input.hasCoordinates ?? existing.hasCoordinates,
           unitsCount: Math.max(0, Math.min(10000, Math.round(Number(input.unitsCount ?? existing.unitsCount) || 0))),
           areaSqm: Math.max(0, Math.min(10000000, Number(input.areaSqm ?? existing.areaSqm) || 0)),
-          notes: sanitizeText(input.notes ?? existing.notes, 1000),
+          notes: encodedNotes,
           memberUids: workspace.memberUids,
           updatedAt: serverTimestamp(),
         });
         await writeAuditLog('update', 'property', id, `تحديث بيانات العقار: ${input.title ?? existing.title}`);
         showToast('تم تحديث العقار بنجاح', 'success');
       } catch (error) {
+        showToast(error instanceof Error ? error.message : translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
     },
@@ -3718,6 +3858,32 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const path = `property_units/${id}`;
       try {
         const unitRef = doc(db, 'property_units', id);
+        const isOccupied = input.occupancyStatus === 'occupied';
+        const resolvedRentAmount = isOccupied
+          ? Math.max(0, Number(input.rentAmount ?? input.annualRentEstimate) || 0)
+          : 0;
+        const resolvedRentPeriod = isOccupied ? input.rentPeriod || 'monthly' : undefined;
+
+        const compliantUnitType =
+          input.unitType === 'annex' ? 'other' : input.unitType;
+        const compliantOccupancyStatus =
+          input.occupancyStatus === 'owner_used' ? 'vacant' : input.occupancyStatus;
+
+        const metaToStore: Record<string, unknown> = {
+          occupancyStatus: input.occupancyStatus,
+          unitType: input.unitType,
+          rentAmount: resolvedRentAmount,
+        };
+        if (resolvedRentPeriod) {
+          metaToStore.rentPeriod = resolvedRentPeriod;
+        }
+
+        const encodedNotes = validateAndEncodeMetaIntoNotes(
+          input.notes || '',
+          metaToStore,
+          500
+        );
+
         await setDoc(unitRef, {
           workspaceId: workspace.id,
           ownerId: workspace.ownerId,
@@ -3725,13 +3891,13 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           propertyTitle: sanitizeText(input.propertyTitle, 150, 1, 'عقار'),
           taxpayerId: sanitizeText(input.taxpayerId, 128, 1, 'general_tp'),
           unitNumber: sanitizeText(input.unitNumber, 50, 1, '1'),
-          unitType: input.unitType,
+          unitType: compliantUnitType,
           floor: sanitizeText(input.floor, 40),
           areaSqm: Math.max(0, Math.min(1000000, Number(input.areaSqm) || 0)),
-          occupancyStatus: input.occupancyStatus,
-          tenantName: sanitizeText(input.tenantName, 150),
-          annualRentEstimate: Math.max(0, Number(input.annualRentEstimate) || 0),
-          notes: sanitizeText(input.notes, 500),
+          occupancyStatus: compliantOccupancyStatus,
+          tenantName: isOccupied ? sanitizeText(input.tenantName, 150) : '',
+          annualRentEstimate: resolvedRentAmount,
+          notes: encodedNotes,
           memberUids: workspace.memberUids,
           createdBy: firebaseUser.uid,
           createdAt: serverTimestamp(),
@@ -3751,7 +3917,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         showToast('تمت إضافة الوحدة العقارية بنجاح', 'success');
         return id;
       } catch (error) {
-        showToast(translateFirebaseError(error), 'error');
+        showToast(error instanceof Error ? error.message : translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.CREATE, path);
       }
     },
@@ -3765,16 +3931,69 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!existing) return;
       const path = `property_units/${id}`;
       try {
+        const nextOccupancy = input.occupancyStatus ?? existing.occupancyStatus;
+        const nextUnitType = input.unitType ?? existing.unitType;
+        const isOccupied = nextOccupancy === 'occupied';
+
+        const nextRentAmount = isOccupied
+          ? Math.max(
+              0,
+              Number(
+                input.rentAmount ??
+                  input.annualRentEstimate ??
+                  existing.rentAmount ??
+                  existing.annualRentEstimate
+              ) || 0
+            )
+          : 0;
+        const hasExplicitPeriodChange = 'rentPeriod' in input;
+        const nextRentPeriod = isOccupied
+          ? hasExplicitPeriodChange
+            ? input.rentPeriod
+            : existing.rentPeriod
+          : undefined;
+
+        const compliantUnitType =
+          nextUnitType === 'annex' ? 'other' : nextUnitType;
+        const compliantOccupancyStatus =
+          nextOccupancy === 'owner_used' ? 'vacant' : nextOccupancy;
+
+        const existingRawMeta =
+          ((existing as unknown as { _rawMeta?: Record<string, unknown> })._rawMeta) || {};
+        const metaToStore: Record<string, unknown> = {
+          ...existingRawMeta,
+          occupancyStatus: nextOccupancy,
+          unitType: nextUnitType,
+        };
+        if (nextRentPeriod) {
+          metaToStore.rentAmount = nextRentAmount;
+          metaToStore.rentPeriod = nextRentPeriod;
+        } else {
+          delete metaToStore.rentPeriod;
+          if (!isOccupied) {
+            metaToStore.rentAmount = 0;
+          } else {
+            delete metaToStore.rentAmount;
+          }
+        }
+
+        const baseNotes = input.notes ?? existing.notes;
+        const encodedNotes = validateAndEncodeMetaIntoNotes(
+          baseNotes || '',
+          metaToStore,
+          500
+        );
+
         await updateDoc(doc(db, 'property_units', id), {
           propertyTitle: sanitizeText(input.propertyTitle ?? existing.propertyTitle, 150, 1, existing.propertyTitle),
           unitNumber: sanitizeText(input.unitNumber ?? existing.unitNumber, 50, 1, existing.unitNumber),
-          unitType: input.unitType ?? existing.unitType,
+          unitType: compliantUnitType,
           floor: sanitizeText(input.floor ?? existing.floor, 40),
           areaSqm: Math.max(0, Math.min(1000000, Number(input.areaSqm ?? existing.areaSqm) || 0)),
-          occupancyStatus: input.occupancyStatus ?? existing.occupancyStatus,
-          tenantName: sanitizeText(input.tenantName ?? existing.tenantName, 150),
-          annualRentEstimate: Math.max(0, Number(input.annualRentEstimate ?? existing.annualRentEstimate) || 0),
-          notes: sanitizeText(input.notes ?? existing.notes, 500),
+          occupancyStatus: compliantOccupancyStatus,
+          tenantName: isOccupied ? sanitizeText(input.tenantName ?? existing.tenantName, 150) : '',
+          annualRentEstimate: nextRentAmount,
+          notes: encodedNotes,
           memberUids: workspace.memberUids,
           updatedAt: serverTimestamp(),
         });
@@ -3782,11 +4001,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           'update',
           'unit',
           id,
-          `تحديث الوحدة العقارية (${input.unitNumber ?? existing.unitNumber}) — النوع: ${input.unitType ?? existing.unitType}`
+          `تحديث الوحدة العقارية (${input.unitNumber ?? existing.unitNumber}) — النوع: ${nextUnitType}`
         );
         showToast('تم تحديث بيانات الوحدة العقارية', 'success');
       } catch (error) {
-        showToast(translateFirebaseError(error), 'error');
+        showToast(error instanceof Error ? error.message : translateFirebaseError(error), 'error');
         handleFirestoreError(error, OperationType.UPDATE, path);
       }
     },
@@ -3826,9 +4045,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       propertyTitle: string;
       propertyType: Property['propertyType'];
       floorsCount: number;
+      hasBasement?: boolean;
       apartmentsCount: number;
       shopsCount: number;
       officesCount: number;
+      annexesCount?: number;
       agentName?: string;
       agentPhone?: string;
       notes?: string;
@@ -3884,10 +4105,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         // Step 2: Create Property document linked to Taxpayer (required by property_units security rule exists(/properties/...))
-        const totalUnits =
-          Math.max(0, Number(input.apartmentsCount) || 0) +
-          Math.max(0, Number(input.shopsCount) || 0) +
-          Math.max(0, Number(input.officesCount) || 0);
+        const aptsCount = Math.max(0, Number(input.apartmentsCount) || 0);
+        const shopsCount = Math.max(0, Number(input.shopsCount) || 0);
+        const officesCount = Math.max(0, Number(input.officesCount) || 0);
+        const annexesCount = Math.max(0, Number(input.annexesCount) || 0);
+        const floors = Math.max(0, Number(input.floorsCount) || 0);
+        const hasBasement = Boolean(input.hasBasement);
+
+        const totalUnits = aptsCount + shopsCount + officesCount + annexesCount;
 
         createdPropertyId = generateSafeId('prop');
         const propertyCode = `PR-${Date.now().toString().slice(-4)}`;
@@ -3896,6 +4121,19 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           150,
           2,
           'عقار جديد'
+        );
+
+        const propMeta: Record<string, unknown> = {
+          floorsCount: floors > 0 ? floors : 1,
+          hasBasement,
+          apartmentsCount: aptsCount,
+          shopsCount,
+          officesCount,
+          annexesCount,
+        };
+        const encodedPropNotes = sanitizeText(
+          encodeMetaIntoNotes(sanitizeText(combinedNotes, 550), propMeta),
+          1000
         );
 
         await setDoc(doc(db, 'properties', createdPropertyId), {
@@ -3914,7 +4152,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           hasCoordinates: false,
           unitsCount: totalUnits,
           areaSqm: 0,
-          notes: sanitizeText(combinedNotes, 1000),
+          notes: encodedPropNotes,
           memberUids: workspace.memberUids,
           createdBy: firebaseUser.uid,
           createdByName: sanitizeText(userProfile.displayName, 120, 1, 'مستخدم'),
@@ -3922,27 +4160,76 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           updatedAt: serverTimestamp(),
         });
 
-        // Step 3: Atomic writeBatch for all PropertyUnits (apartments + commercial shops + offices) + Audit Log
+        // Step 3: Atomic writeBatch for all PropertyUnits (apartments + commercial shops + offices + annexes) + Audit Log
+        // Note: Tax contract amount (input.amount) is strictly separated from unit rentals and never divided into annualRentEstimate.
         const batch = writeBatch(db);
         const createdUnitNumbers: string[] = [];
-        const aptsCount = Number(input.apartmentsCount) || 0;
-        const floors = Number(input.floorsCount) || 0;
-        const aptsPerFloor = floors > 0 && aptsCount > 0 ? Math.ceil(aptsCount / floors) : 0;
-        const perUnitEstimate =
-          input.amount && input.amount > 0 && totalUnits > 0
-            ? Math.round(input.amount / totalUnits)
-            : 0;
+        const ordinalFloorNames = [
+          'الطابق الأرضي',
+          'الطابق الأول',
+          'الطابق الثاني',
+          'الطابق الثالث',
+          'الطابق الرابع',
+          'الطابق الخامس',
+          'الطابق السادس',
+          'الطابق السابع',
+          'الطابق الثامن',
+          'الطابق التاسع',
+          'الطابق العاشر',
+        ];
+        const getFloorName = (idx: number) =>
+          idx < ordinalFloorNames.length ? ordinalFloorNames[idx] : `الطابق ${idx}`;
+
+        // If shops exist on ground floor, distribute apartments starting from 1st floor when floors > 1
+        const startFloorIdx = shopsCount > 0 && floors > 1 ? 1 : 0;
+        const residentialFloorsCount = Math.max(1, floors > startFloorIdx ? floors - startFloorIdx : floors || 1);
+        const aptsPerFloor = aptsCount > 0 ? Math.ceil(aptsCount / residentialFloorsCount) : 0;
+
+        for (let i = 1; i <= shopsCount; i++) {
+          const unitId = generateSafeId(`unit_shop${i}`);
+          const unitNumber = `محل ${i}`;
+          createdUnitNumbers.push(unitNumber);
+          const unitMeta = {
+            occupancyStatus: 'occupied',
+            unitType: 'shop',
+            rentAmount: 0,
+          };
+          batch.set(doc(db, 'property_units', unitId), {
+            workspaceId: workspace.id,
+            ownerId: workspace.ownerId,
+            propertyId: createdPropertyId,
+            propertyTitle: finalPropertyTitle,
+            taxpayerId,
+            unitNumber: sanitizeText(unitNumber, 50, 1, `S-${i}`),
+            unitType: 'shop',
+            floor: sanitizeText('الطابق الأرضي', 40),
+            areaSqm: 0,
+            occupancyStatus: 'occupied',
+            tenantName: '',
+            annualRentEstimate: 0,
+            notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
+            memberUids: workspace.memberUids,
+            createdBy: firebaseUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
 
         for (let i = 1; i <= aptsCount; i++) {
           const unitId = generateSafeId(`unit_apt${i}`);
           const unitNumber = `شقة ${i}`;
           createdUnitNumbers.push(unitNumber);
-          const currentFloor =
-            aptsPerFloor > 0
-              ? `الدور ${Math.min(floors, Math.floor((i - 1) / aptsPerFloor) + 1)}`
-              : floors > 0
-                ? `غير محدد (إجمالي أدوار المبنى: ${floors})`
-                : 'غير محدد';
+          const floorOffset = aptsPerFloor > 0 ? Math.floor((i - 1) / aptsPerFloor) : 0;
+          const floorIdx = Math.min(
+            Math.max(0, (floors || 1) - 1),
+            startFloorIdx + floorOffset
+          );
+          const currentFloor = getFloorName(floorIdx);
+          const unitMeta = {
+            occupancyStatus: 'occupied',
+            unitType: 'apartment',
+            rentAmount: 0,
+          };
 
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
@@ -3956,8 +4243,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             areaSqm: 0,
             occupancyStatus: 'occupied',
             tenantName: '',
-            annualRentEstimate: perUnitEstimate,
-            notes: sanitizeText(combinedNotes, 500),
+            annualRentEstimate: 0,
+            notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
             createdAt: serverTimestamp(),
@@ -3965,35 +4252,15 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           });
         }
 
-        for (let i = 1; i <= (Number(input.shopsCount) || 0); i++) {
-          const unitId = generateSafeId(`unit_shop${i}`);
-          const unitNumber = `فتحة تجارية ${i}`;
-          createdUnitNumbers.push(unitNumber);
-          batch.set(doc(db, 'property_units', unitId), {
-            workspaceId: workspace.id,
-            ownerId: workspace.ownerId,
-            propertyId: createdPropertyId,
-            propertyTitle: finalPropertyTitle,
-            taxpayerId,
-            unitNumber: sanitizeText(unitNumber, 50, 1, `S-${i}`),
-            unitType: 'shop',
-            floor: sanitizeText('الدور الأرضي (تجاري)', 40),
-            areaSqm: 0,
-            occupancyStatus: 'occupied',
-            tenantName: '',
-            annualRentEstimate: perUnitEstimate,
-            notes: sanitizeText(combinedNotes, 500),
-            memberUids: workspace.memberUids,
-            createdBy: firebaseUser.uid,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        }
-
-        for (let i = 1; i <= (Number(input.officesCount) || 0); i++) {
+        for (let i = 1; i <= officesCount; i++) {
           const unitId = generateSafeId(`unit_off${i}`);
           const unitNumber = `مكتب ${i}`;
           createdUnitNumbers.push(unitNumber);
+          const unitMeta = {
+            occupancyStatus: 'occupied',
+            unitType: 'office',
+            rentAmount: 0,
+          };
           batch.set(doc(db, 'property_units', unitId), {
             workspaceId: workspace.id,
             ownerId: workspace.ownerId,
@@ -4002,12 +4269,42 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             taxpayerId,
             unitNumber: sanitizeText(unitNumber, 50, 1, `O-${i}`),
             unitType: 'office',
-            floor: sanitizeText(floors > 0 ? `غير محدد (إجمالي أدوار المبنى: ${floors})` : 'غير محدد', 40),
+            floor: sanitizeText(floors > 1 ? 'الطابق الأول' : 'الطابق الأرضي', 40),
             areaSqm: 0,
             occupancyStatus: 'occupied',
             tenantName: '',
             annualRentEstimate: 0,
-            notes: sanitizeText(combinedNotes, 500),
+            notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
+            memberUids: workspace.memberUids,
+            createdBy: firebaseUser.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        for (let i = 1; i <= annexesCount; i++) {
+          const unitId = generateSafeId(`unit_anx${i}`);
+          const unitNumber = `ملحق ${i}`;
+          createdUnitNumbers.push(unitNumber);
+          const unitMeta = {
+            occupancyStatus: 'occupied',
+            unitType: 'annex',
+            rentAmount: 0,
+          };
+          batch.set(doc(db, 'property_units', unitId), {
+            workspaceId: workspace.id,
+            ownerId: workspace.ownerId,
+            propertyId: createdPropertyId,
+            propertyTitle: finalPropertyTitle,
+            taxpayerId,
+            unitNumber: sanitizeText(unitNumber, 50, 1, `X-${i}`),
+            unitType: 'other',
+            floor: sanitizeText('السطح / الملاحق', 40),
+            areaSqm: 0,
+            occupancyStatus: 'occupied',
+            tenantName: '',
+            annualRentEstimate: 0,
+            notes: sanitizeText(encodeMetaIntoNotes(sanitizeText(combinedNotes, 300), unitMeta), 500),
             memberUids: workspace.memberUids,
             createdBy: firebaseUser.uid,
             createdAt: serverTimestamp(),
@@ -5195,6 +5492,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSelectedTaxpayerId,
     selectedAppointmentId,
     setSelectedAppointmentId,
+    propertyNavigationOrigin,
+    setPropertyNavigationOrigin,
+    activeDossierTab,
+    setActiveDossierTab,
     toasts,
     showToast,
     dismissToast,

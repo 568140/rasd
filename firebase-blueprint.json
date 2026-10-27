@@ -425,7 +425,7 @@
         },
         "unitType": {
           "type": "string",
-          "enum": ["apartment", "shop", "office", "warehouse", "other"]
+          "enum": ["apartment", "shop", "office", "warehouse", "annex", "other"]
         },
         "floor": {
           "type": "string",
@@ -436,7 +436,7 @@
         },
         "occupancyStatus": {
           "type": "string",
-          "enum": ["occupied", "vacant", "under_maintenance"]
+          "enum": ["occupied", "vacant", "owner_used", "under_maintenance"]
         },
         "tenantName": {
           "type": "string",

@@ -192,23 +192,41 @@ export const HomeScreen: React.FC = () => {
     setActiveScreen('taxpayers');
   };
 
+  const handleOpenProtocols = () => {
+    try {
+      sessionStorage.setItem('rasd_quick_action', 'view_all_visits');
+    } catch {
+      // ignore storage errors
+    }
+    setActiveScreen('visits');
+  };
+
+  const handleTriggerAddVisit = () => {
+    try {
+      sessionStorage.setItem('rasd_quick_action', 'open_add_visit');
+    } catch {
+      // ignore storage errors
+    }
+    setActiveScreen('visits');
+  };
+
   return (
     <div className="space-y-4 pb-6" dir="rtl">
       {/* 1. User Greeting & Quick Search Bar — Matching Reference Image */}
-      <section className="bg-white dark:bg-[#0D1829] rounded-2xl border border-[#E2E8F0] dark:border-slate-800 p-4 shadow-[0_2px_10px_rgba(11,25,44,0.04)] space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg sm:text-xl font-extrabold text-[#172334] dark:text-white font-display leading-snug">
+      <section className="bg-white dark:bg-[#0D1829] rounded-2xl border border-[#E2E8F0] dark:border-slate-800 p-3.5 sm:p-4 shadow-[0_2px_10px_rgba(11,25,44,0.04)] space-y-3">
+        <div className="flex items-center justify-between gap-2.5">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base min-[360px]:text-lg sm:text-xl font-extrabold text-[#172334] dark:text-white font-display leading-snug truncate">
               مرحباً أ. {userProfile?.displayName || 'المسؤول الميداني'}
             </h2>
-            <p className="text-xs font-medium text-[#64748B] dark:text-slate-400 mt-0.5">
+            <p className="text-[11px] min-[360px]:text-xs font-medium text-[#64748B] dark:text-slate-400 mt-0.5 truncate">
               أهلاً بك في منصة رَصْد — المساعد الميداني الذكي
             </p>
           </div>
           <button
             type="button"
             onClick={() => setActiveScreen('voice')}
-            className="min-h-[38px] px-3 rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 text-[#0B192C] dark:text-[#B48327] text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+            className="min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 text-[#0B192C] dark:text-[#B48327] text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
           >
             <Mic className="w-3.5 h-3.5 text-[#B48327]" />
             <span>أمر صوتي</span>
@@ -430,12 +448,12 @@ export const HomeScreen: React.FC = () => {
           </button>
         </div>
 
-        <div className="grid grid-cols-4 gap-2.5">
+        <div className="grid grid-cols-2 min-[360px]:grid-cols-4 gap-2 sm:gap-2.5">
           {/* 1. إضافة مكلف */}
           <button
             type="button"
             onClick={handleTriggerAddTaxpayer}
-            className="min-h-[84px] p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer group"
+            className="min-h-[80px] sm:min-h-[84px] p-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-1.5 sm:gap-2 transition-all cursor-pointer group"
           >
             <div className="w-9 h-9 rounded-xl bg-white dark:bg-slate-800 group-hover:bg-white/15 text-[#0B192C] dark:text-[#B48327] group-hover:text-white flex items-center justify-center border border-[#E2E8F0] dark:border-slate-700 group-hover:border-transparent transition-colors">
               <UserPlus className="w-4 h-4" />
@@ -448,8 +466,9 @@ export const HomeScreen: React.FC = () => {
           {/* 2. المحاضر */}
           <button
             type="button"
-            onClick={() => setActiveScreen('reports')}
-            className="min-h-[84px] p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer group"
+            onClick={handleOpenProtocols}
+            title="عرض سجل المحاضر والزيارات الميدانية"
+            className="min-h-[80px] sm:min-h-[84px] p-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-1.5 sm:gap-2 transition-all cursor-pointer group"
           >
             <div className="w-9 h-9 rounded-xl bg-white dark:bg-slate-800 group-hover:bg-white/15 text-[#0B192C] dark:text-[#B48327] group-hover:text-white flex items-center justify-center border border-[#E2E8F0] dark:border-slate-700 group-hover:border-transparent transition-colors">
               <FileText className="w-4 h-4" />
@@ -462,8 +481,9 @@ export const HomeScreen: React.FC = () => {
           {/* 3. زيارة ميدانية */}
           <button
             type="button"
-            onClick={() => setActiveScreen('visits')}
-            className="min-h-[84px] p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer group"
+            onClick={handleTriggerAddVisit}
+            title="توثيق زيارة ميدانية جديدة"
+            className="min-h-[80px] sm:min-h-[84px] p-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-1.5 sm:gap-2 transition-all cursor-pointer group"
           >
             <div className="w-9 h-9 rounded-xl bg-white dark:bg-slate-800 group-hover:bg-white/15 text-[#0B192C] dark:text-[#B48327] group-hover:text-white flex items-center justify-center border border-[#E2E8F0] dark:border-slate-700 group-hover:border-transparent transition-colors">
               <MapPin className="w-4 h-4" />
@@ -477,7 +497,7 @@ export const HomeScreen: React.FC = () => {
           <button
             type="button"
             onClick={handleTriggerAddProperty}
-            className="min-h-[84px] p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-2 transition-all cursor-pointer group"
+            className="min-h-[80px] sm:min-h-[84px] p-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] hover:bg-[#0B192C] dark:bg-slate-900 dark:hover:bg-[#B48327] border border-[#E2E8F0] dark:border-slate-800 text-[#172334] hover:text-white dark:text-white flex flex-col items-center justify-center text-center gap-1.5 sm:gap-2 transition-all cursor-pointer group"
           >
             <div className="w-9 h-9 rounded-xl bg-white dark:bg-slate-800 group-hover:bg-white/15 text-[#0B192C] dark:text-[#B48327] group-hover:text-white flex items-center justify-center border border-[#E2E8F0] dark:border-slate-700 group-hover:border-transparent transition-colors">
               <Building2 className="w-4 h-4" />

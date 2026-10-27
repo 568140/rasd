@@ -62,6 +62,17 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(import.meta.dirname || '.'),
       },
+      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
+    },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'lucide-react',
+      ],
     },
     build: {
       target: 'es2020',

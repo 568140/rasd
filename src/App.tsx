@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import {
   Home,
   Building2,
@@ -33,6 +33,7 @@ import { evaluateAppointmentStatus, sanitizeReminderMinutes } from './utils/date
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useLiveAdenClock } from './hooks/useLiveAdenClock';
 import { ScreenId } from './types/rasd';
+import { resolvePropertyBackTransition } from './utils/taxpayerNotes';
 
 // Dynamic Code-Splitting (React.lazy) for all screens and heavy modals
 const AuthScreen = lazy(() =>
@@ -123,11 +124,11 @@ const SCREEN_TITLES: Record<ScreenId, string> = {
   voice: 'المساعد الصوتي',
   appointments: 'المواعيد',
   more: 'المزيد',
-  visits: 'الزيارات الميدانية',
+  visits: 'المحاضر والزيارات الميدانية',
   map: 'العقارات والمواقع',
   assessments: 'المؤشرات المالية',
   transactions: 'المعاملات المالية',
-  reports: 'التقارير',
+  reports: 'التقارير والإحصاءات',
   team: 'الفريق',
   audit: 'التدقيق',
   notifications: 'الإشعارات',
@@ -159,6 +160,9 @@ const RasdShell: React.FC = () => {
     selectedTaxpayerId,
     setSelectedTaxpayerId,
     setSelectedAppointmentId,
+    propertyNavigationOrigin,
+    setPropertyNavigationOrigin,
+    setActiveDossierTab,
     appointments,
     notifications,
     darkMode,
@@ -300,6 +304,46 @@ const RasdShell: React.FC = () => {
     };
   }, [setActiveScreen, setSelectedAppointmentId, setSelectedPropertyId, setSelectedTaxpayerId]);
 
+  // Mobile Virtual Keyboard & Focus Ergonomics (keeps active inputs visible above the keyboard)
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const handleViewportResize = () => {
+      if (!vv) return;
+      const isKeyboardOpen = vv.height < window.innerHeight * 0.78;
+      document.documentElement.classList.toggle('keyboard-open', isKeyboardOpen);
+    };
+
+    let focusTimeoutId: number | null = null;
+    const handleFocusIn = (e: FocusEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+        if (window.innerWidth <= 768) {
+          if (focusTimeoutId) window.clearTimeout(focusTimeoutId);
+          focusTimeoutId = window.setTimeout(() => {
+            target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }, 180);
+        }
+      }
+    };
+
+    vv?.addEventListener('resize', handleViewportResize);
+    document.addEventListener('focusin', handleFocusIn, { passive: true });
+
+    return () => {
+      vv?.removeEventListener('resize', handleViewportResize);
+      document.removeEventListener('focusin', handleFocusIn);
+      if (focusTimeoutId) window.clearTimeout(focusTimeoutId);
+      document.documentElement.classList.remove('keyboard-open');
+    };
+  }, []);
+
+  // Scroll smoothly to top when switching primary screens or opening a dossier/property detail view
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+  }, [activeScreen, selectedTaxpayerId, selectedPropertyId]);
+
   // Evaluate due badge on a 30-second cadence instead of every 1 second to avoid full-shell re-renders
   const dueClock = useLiveAdenClock(30000);
 
@@ -433,20 +477,19 @@ const RasdShell: React.FC = () => {
   const isHomeRoot = activeScreen === 'home' && !hasDetailOpen;
 
   const handleBack = () => {
-    if (selectedPropertyId && activeScreen === 'properties') {
-      setSelectedPropertyId(null);
-      return;
+    const transition = resolvePropertyBackTransition({
+      activeScreen,
+      selectedPropertyId,
+      selectedTaxpayerId,
+      propertyNavigationOrigin,
+    });
+    setPropertyNavigationOrigin(transition.nextOrigin);
+    if (transition.nextDossierTab) {
+      setActiveDossierTab(transition.nextDossierTab);
     }
-    if (selectedTaxpayerId) {
-      setSelectedPropertyId(null);
-      setSelectedTaxpayerId(null);
-      return;
-    }
-    if (selectedPropertyId) {
-      setSelectedPropertyId(null);
-      return;
-    }
-    setActiveScreen('home');
+    setSelectedPropertyId(transition.nextSelectedPropertyId);
+    setSelectedTaxpayerId(transition.nextSelectedTaxpayerId);
+    setActiveScreen(transition.nextScreen);
   };
 
   const resolvedScreenTitle =
@@ -457,25 +500,22 @@ const RasdShell: React.FC = () => {
       : SCREEN_TITLES[activeScreen] || 'رَصْد';
 
   return (
-    <div className="min-h-screen bg-[#F4F6F9] dark:bg-[#060D18] text-[#172334] dark:text-[#F8FAFC] flex flex-col overflow-x-hidden" dir="rtl">
-      {/* Reference-Aligned Deep Navy Top App Header (#081729) */}
-      <header
-        style={{ backgroundColor: 'var(--rasd-header-bg, #081729)' }}
-        className="sticky top-0 z-30 min-h-[60px] text-white border-b border-white/10 px-4 py-2.5 shadow-xs"
-      >
-        <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-3">
+    <div className="min-h-screen min-h-dvh bg-[#F4F6F9] dark:bg-[#060D18] text-[#172334] dark:text-[#F8FAFC] flex flex-col overflow-x-clip" dir="rtl">
+      {/* Reference-Aligned Deep Navy Top App Header (#081729) with Glass UI & Safe Area Top */}
+      <header className="sticky top-0 z-30 min-h-[60px] text-white px-2.5 sm:px-4 pb-2.5 rasd-glass-header">
+        <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-2 sm:gap-3">
           {isHomeRoot ? (
             <>
               {/* Right Zone (Start in RTL) on Home: RASD Brand & Golden Shield Emblem */}
-              <div className="flex items-center gap-2.5 min-w-0">
+              <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
                 <div className="w-9 h-9 rounded-xl bg-[#0B192C] border border-[#B48327]/50 text-[#B48327] flex items-center justify-center shrink-0 shadow-2xs">
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div className="leading-none">
-                  <div className="text-lg font-extrabold tracking-tight text-white font-display">
+                  <div className="text-base sm:text-lg font-extrabold tracking-tight text-white font-display">
                     رَصْد
                   </div>
-                  <div className="text-[9px] font-mono font-bold tracking-widest text-[#B48327] uppercase mt-0.5">
+                  <div className="text-[9px] font-mono font-bold tracking-widest text-[#B48327] uppercase mt-0.5 select-none">
                     RASD
                   </div>
                 </div>
@@ -506,6 +546,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    setPropertyNavigationOrigin(null);
                     setSelectedPropertyId(null);
                     setSelectedTaxpayerId(null);
                     setActiveScreen('taxpayers');
@@ -517,6 +558,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    setPropertyNavigationOrigin(null);
                     setSelectedPropertyId(null);
                     setSelectedTaxpayerId(null);
                     setActiveScreen('properties');
@@ -528,13 +570,14 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    setPropertyNavigationOrigin(null);
                     setSelectedPropertyId(null);
                     setSelectedTaxpayerId(null);
                     setActiveScreen('visits');
                   }}
                   className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
-                  الزيارات الميدانية
+                  المحاضر والزيارات
                 </button>
                 <button
                   type="button"
@@ -580,13 +623,15 @@ const RasdShell: React.FC = () => {
                 )}
               </nav>
 
-              {/* Left Zone (End in RTL) on Home: Notifications, Voice, Theme, Profile Avatar */}
-              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* Left Zone (End in RTL) on Home: Notifications, Voice, Theme, Profile Avatar (320px-safe) */}
+              <div className="flex items-center gap-1 min-[360px]:gap-1.5 sm:gap-2 shrink-0">
                 {!isInstalled && isInstallable && (
                   <button
                     type="button"
                     onClick={install}
-                    className="min-h-[36px] px-2.5 rounded-xl bg-[#B48327] hover:bg-[#966B1D] text-white text-xs font-bold flex items-center gap-1 whitespace-nowrap cursor-pointer transition-colors"
+                    className="min-h-[36px] px-2 sm:px-2.5 rounded-xl bg-[#B48327] hover:bg-[#966B1D] text-white text-xs font-bold flex items-center gap-1 whitespace-nowrap cursor-pointer transition-colors"
+                    title="تثبيت التطبيق"
+                    aria-label="تثبيت التطبيق"
                   >
                     <Download className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">تثبيت</span>
@@ -596,7 +641,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveScreen('voice')}
-                  className="min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
                   title="المساعد الصوتي الذكي"
                   aria-label="المساعد الصوتي الذكي"
                 >
@@ -616,7 +661,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={toggleDarkMode}
-                  className="min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
                   aria-label="تبديل الوضع الليلي والنهاري"
                   title="تبديل الوضع الليلي والنهاري"
                 >
@@ -630,13 +675,13 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsNotifOpen(true)}
-                  className="relative min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
                   aria-label="مركز الإشعارات والتنبيهات"
                   title="الإشعارات والتنبيهات"
                 >
                   <Bell className="w-4 h-4" />
                   {dueCount > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center shadow-xs tabular-nums">
+                    <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center shadow-xs tabular-nums">
                       {dueCount > 9 ? '+9' : dueCount}
                     </span>
                   )}
@@ -661,11 +706,11 @@ const RasdShell: React.FC = () => {
           ) : (
             /* Subscreens Header (Matches Reference Image: Contextual Action on Right, Title Centered, Back Arrow on Left) */
             <>
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={handleBack}
-                  className="min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
                   aria-label="رجوع"
                   title="رجوع"
                 >
@@ -674,7 +719,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsNotifOpen(true)}
-                  className="relative min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
                   aria-label="مركز الإشعارات والتنبيهات"
                 >
                   <Bell className="w-4 h-4" />
@@ -686,17 +731,17 @@ const RasdShell: React.FC = () => {
                 </button>
               </div>
 
-              <div className="flex-1 text-center min-w-0 px-2">
-                <h1 className="text-base sm:text-lg font-extrabold text-white truncate font-display">
+              <div className="flex-1 text-center min-w-0 px-1.5 sm:px-2">
+                <h1 className="text-sm min-[360px]:text-base sm:text-lg font-extrabold text-white truncate font-display">
                   {resolvedScreenTitle}
                 </h1>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={() => setActiveScreen('voice')}
-                  className={`min-h-[38px] min-w-[38px] rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                  className={`min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                     activeScreen === 'voice'
                       ? 'bg-[#B48327] text-white border-[#B48327]'
                       : 'bg-white/10 hover:bg-white/15 text-white border-white/15'
@@ -709,7 +754,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveScreen('more')}
-                  className="min-h-[38px] min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
                   aria-label="القائمة والإعدادات"
                   title="القائمة والإعدادات"
                 >
@@ -726,8 +771,8 @@ const RasdShell: React.FC = () => {
 
       {/* Real-time Administrative New Registration Alert Banner for Platform Admins */}
       {canAccessPlatformAdmin && pendingRegistrationCount > 0 && (
-        <div className="bg-[#B48327]/15 dark:bg-[#B48327]/25 border-b border-[#B48327]/30 px-4 py-2.5 text-xs flex items-center justify-between gap-3 text-[#8C6223] dark:text-[#E2B76D]">
-          <div className="flex items-center gap-2.5 min-w-0">
+        <div className="bg-[#B48327]/15 dark:bg-[#B48327]/25 border-b border-[#B48327]/30 px-3 sm:px-4 py-2.5 text-xs flex items-center justify-between gap-2.5 text-[#8C6223] dark:text-[#E2B76D]">
+          <div className="flex items-center gap-2 min-w-0">
             <span className="w-2.5 h-2.5 rounded-full bg-[#B48327] animate-ping shrink-0" />
             <span className="font-extrabold truncate">
               يوجد {pendingRegistrationCount} طلب اشتراك جديد بانتظار موافقتك واعتمادك في لوحة الإدارة!
@@ -736,7 +781,7 @@ const RasdShell: React.FC = () => {
           <button
             type="button"
             onClick={() => setActiveScreen('platform_admin')}
-            className="px-3 py-1.5 rounded-xl bg-[#B48327] hover:bg-[#966B1D] text-white text-xs font-extrabold transition-colors cursor-pointer shrink-0 shadow-xs"
+            className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#B48327] hover:bg-[#966B1D] text-white text-xs font-extrabold transition-colors cursor-pointer shrink-0 shadow-xs"
           >
             مراجعة واعتماد الآن
           </button>
@@ -782,7 +827,7 @@ const RasdShell: React.FC = () => {
 
       {/* Floating Toast Notifications */}
       {toasts.length > 0 && (
-        <div className="fixed top-20 left-4 right-4 z-50 max-w-md mx-auto space-y-2 pointer-events-none">
+        <div className="fixed top-20 left-3 right-3 sm:left-4 sm:right-4 z-50 max-w-md mx-auto space-y-2 pointer-events-none">
           {toasts.map((t) => (
             <div
               key={t.id}
@@ -811,7 +856,7 @@ const RasdShell: React.FC = () => {
       )}
 
       {/* Main Mobile-First Viewport Area with Safe Area Bottom Clearance & Dynamic Screen Suspense */}
-      <main className="flex-1 w-full max-w-5xl mx-auto px-3.5 sm:px-5 pt-4 pb-safe-nav">
+      <main className="flex-1 w-full max-w-5xl mx-auto px-3 sm:px-5 pt-3.5 pb-safe-nav">
         <Suspense fallback={<ScreenFallback />}>
           {activeScreen === 'home' && <HomeScreen />}
           {activeScreen === 'properties' && <PropertiesScreen />}
@@ -832,12 +877,12 @@ const RasdShell: React.FC = () => {
         </Suspense>
       </main>
 
-      {/* Fixed 5-Item Reference Bottom Navigation Bar (#FFFFFF, clean icons, RTL order) */}
+      {/* Fixed 5-Item Reference Bottom Navigation Bar with Glass UI & Safe Area Bottom */}
       <nav
         aria-label="التنقل الرئيسي"
-        className="fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-[#0D1829] border-t border-[#E2E8F0] dark:border-slate-800 bottom-nav-safe shadow-[0_-2px_12px_rgba(11,25,44,0.04)]"
+        className="fixed bottom-0 left-0 right-0 z-40 rasd-glass-nav"
       >
-        <div className="max-w-lg mx-auto h-[64px] grid grid-cols-5 items-center px-1.5">
+        <div className="max-w-lg mx-auto h-[62px] grid grid-cols-5 items-center px-1 sm:px-1.5">
           {PRIMARY_TABS.map((tab) => {
             const Icon = tab.icon;
             const isActive =
@@ -850,11 +895,12 @@ const RasdShell: React.FC = () => {
                 key={tab.id}
                 type="button"
                 onClick={() => {
+                  setPropertyNavigationOrigin(null);
                   setSelectedPropertyId(null);
                   setSelectedTaxpayerId(null);
                   setActiveScreen(tab.id);
                 }}
-                className={`relative min-h-[52px] flex flex-col items-center justify-center rounded-xl transition-all cursor-pointer ${
+                className={`relative min-h-[50px] px-0.5 flex flex-col items-center justify-center rounded-xl transition-all cursor-pointer ${
                   isActive
                     ? isHomeTab
                       ? 'text-[#B48327] font-extrabold'
@@ -875,7 +921,9 @@ const RasdShell: React.FC = () => {
                     </span>
                   )}
                 </div>
-                <span className="text-[11px] mt-1 whitespace-nowrap leading-none">{tab.label}</span>
+                <span className="text-[10px] min-[360px]:text-[11px] mt-1 truncate max-w-full leading-none tracking-tight">
+                  {tab.label}
+                </span>
               </button>
             );
           })}

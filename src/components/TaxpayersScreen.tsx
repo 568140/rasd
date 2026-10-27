@@ -27,6 +27,9 @@ import {
   Sparkles,
   History,
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
+  FileText,
   Bell,
   SlidersHorizontal,
   X,
@@ -37,6 +40,7 @@ import { useRasd } from '../context/RasdContext';
 import {
   Appointment,
   AssessmentStatus,
+  DossierTabId,
   OccupancyStatus,
   Property,
   PropertyStatus,
@@ -48,8 +52,25 @@ import {
   UnitType,
   VisitPurpose,
   VisitStatus,
+  RentPeriod,
   CURRENCY_LIST,
 } from '../types/rasd';
+import {
+  parseTaxpayerNotesAndAgent,
+  composeTaxpayerNotesWithAgent,
+} from '../utils/taxpayerNotes';
+import {
+  UNIT_TYPE_LABELS,
+  OCCUPANCY_STATUS_LABELS,
+  OCCUPANCY_BADGE_STYLES,
+  RENT_PERIOD_LABELS,
+  getPropertyArchitecturalSummary,
+  groupPropertyUnitsByFloor,
+  getAvailableFloorOptions,
+  getUnitRentDisplayInfo,
+  computeUnitsRentalSummary,
+  normalizeFloorLabel,
+} from '../utils/propertyFloors';
 import {
   MIN_REMINDER_MINUTES,
   MAX_REMINDER_MINUTES,
@@ -82,19 +103,7 @@ const PROPERTY_STATUS_LABELS: Record<PropertyStatus, string> = {
   archived: 'مؤرشف',
 };
 
-const UNIT_TYPE_LABELS: Record<UnitType, string> = {
-  apartment: 'شقة سكنية',
-  shop: 'فتحة تجارية / محل',
-  office: 'مكتب إداري',
-  warehouse: 'مستودع',
-  other: 'وحدة أخرى',
-};
-
-const OCCUPANCY_LABELS: Record<OccupancyStatus, string> = {
-  occupied: 'مشغولة / مؤجرة',
-  vacant: 'شاغرة',
-  under_maintenance: 'تحت الصيانة',
-};
+const OCCUPANCY_LABELS: Record<OccupancyStatus, string> = OCCUPANCY_STATUS_LABELS;
 
 const VISIT_PURPOSE_LABELS: Record<VisitPurpose, string> = {
   initial_survey: 'حصر ومسح ميداني أولي',
@@ -131,11 +140,10 @@ function extractAgentsFromNotes(
 
   const parseNoteText = (text: string, sourceLabel: string) => {
     if (!text) return;
-    const nameMatch = text.match(/الوكيل:\s*([^|\n،]+)/);
-    const phoneMatch = text.match(/هاتف الوكيل:\s*([0-9+]+)/);
-    if (nameMatch?.[1] || phoneMatch?.[1]) {
-      const name = (nameMatch?.[1] || 'وكيل معتمد').trim();
-      const phone = (phoneMatch?.[1] || '').trim();
+    const parsed = parseTaxpayerNotesAndAgent(text);
+    if (parsed.agentName || parsed.agentPhone) {
+      const name = (parsed.agentName || 'وكيل معتمد').trim();
+      const phone = (parsed.agentPhone || '').trim();
       const key = `${name}:${phone}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -173,6 +181,9 @@ export const TaxpayersScreen: React.FC = () => {
     setSelectedTaxpayerId,
     selectedPropertyId,
     setSelectedPropertyId,
+    setPropertyNavigationOrigin,
+    activeDossierTab: dossierTab,
+    setActiveDossierTab: setDossierTab,
     setActiveScreen,
     addTaxpayer,
     updateTaxpayer,
@@ -216,10 +227,8 @@ export const TaxpayersScreen: React.FC = () => {
   // Taxpayer Appointments Bell Modal State
   const [bellModalTaxpayer, setBellModalTaxpayer] = useState<Taxpayer | null>(null);
 
-  // Dossier Sub-tab State
-  const [dossierTab, setDossierTab] = useState<
-    'properties_and_units' | 'financial_file' | 'visits_and_appointments' | 'activity_timeline'
-  >('properties_and_units');
+  // Collapsible General Taxpayer Notes Section inside Dossier
+  const [isTaxpayerNotesCollapsed, setIsTaxpayerNotesCollapsed] = useState(false);
 
   // If a property was selected from another screen, automatically resolve its owner taxpayer so the unified dossier opens
   useEffect(() => {
@@ -268,25 +277,25 @@ export const TaxpayersScreen: React.FC = () => {
   const [propRegion, setPropRegion] = useState('');
   const [propAddress, setPropAddress] = useState('');
   const [propAreaSqm, setPropAreaSqm] = useState('300');
-  const [propFloorsCount, setPropFloorsCount] = useState('0');
+  const [propFloorsCount, setPropFloorsCount] = useState('4');
+  const [propHasBasement, setPropHasBasement] = useState(false);
   const [propApartmentsCount, setPropApartmentsCount] = useState('0');
   const [propShopsCount, setPropShopsCount] = useState('0');
   const [propOfficesCount, setPropOfficesCount] = useState('0');
-  const [propLatitude, setPropLatitude] = useState('');
-  const [propLongitude, setPropLongitude] = useState('');
+  const [propAnnexesCount, setPropAnnexesCount] = useState('0');
   const [propNotes, setPropNotes] = useState('');
-  const [locatingGps, setLocatingGps] = useState(false);
 
   // In-Dossier Add/Edit Unit Modal State
   const [unitModalProperty, setUnitModalProperty] = useState<Property | null>(null);
   const [editingUnit, setEditingUnit] = useState<PropertyUnit | null>(null);
   const [unitNumber, setUnitNumber] = useState('');
   const [unitType, setUnitType] = useState<UnitType>('apartment');
-  const [unitFloor, setUnitFloor] = useState('غير محدد');
+  const [unitFloor, setUnitFloor] = useState('الطابق الأرضي');
   const [unitArea, setUnitArea] = useState('85');
   const [unitOccupancy, setUnitOccupancy] = useState<OccupancyStatus>('occupied');
   const [unitTenantName, setUnitTenantName] = useState('');
   const [unitAnnualRent, setUnitAnnualRent] = useState('0');
+  const [unitRentPeriod, setUnitRentPeriod] = useState<RentPeriod | 'legacy_unclassified'>('monthly');
   const [unitNotes, setUnitNotes] = useState('');
 
   // In-Dossier Record Collection Modal State
@@ -664,11 +673,10 @@ export const TaxpayersScreen: React.FC = () => {
     setRegion(tp.region);
     setAddress(tp.address);
     setStatus(tp.status);
-    const agMatch = (tp.notes || '').match(/الوكيل:\s*([^|\n،]+)/);
-    const agPhoneMatch = (tp.notes || '').match(/هاتف الوكيل:\s*([0-9+]+)/);
-    setAgentNameInput(agMatch?.[1]?.trim() || '');
-    setAgentPhoneInput(agPhoneMatch?.[1]?.trim() || '');
-    setNotes(tp.notes);
+    const parsed = parseTaxpayerNotesAndAgent(tp.notes || '');
+    setAgentNameInput(parsed.agentName);
+    setAgentPhoneInput(parsed.agentPhone);
+    setNotes(parsed.generalNotes);
     setIgnoreDuplicateWarning(true);
     setIsFormOpen(true);
   };
@@ -692,27 +700,11 @@ export const TaxpayersScreen: React.FC = () => {
 
     setSubmitting(true);
     try {
-      let composedNotes = notes.trim();
-      if (agentNameInput.trim()) {
-        if (composedNotes.includes('الوكيل:')) {
-          composedNotes = composedNotes.replace(
-            /الوكيل:\s*[^|\n،]+/,
-            `الوكيل: ${agentNameInput.trim()}`
-          );
-        } else {
-          composedNotes = `${composedNotes ? composedNotes + ' | ' : ''}الوكيل: ${agentNameInput.trim()}`;
-        }
-      }
-      if (agentPhoneInput.trim()) {
-        if (composedNotes.includes('هاتف الوكيل:')) {
-          composedNotes = composedNotes.replace(
-            /هاتف الوكيل:\s*[0-9+]+/,
-            `هاتف الوكيل: ${agentPhoneInput.trim()}`
-          );
-        } else {
-          composedNotes = `${composedNotes ? composedNotes + ' | ' : ''}هاتف الوكيل: ${agentPhoneInput.trim()}`;
-        }
-      }
+      const composedNotes = composeTaxpayerNotesWithAgent(
+        notes,
+        agentNameInput,
+        agentPhoneInput
+      );
 
       if (editingTaxpayer) {
         await updateTaxpayer(editingTaxpayer.id, {
@@ -753,17 +745,12 @@ export const TaxpayersScreen: React.FC = () => {
     if (!selectedTaxpayer || submitting) return;
     setSubmitting(true);
     try {
-      let updatedNotes = selectedTaxpayer.notes || '';
-      if (quickAgentName.trim()) {
-        updatedNotes = updatedNotes.includes('الوكيل:')
-          ? updatedNotes.replace(/الوكيل:\s*[^|\n،]+/, `الوكيل: ${quickAgentName.trim()}`)
-          : `${updatedNotes ? updatedNotes + ' | ' : ''}الوكيل: ${quickAgentName.trim()}`;
-      }
-      if (quickAgentPhone.trim()) {
-        updatedNotes = updatedNotes.includes('هاتف الوكيل:')
-          ? updatedNotes.replace(/هاتف الوكيل:\s*[0-9+]+/, `هاتف الوكيل: ${quickAgentPhone.trim()}`)
-          : `${updatedNotes ? updatedNotes + ' | ' : ''}هاتف الوكيل: ${quickAgentPhone.trim()}`;
-      }
+      const parsed = parseTaxpayerNotesAndAgent(selectedTaxpayer.notes || '');
+      const updatedNotes = composeTaxpayerNotesWithAgent(
+        parsed.generalNotes,
+        quickAgentName.trim() || parsed.agentName,
+        quickAgentPhone.trim() || parsed.agentPhone
+      );
       await updateTaxpayer(selectedTaxpayer.id, {
         phone: quickAgentPhone.trim() || selectedTaxpayer.phone,
         notes: updatedNotes,
@@ -772,6 +759,17 @@ export const TaxpayersScreen: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const openPropertyDetailsFromDossier = (propertyId: string, tabOverride?: DossierTabId) => {
+    if (!selectedTaxpayer) return;
+    setPropertyNavigationOrigin({
+      source: 'taxpayer_dossier',
+      taxpayerId: selectedTaxpayer.id,
+      dossierTab: tabOverride || dossierTab,
+    });
+    setSelectedPropertyId(propertyId);
+    setActiveScreen('properties');
   };
 
   // Open Property Modal inside Dossier (Pre-filled with selectedTaxpayer)
@@ -785,17 +783,19 @@ export const TaxpayersScreen: React.FC = () => {
     setPropRegion(selectedTaxpayer.region || workspace?.regionName || 'صنعاء');
     setPropAddress(selectedTaxpayer.address || '');
     setPropAreaSqm('300');
-    setPropFloorsCount('0');
+    setPropFloorsCount('4');
+    setPropHasBasement(false);
     setPropApartmentsCount('0');
     setPropShopsCount('0');
     setPropOfficesCount('0');
-    setPropLatitude('');
-    setPropLongitude('');
+    setPropAnnexesCount('0');
     setPropNotes('');
     setIsPropertyModalOpen(true);
   };
 
   const openEditPropertyInDossier = (prop: Property) => {
+    const pUnits = propertyUnits.filter((u) => u.propertyId === prop.id);
+    const arch = getPropertyArchitecturalSummary(prop, pUnits);
     setEditingProperty(prop);
     setPropTitle(prop.title);
     setPropCode(prop.code);
@@ -804,12 +804,12 @@ export const TaxpayersScreen: React.FC = () => {
     setPropRegion(prop.region);
     setPropAddress(prop.address);
     setPropAreaSqm(String(prop.areaSqm || 0));
-    setPropFloorsCount(String(extractFloorsFromNotes(prop.notes)));
-    setPropApartmentsCount('0');
-    setPropShopsCount('0');
-    setPropOfficesCount('0');
-    setPropLatitude(prop.hasCoordinates ? String(prop.latitude) : '');
-    setPropLongitude(prop.hasCoordinates ? String(prop.longitude) : '');
+    setPropFloorsCount(String(arch.floorsCount || 1));
+    setPropHasBasement(arch.hasBasement);
+    setPropApartmentsCount(String(arch.apartmentsCount || 0));
+    setPropShopsCount(String(arch.shopsCount || 0));
+    setPropOfficesCount(String(arch.officesCount || 0));
+    setPropAnnexesCount(String(arch.annexesCount || 0));
     setPropNotes(prop.notes);
     setIsPropertyModalOpen(true);
   };
@@ -818,31 +818,15 @@ export const TaxpayersScreen: React.FC = () => {
     e.preventDefault();
     if (!selectedTaxpayer || submitting) return;
 
-    const floorsNum = parseInt(propFloorsCount || '0', 10);
-    const aptsNum = parseInt(propApartmentsCount || '0', 10);
-    const shopsNum = parseInt(propShopsCount || '0', 10);
-    const officesNum = parseInt(propOfficesCount || '0', 10);
-
-    const latNum = parseFloat(propLatitude);
-    const lngNum = parseFloat(propLongitude);
-    const hasCoords =
-      !isNaN(latNum) &&
-      !isNaN(lngNum) &&
-      latNum >= -90 &&
-      latNum <= 90 &&
-      lngNum >= -180 &&
-      lngNum <= 180 &&
-      (latNum !== 0 || lngNum !== 0);
+    const floorsNum = Math.max(1, parseInt(propFloorsCount || '1', 10) || 1);
+    const aptsNum = Math.max(0, parseInt(propApartmentsCount || '0', 10) || 0);
+    const shopsNum = Math.max(0, parseInt(propShopsCount || '0', 10) || 0);
+    const officesNum = Math.max(0, parseInt(propOfficesCount || '0', 10) || 0);
+    const annexesNum = Math.max(0, parseInt(propAnnexesCount || '0', 10) || 0);
 
     setSubmitting(true);
     try {
       if (editingProperty) {
-        let updatedNotes = propNotes.trim();
-        if (floorsNum > 0) {
-          updatedNotes = updatedNotes.includes('عدد الأدوار:')
-            ? updatedNotes.replace(/عدد الأدوار:\s*\d+/, `عدد الأدوار: ${floorsNum}`)
-            : `عدد الأدوار: ${floorsNum}${updatedNotes ? ` | ${updatedNotes}` : ''}`;
-        }
         await updateProperty(editingProperty.id, {
           title: propTitle,
           code: propCode,
@@ -851,13 +835,15 @@ export const TaxpayersScreen: React.FC = () => {
           region: propRegion,
           address: propAddress,
           areaSqm: parseFloat(propAreaSqm) || 0,
-          latitude: hasCoords ? latNum : 0,
-          longitude: hasCoords ? lngNum : 0,
-          hasCoordinates: hasCoords,
-          notes: updatedNotes,
+          floorsCount: floorsNum,
+          hasBasement: propHasBasement,
+          apartmentsCount: aptsNum,
+          shopsCount: shopsNum,
+          officesCount: officesNum,
+          annexesCount: annexesNum,
+          notes: propNotes,
         });
-      } else if (aptsNum > 0 || shopsNum > 0 || officesNum > 0) {
-        // Use atomic compound service when initial apartments or commercial shops are specified
+      } else if (aptsNum > 0 || shopsNum > 0 || officesNum > 0 || annexesNum > 0) {
         await executeCompoundVoiceCreation({
           existingTaxpayerId: selectedTaxpayer.id,
           taxpayerName: selectedTaxpayer.fullName,
@@ -867,16 +853,14 @@ export const TaxpayersScreen: React.FC = () => {
           propertyTitle: propTitle || `عقار ${selectedTaxpayer.fullName}`,
           propertyType: propType,
           floorsCount: floorsNum,
+          hasBasement: propHasBasement,
           apartmentsCount: aptsNum,
           shopsCount: shopsNum,
           officesCount: officesNum,
+          annexesCount: annexesNum,
           notes: propNotes,
         });
       } else {
-        const composedPropNotes =
-          floorsNum > 0
-            ? `عدد الأدوار: ${floorsNum}${propNotes ? ` | ${propNotes}` : ''}`
-            : propNotes;
         await addProperty({
           taxpayerId: selectedTaxpayer.id,
           taxpayerName: selectedTaxpayer.fullName,
@@ -888,10 +872,16 @@ export const TaxpayersScreen: React.FC = () => {
           address: propAddress || selectedTaxpayer.address || 'غير محدد',
           areaSqm: parseFloat(propAreaSqm) || 0,
           unitsCount: 0,
-          latitude: hasCoords ? latNum : 0,
-          longitude: hasCoords ? lngNum : 0,
-          hasCoordinates: hasCoords,
-          notes: composedPropNotes,
+          latitude: 0,
+          longitude: 0,
+          hasCoordinates: false,
+          floorsCount: floorsNum,
+          hasBasement: propHasBasement,
+          apartmentsCount: 0,
+          shopsCount: 0,
+          officesCount: 0,
+          annexesCount: 0,
+          notes: propNotes,
         });
       }
       setIsPropertyModalOpen(false);
@@ -902,36 +892,68 @@ export const TaxpayersScreen: React.FC = () => {
   };
 
   // Unit Add/Edit inside Dossier
-  const openAddUnitModal = (prop: Property) => {
+  const openAddUnitModal = (prop: Property, defaultFloorLabel?: string) => {
     setUnitModalProperty(prop);
     setEditingUnit(null);
     const existingUnits = propertyUnits.filter((u) => u.propertyId === prop.id);
     setUnitNumber(`وحدة ${existingUnits.length + 1}`);
-    setUnitType('apartment');
-    setUnitFloor('غير محدد');
+    setUnitType(defaultFloorLabel === 'السطح / الملاحق' ? 'annex' : 'apartment');
+    setUnitFloor(defaultFloorLabel || 'الطابق الأرضي');
     setUnitArea('80');
     setUnitOccupancy('occupied');
     setUnitTenantName('');
     setUnitAnnualRent('0');
+    setUnitRentPeriod('monthly');
     setUnitNotes('');
   };
 
   const openEditUnitModal = (prop: Property, unit: PropertyUnit) => {
+    const rentInfo = getUnitRentDisplayInfo(unit);
     setUnitModalProperty(prop);
     setEditingUnit(unit);
     setUnitNumber(unit.unitNumber);
     setUnitType(unit.unitType);
-    setUnitFloor(unit.floor);
+    setUnitFloor(unit.floor || '');
     setUnitArea(String(unit.areaSqm || 0));
     setUnitOccupancy(unit.occupancyStatus);
     setUnitTenantName(unit.tenantName || '');
-    setUnitAnnualRent(String(unit.annualRentEstimate || 0));
+    setUnitAnnualRent(String(rentInfo.activeRentAmount || unit.annualRentEstimate || 0));
+    setUnitRentPeriod(
+      unit.rentPeriod
+        ? unit.rentPeriod
+        : rentInfo.isLegacyEstimateOnly
+        ? 'legacy_unclassified'
+        : 'monthly'
+    );
     setUnitNotes(unit.notes || '');
   };
 
   const handleSaveUnitInDossier = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!unitModalProperty || !selectedTaxpayer || submitting) return;
+    const isOccupied = unitOccupancy === 'occupied';
+    const parsedRent = isOccupied ? Math.max(0, parseFloat(unitAnnualRent) || 0) : 0;
+
+    if (
+      isOccupied &&
+      editingUnit &&
+      !editingUnit.rentPeriod &&
+      unitRentPeriod === 'legacy_unclassified' &&
+      parsedRent !== Number(editingUnit.annualRentEstimate || 0)
+    ) {
+      showToast(
+        'يرجى تحديد فترة الإيجار (شهري، ربع سنوي، نصف سنوي، سنوي) عند تعديل قيمة الإيجار.',
+        'warning'
+      );
+      return;
+    }
+
+    const resolvedPeriod: RentPeriod | undefined = isOccupied
+      ? unitRentPeriod === 'legacy_unclassified'
+        ? undefined
+        : unitRentPeriod
+      : undefined;
+
     setSubmitting(true);
     try {
       if (editingUnit) {
@@ -941,8 +963,10 @@ export const TaxpayersScreen: React.FC = () => {
           floor: unitFloor,
           areaSqm: parseFloat(unitArea) || 0,
           occupancyStatus: unitOccupancy,
-          tenantName: unitTenantName,
-          annualRentEstimate: parseFloat(unitAnnualRent) || 0,
+          tenantName: isOccupied ? unitTenantName.trim() : '',
+          rentAmount: parsedRent,
+          rentPeriod: resolvedPeriod,
+          annualRentEstimate: parsedRent,
           notes: unitNotes,
         });
       } else {
@@ -955,8 +979,10 @@ export const TaxpayersScreen: React.FC = () => {
           floor: unitFloor,
           areaSqm: parseFloat(unitArea) || 0,
           occupancyStatus: unitOccupancy,
-          tenantName: unitTenantName,
-          annualRentEstimate: parseFloat(unitAnnualRent) || 0,
+          tenantName: isOccupied ? unitTenantName.trim() : '',
+          rentAmount: parsedRent,
+          rentPeriod: resolvedPeriod || 'monthly',
+          annualRentEstimate: parsedRent,
           notes: unitNotes,
         });
       }
@@ -1240,6 +1266,7 @@ export const TaxpayersScreen: React.FC = () => {
     );
     const tpFinSummary = getTaxpayerFinancialSummary(selectedTaxpayer.id);
     const extractedAgents = extractAgentsFromNotes(selectedTaxpayer, tpProps);
+    const parsedTaxpayerNotes = parseTaxpayerNotesAndAgent(selectedTaxpayer.notes || '');
 
     // Build chronological activity timeline for this taxpayer & their properties
     const relatedEntityIds = new Set<string>([
@@ -1424,6 +1451,72 @@ export const TaxpayersScreen: React.FC = () => {
           </div>
         </div>
 
+        {/* 1B. Collapsible General Taxpayer Notes Card (قسم ملاحظات المكلف العامة القابل للطي) */}
+        <div className="rounded-2xl bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 p-4 shadow-2xs">
+          <div className="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={() => setIsTaxpayerNotesCollapsed((prev) => !prev)}
+              className="flex items-center gap-2 text-right flex-1 cursor-pointer"
+            >
+              <div className="w-8 h-8 rounded-xl bg-[#F4F6F9] dark:bg-slate-800 flex items-center justify-center shrink-0">
+                <FileText className="w-4 h-4 text-[#B48327]" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-extrabold text-[#0B192C] dark:text-white font-display">
+                    ملاحظات المكلف العامة
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      parsedTaxpayerNotes.generalNotes
+                        ? 'bg-amber-50 text-[#B48327] border border-amber-200/70 dark:bg-amber-950/40 dark:border-amber-800'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                    }`}
+                  >
+                    {parsedTaxpayerNotes.generalNotes ? 'مسجلة' : 'لا توجد ملاحظات'}
+                  </span>
+                </div>
+              </div>
+              {isTaxpayerNotesCollapsed ? (
+                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
+              ) : (
+                <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" />
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openEditForm(selectedTaxpayer)}
+              className="px-2.5 py-1.5 rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-slate-800 text-[11px] font-bold text-[#0B192C] dark:text-white flex items-center gap-1 shrink-0 cursor-pointer"
+            >
+              <Edit3 className="w-3 h-3 text-[#B48327]" />
+              <span>{parsedTaxpayerNotes.generalNotes ? 'تعديل الملاحظات' : '+ إضافة ملاحظة'}</span>
+            </button>
+          </div>
+
+          {!isTaxpayerNotesCollapsed && (
+            <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+              {parsedTaxpayerNotes.generalNotes ? (
+                <p className="text-xs text-[#172334] dark:text-slate-200 whitespace-pre-line leading-relaxed bg-[#F4F6F9]/70 dark:bg-slate-900/60 p-3 rounded-xl border border-slate-200/60 dark:border-slate-800">
+                  {parsedTaxpayerNotes.generalNotes}
+                </p>
+              ) : (
+                <div className="flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 bg-[#F4F6F9]/50 dark:bg-slate-900/40 px-3 py-2.5 rounded-xl">
+                  <span>لا توجد ملاحظات عامة مسجلة في ملف هذا المكلف حتى الآن.</span>
+                  <button
+                    type="button"
+                    onClick={() => openEditForm(selectedTaxpayer)}
+                    className="text-[11px] font-bold text-[#B48327] hover:underline shrink-0 cursor-pointer"
+                  >
+                    إضافة ملاحظة الآن
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* 2. Comprehensive Financial Summary Strip (الملف المالي الإجمالي للمكلف) */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 shadow-2xs">
@@ -1527,57 +1620,57 @@ export const TaxpayersScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* 4. Dossier Section Navigation Tabs */}
-        <div className="flex overflow-x-auto gap-2 bg-white dark:bg-[#0D1829] p-2 rounded-2xl border border-slate-200/90 dark:border-slate-800 shadow-2xs">
+        {/* 4. Sticky Dossier Section Navigation Tabs with Smooth Touch Scroll & Glass UI */}
+        <div className="sticky-below-header flex gap-2 p-2 rounded-2xl border border-slate-200/90 dark:border-slate-800 rasd-glass-sticky rasd-scroll-x">
           <button
             type="button"
             onClick={() => setDossierTab('properties_and_units')}
-            className={`px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
               dossierTab === 'properties_and_units'
                 ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
                 : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}
           >
-            <Building2 className="w-4 h-4" />
+            <Building2 className="w-4 h-4 shrink-0" />
             <span>العقارات والوحدات التابعة ({tpProps.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setDossierTab('financial_file')}
-            className={`px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
               dossierTab === 'financial_file'
                 ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
                 : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}
           >
-            <Wallet className="w-4 h-4" />
+            <Wallet className="w-4 h-4 shrink-0" />
             <span>الملف المالي وتفاصيل العقارات ({tpAssessments.length + tpTransactions.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setDossierTab('visits_and_appointments')}
-            className={`px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
               dossierTab === 'visits_and_appointments'
                 ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
                 : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}
           >
-            <CalendarClock className="w-4 h-4" />
+            <CalendarClock className="w-4 h-4 shrink-0" />
             <span>الزيارات والمواعيد والتأجيلات ({tpVisits.length + tpAppts.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setDossierTab('activity_timeline')}
-            className={`px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer ${
+            className={`px-3.5 sm:px-4 py-2.5 rounded-xl text-xs font-extrabold whitespace-nowrap flex items-center gap-1.5 transition cursor-pointer shrink-0 ${
               dossierTab === 'activity_timeline'
                 ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
                 : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
             }`}
           >
-            <History className="w-4 h-4" />
+            <History className="w-4 h-4 shrink-0" />
             <span>السجل الزمني للعمليات ({taxpayerAuditTimeline.length})</span>
           </button>
         </div>
@@ -1608,20 +1701,20 @@ export const TaxpayersScreen: React.FC = () => {
             ) : (
               tpProps.map((prop) => {
                 const units = tpUnits.filter((u) => u.propertyId === prop.id);
-                const aptsCount = units.filter((u) => u.unitType === 'apartment').length;
-                const shopsCount = units.filter((u) => u.unitType === 'shop').length;
-                const officesCount = units.filter((u) => u.unitType === 'office').length;
-                const floorsCount = extractFloorsFromNotes(prop.notes);
+                const arch = getPropertyArchitecturalSummary(prop, units);
+                const floorGroups = groupPropertyUnitsByFloor(prop, units);
+                const rentalSummary = computeUnitsRentalSummary(units);
                 const propFin = getTaxpayerFinancialSummary(selectedTaxpayer.id, prop.id);
                 const isFocusedProperty = selectedPropertyId === prop.id;
+                const currencyLabel = defaultCurrency === 'SAR' ? 'ر.س' : 'ر.ي';
 
                 return (
                   <div
                     key={prop.id}
-                    onClick={() => setSelectedPropertyId(prop.id)}
-                    className={`bg-white dark:bg-[#0D1829] border rounded-3xl p-5 shadow-2xs transition ${
+                    onClick={() => openPropertyDetailsFromDossier(prop.id, 'properties_and_units')}
+                    className={`bg-white dark:bg-[#0D1829] border rounded-3xl p-5 shadow-2xs transition cursor-pointer hover:border-[#0B192C]/60 dark:hover:border-[#B48327]/70 ${
                       isFocusedProperty
-                        ? 'border-2 border-[#0284C7] ring-2 ring-sky-500/15'
+                        ? 'border-2 border-[#0B192C] dark:border-[#B48327]'
                         : 'border-slate-200/90 dark:border-slate-800'
                     }`}
                   >
@@ -1629,7 +1722,7 @@ export const TaxpayersScreen: React.FC = () => {
                     <div className="flex flex-wrap items-start justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
                       <div>
                         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-1">
-                          <span className="font-mono font-bold text-[#0284C7] dark:text-sky-400">
+                          <span className="font-mono font-bold text-[#0B192C] dark:text-sky-400">
                             {prop.code}
                           </span>
                           <span>·</span>
@@ -1637,28 +1730,19 @@ export const TaxpayersScreen: React.FC = () => {
                             {PROPERTY_TYPE_LABELS[prop.propertyType]}
                           </span>
                           <span>·</span>
-                          <span className="font-bold text-[#0D9488]">
+                          <span className="font-bold text-[#059669]">
                             {PROPERTY_STATUS_LABELS[prop.status]}
                           </span>
-                          {isFocusedProperty && (
-                            <span className="px-2 py-0.5 rounded-md bg-teal-500/15 text-[#0D9488] dark:text-teal-300 font-extrabold text-[11px]">
-                              العقار المحدد حاليًا
-                            </span>
-                          )}
                         </div>
-                        <h3 className="text-lg font-extrabold text-[#0B192C] dark:text-white font-display">
-                          {prop.title}
+                        <h3 className="text-lg font-extrabold text-[#0B192C] dark:text-white font-display flex items-center gap-1.5">
+                          <span>{prop.title}</span>
+                          <ChevronLeft className="w-4 h-4 text-[#B48327] shrink-0" />
                         </h3>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-[#0D9488] shrink-0" />
+                          <MapPin className="w-3.5 h-3.5 text-[#B48327] shrink-0" />
                           <span>
                             {prop.region} — {prop.address}
                           </span>
-                          {prop.hasCoordinates && (
-                            <span className="font-mono text-[11px] text-[#0284C7]">
-                              ({prop.latitude.toFixed(4)}, {prop.longitude.toFixed(4)})
-                            </span>
-                          )}
                         </p>
                       </div>
 
@@ -1669,6 +1753,17 @@ export const TaxpayersScreen: React.FC = () => {
                       >
                         <button
                           type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPropertyDetailsFromDossier(prop.id, 'properties_and_units');
+                          }}
+                          className="min-h-[36px] px-3 rounded-xl bg-[#F4F6F9] hover:bg-slate-200 dark:bg-slate-800 text-[#0B192C] dark:text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Layers className="w-3.5 h-3.5 text-[#B48327]" />
+                          <span>شاشة الطوابق</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => openCollectionModalInDossier(prop.id)}
                           className="min-h-[36px] px-3 rounded-xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/60 text-[#0D9488] dark:text-teal-300 text-xs font-bold flex items-center gap-1 cursor-pointer"
                         >
@@ -1677,18 +1772,10 @@ export const TaxpayersScreen: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => openVisitModalInDossier(prop.id)}
-                          className="min-h-[36px] px-3 rounded-xl bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 text-[#0284C7] dark:text-sky-300 text-xs font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          <ClipboardCheck className="w-3.5 h-3.5" />
-                          <span>زيارة</span>
-                        </button>
-                        <button
-                          type="button"
                           onClick={() => openAddUnitModal(prop)}
                           className="min-h-[36px] px-3 rounded-xl bg-[#0B192C] hover:bg-[#132A46] text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
                         >
-                          <Plus className="w-3.5 h-3.5" />
+                          <Plus className="w-3.5 h-3.5 text-[#B48327]" />
                           <span>إضافة وحدة</span>
                         </button>
                         <button
@@ -1712,43 +1799,104 @@ export const TaxpayersScreen: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Property Architectural & Financial Breakdown Strip */}
-                    <div className="grid grid-cols-2 sm:grid-cols-6 gap-2.5 py-3.5 border-b border-slate-100 dark:border-slate-800 text-xs">
-                      <div className="p-2.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900">
-                        <div className="text-[10px] text-slate-500">عدد الأدوار</div>
-                        <div className="font-extrabold text-[#0B192C] dark:text-white mt-0.5">
-                          {floorsCount > 0 ? `${floorsCount} أدوار` : 'غير محدد'}
-                        </div>
-                      </div>
-                      <div className="p-2.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900">
-                        <div className="text-[10px] text-slate-500">الشقق السكنية</div>
-                        <div className="font-extrabold text-[#0284C7] dark:text-sky-400 mt-0.5">
-                          {aptsCount} شقة
-                        </div>
-                      </div>
-                      <div className="p-2.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900">
-                        <div className="text-[10px] text-slate-500">الفتحات التجارية</div>
-                        <div className="font-extrabold text-[#0D9488] dark:text-teal-400 mt-0.5">
-                          {shopsCount} فتحة / محل
-                        </div>
-                      </div>
-                      <div className="p-2.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900">
-                        <div className="text-[10px] text-slate-500">التزامات العقار</div>
+                    {/* Architectural Summary Strip (عدد الطوابق | البدروم | الشقق | المحلات | الملحقات) — 320px-safe */}
+                    <div className="grid grid-cols-5 gap-1.5 sm:gap-2 py-3.5 border-b border-slate-100 dark:border-slate-800 text-center text-xs">
+                      <div className="px-1 py-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                        <div className="text-[10px] text-slate-500 leading-tight">عدد الطوابق</div>
                         <div className="font-mono font-extrabold text-[#0B192C] dark:text-white mt-0.5">
-                          {propFin.totalApprovedObligations.toLocaleString('en-US')}
+                          {arch.floorsCount}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900">
-                        <div className="text-[10px] text-slate-500">تحصيلات العقار</div>
-                        <div className="font-mono font-extrabold text-[#0D9488] mt-0.5">
-                          {propFin.approvedCollectionsTotal.toLocaleString('en-US')}
+                      <div className="px-1 py-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                        <div className="text-[10px] text-slate-500 leading-tight">البدروم</div>
+                        <div className="font-extrabold text-[#0B192C] dark:text-white mt-0.5">
+                          {arch.hasBasement ? 'نعم' : 'لا'}
                         </div>
                       </div>
-                      <div className="p-2.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-800/50">
-                        <div className="text-[10px] text-amber-800 dark:text-amber-300">المتبقي على العقار</div>
-                        <div className="font-mono font-extrabold text-amber-700 dark:text-amber-300 mt-0.5">
-                          {propFin.netRemaining.toLocaleString('en-US')}
+                      <div className="px-1 py-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                        <div className="text-[10px] text-slate-500 leading-tight">الشقق</div>
+                        <div className="font-mono font-extrabold text-[#0284C7] dark:text-sky-400 mt-0.5">
+                          {arch.apartmentsCount}
                         </div>
+                      </div>
+                      <div className="px-1 py-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                        <div className="text-[10px] text-slate-500 leading-tight">المحلات</div>
+                        <div className="font-mono font-extrabold text-[#0D9488] dark:text-teal-400 mt-0.5">
+                          {arch.shopsCount}
+                        </div>
+                      </div>
+                      <div className="px-1 py-2 sm:p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                        <div className="text-[10px] text-slate-500 leading-tight">الملحقات</div>
+                        <div className="font-mono font-extrabold text-[#B48327] mt-0.5">
+                          {arch.annexesCount}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Separated Financial Summary vs Rental Summary by Period */}
+                    <div className="space-y-2.5 py-3 border-b border-slate-100 dark:border-slate-800 text-xs">
+                      <div className="grid grid-cols-3 gap-2.5">
+                        <div className="p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                          <div className="text-[10px] text-slate-500">المطلوب الضريبي للعقار</div>
+                          <div className="font-mono font-extrabold text-[#0B192C] dark:text-white mt-0.5">
+                            {propFin.totalApprovedObligations.toLocaleString('en-US')}
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900">
+                          <div className="text-[10px] text-slate-500">المدفوع للعقار</div>
+                          <div className="font-mono font-extrabold text-[#0D9488] mt-0.5">
+                            {propFin.approvedCollectionsTotal.toLocaleString('en-US')}
+                          </div>
+                        </div>
+                        <div className="p-2.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60">
+                          <div className="text-[10px] text-amber-800 dark:text-amber-300">المتبقي الضريبي</div>
+                          <div className="font-mono font-extrabold text-amber-700 dark:text-amber-300 mt-0.5">
+                            {propFin.netRemaining.toLocaleString('en-US')}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Standalone Unit Rentals Breakdown by Explicit Period */}
+                      <div className="p-3 rounded-2xl bg-[#ECFDF5]/50 dark:bg-emerald-950/20 border border-[#A7F3D0]/60 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                          <span className="font-extrabold text-[#059669]">
+                            ملخص إيجارات الوحدات المؤجرة حسب الفترة (مستقل عن الضرائب):
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                            <span className="text-[#059669]">مؤجرة: {rentalSummary.occupiedCount}</span>
+                            <span>·</span>
+                            <span className="text-[#D97706]">شاغرة: {rentalSummary.vacantCount}</span>
+                            <span>·</span>
+                            <span className="text-[#0284C7]">يستخدمها المالك: {rentalSummary.ownerUsedCount}</span>
+                            <span>·</span>
+                            <span className="text-slate-500">تحت الصيانة: {rentalSummary.underMaintenanceCount}</span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                          {(['monthly', 'quarterly', 'semi_annual', 'annual'] as RentPeriod[]).map((per) => (
+                            <div
+                              key={per}
+                              className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-800 flex items-center justify-between"
+                            >
+                              <span className="text-slate-500 font-semibold">
+                                {RENT_PERIOD_LABELS[per]} ({rentalSummary.byPeriod[per].count})
+                              </span>
+                              <span className="font-mono font-extrabold text-[#0B192C] dark:text-white">
+                                {rentalSummary.byPeriod[per].totalAmount.toLocaleString('en-US')} {currencyLabel}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                        {rentalSummary.legacyUnclassifiedCount > 0 && (
+                          <div className="px-2.5 py-1.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 text-[11px] text-amber-800 dark:text-amber-300 flex items-center justify-between">
+                            <span>
+                              تقدير إيجار سابق غير محدد الفترة ({rentalSummary.legacyUnclassifiedCount} وحدة):
+                            </span>
+                            <span className="font-mono font-extrabold">
+                              {rentalSummary.legacyUnclassifiedTotal.toLocaleString('en-US')} {currencyLabel}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1758,76 +1906,102 @@ export const TaxpayersScreen: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Units List inside Property */}
-                    <div className="mt-4" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-between mb-2.5">
+                    {/* Units Grouped by Floor inside Property */}
+                    <div className="mt-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-between">
                         <span className="text-xs font-extrabold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                           <Layers className="w-4 h-4 text-[#0D9488]" />
-                          الوحدات العقارية التابعة لهذا العقار ({units.length} وحدة —{' '}
-                          {aptsCount} شقق، {shopsCount} فتحات تجارية{officesCount > 0 ? `، ${officesCount} مكاتب` : ''}):
+                          الطوابق والوحدات التابعة ({units.length} وحدة):
                         </span>
                       </div>
 
-                      {units.length === 0 ? (
-                        <div className="p-4 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900/60 text-center text-xs text-slate-500">
-                          لا توجد وحدات مسجلة تحت هذا العقار بعد. اضغط «+ إضافة وحدة» لإدراج الشقق أو المحلات التجارية.
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                          {units.map((u) => (
-                            <div
-                              key={u.id}
-                              className="p-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-start justify-between gap-2"
+                      {floorGroups.map((fg) => (
+                        <div
+                          key={fg.floorLabel}
+                          className="rounded-2xl border border-[#E2E8F0] dark:border-slate-800 overflow-hidden"
+                        >
+                          <div className="px-3.5 py-2.5 bg-[#F4F6F9] dark:bg-slate-900 flex items-center justify-between text-xs">
+                            <span className="font-extrabold text-[#172334] dark:text-white">
+                              {fg.floorLabel} ({fg.units.length} وحدة)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => openAddUnitModal(prop, fg.floorLabel)}
+                              className="px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 text-[11px] font-bold text-[#0B192C] dark:text-white cursor-pointer"
                             >
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-extrabold text-[#0B192C] dark:text-white">
-                                    {u.unitNumber}
-                                  </span>
-                                  <span
-                                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
-                                      u.unitType === 'shop'
-                                        ? 'bg-teal-100 dark:bg-teal-950/70 text-[#0D9488] dark:text-teal-300'
-                                        : 'bg-sky-100 dark:bg-sky-950/70 text-[#0284C7] dark:text-sky-300'
-                                    }`}
-                                  >
-                                    {UNIT_TYPE_LABELS[u.unitType]}
-                                  </span>
-                                </div>
-                                <div className="text-[11px] text-slate-500 mt-1">
-                                  الطابق: {u.floor || 'غير محدد'} · {OCCUPANCY_LABELS[u.occupancyStatus]}
-                                </div>
-                                {u.tenantName && (
-                                  <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
-                                    الشاغل: {u.tenantName}
-                                  </div>
-                                )}
-                              </div>
+                              + وحدة في {fg.floorLabel}
+                            </button>
+                          </div>
 
-                              <div className="flex items-center gap-1 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => openEditUnitModal(prop, u)}
-                                  className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
-                                  title="تعديل نوع أو بيانات الوحدة"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                </button>
-                                {(isOwner || canDeleteRecords) && (
-                                  <button
-                                    type="button"
-                                    onClick={() => setConfirmDeleteUnit(u)}
-                                    className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 cursor-pointer"
-                                    title="حذف الوحدة"
+                          {fg.units.length > 0 && (
+                            <div className="p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2 bg-white dark:bg-[#0D1829]">
+                              {fg.units.map((u) => {
+                                const badgeStyle = OCCUPANCY_BADGE_STYLES[u.occupancyStatus];
+                                const rentInfo = getUnitRentDisplayInfo(u);
+                                return (
+                                  <div
+                                    key={u.id}
+                                    className="p-3 rounded-xl bg-[#F4F6F9]/60 dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-800 flex items-start justify-between gap-2"
                                   >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                )}
-                              </div>
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="text-xs font-extrabold text-[#0B192C] dark:text-white">
+                                          {u.unitNumber}
+                                        </span>
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 text-[#64748B] border border-[#E2E8F0] dark:border-slate-700">
+                                          {UNIT_TYPE_LABELS[u.unitType]}
+                                        </span>
+                                        <span
+                                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badgeStyle.bg} ${badgeStyle.text} ${badgeStyle.border}`}
+                                        >
+                                          {OCCUPANCY_STATUS_LABELS[u.occupancyStatus]}
+                                        </span>
+                                      </div>
+                                      <div className="text-[11px] font-mono font-bold text-[#172334] dark:text-slate-200 mt-1">
+                                        {u.occupancyStatus === 'occupied' ? (
+                                          <>
+                                            الإيجار: {rentInfo.activeRentAmount.toLocaleString('en-US')}{' '}
+                                            {currencyLabel}
+                                            {rentInfo.periodLabel ? ` (${rentInfo.periodLabel})` : ''}
+                                          </>
+                                        ) : (
+                                          <span className="text-[#64748B]">0 {currencyLabel}</span>
+                                        )}
+                                      </div>
+                                      {u.occupancyStatus === 'occupied' && u.tenantName && (
+                                        <div className="text-[11px] text-slate-600 dark:text-slate-300 mt-0.5">
+                                          المستأجر: {u.tenantName}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => openEditUnitModal(prop, u)}
+                                        className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 cursor-pointer"
+                                        title="تعديل الوحدة"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      {(isOwner || canDeleteRecords) && (
+                                        <button
+                                          type="button"
+                                          onClick={() => setConfirmDeleteUnit(u)}
+                                          className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 cursor-pointer"
+                                          title="حذف الوحدة"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
                             </div>
-                          ))}
+                          )}
                         </div>
-                      )}
+                      ))}
                     </div>
                   </div>
                 );
@@ -1887,7 +2061,14 @@ export const TaxpayersScreen: React.FC = () => {
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-900/40">
                           <td className="py-3 px-3 font-bold text-[#0B192C] dark:text-white">
-                            {p.title} <span className="font-mono text-[11px] text-[#0284C7]">({p.code})</span>
+                            <button
+                              type="button"
+                              onClick={() => openPropertyDetailsFromDossier(p.id, 'financial_file')}
+                              className="hover:underline text-right cursor-pointer inline-flex items-center gap-1"
+                            >
+                              <span>{p.title}</span>
+                              <span className="font-mono text-[11px] text-[#0284C7]">({p.code})</span>
+                            </button>
                           </td>
                           <td className="py-3 px-3 font-mono font-bold">
                             {pf.totalApprovedObligations.toLocaleString('en-US')} {defaultCurrency}
@@ -2400,101 +2581,64 @@ export const TaxpayersScreen: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Floors, Apartments, and Commercial Shops */}
-                <div className="p-3.5 rounded-2xl bg-sky-50/60 dark:bg-slate-900 border border-sky-200/70 dark:border-slate-700 space-y-2.5">
+                {/* Floors, Basement, Apartments, Shops, and Annexes */}
+                <div className="p-3.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 space-y-2.5">
                   <div className="text-xs font-extrabold text-[#0B192C] dark:text-white">
-                    مكونات المبنى والوحدات العقارية (تُنشأ وتُربط تلقائيًا بالعقار):
+                    بنية العقار (عدد الطوابق، البدروم، الشقق، المحلات، الملحقات):
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                     <div>
-                      <label className="block text-[11px] font-bold mb-1">عدد الأدوار</label>
+                      <label className="block text-[11px] font-bold mb-1">عدد الطوابق *</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={propFloorsCount}
+                        onChange={(e) => setPropFloorsCount(e.target.value)}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold mb-1">البدروم (القبو)</label>
+                      <select
+                        value={propHasBasement ? 'yes' : 'no'}
+                        onChange={(e) => setPropHasBasement(e.target.value === 'yes')}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                      >
+                        <option value="no">لا</option>
+                        <option value="yes">نعم</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold mb-1">عدد الشقق</label>
                       <input
                         type="number"
                         min="0"
-                        value={propFloorsCount}
-                        onChange={(e) => setPropFloorsCount(e.target.value)}
+                        value={propApartmentsCount}
+                        onChange={(e) => setPropApartmentsCount(e.target.value)}
                         className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
                       />
                     </div>
-                    {!editingProperty && (
-                      <>
-                        <div>
-                          <label className="block text-[11px] font-bold mb-1">عدد الشقق السكنية</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={propApartmentsCount}
-                            onChange={(e) => setPropApartmentsCount(e.target.value)}
-                            className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-bold mb-1">الفتحات التجارية</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={propShopsCount}
-                            onChange={(e) => setPropShopsCount(e.target.value)}
-                            className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[11px] font-bold mb-1">المكاتب الإدارية</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={propOfficesCount}
-                            onChange={(e) => setPropOfficesCount(e.target.value)}
-                            className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* GPS Capture */}
-                <div className="p-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold">إحداثيات الموقع (GPS)</span>
-                    <button
-                      type="button"
-                      disabled={locatingGps}
-                      onClick={() => {
-                        if (!navigator.geolocation) return;
-                        setLocatingGps(true);
-                        navigator.geolocation.getCurrentPosition(
-                          (pos) => {
-                            setPropLatitude(pos.coords.latitude.toFixed(6));
-                            setPropLongitude(pos.coords.longitude.toFixed(6));
-                            setLocatingGps(false);
-                          },
-                          () => setLocatingGps(false)
-                        );
-                      }}
-                      className="px-3 py-1 rounded-xl bg-[#0D9488] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <Compass className="w-3.5 h-3.5" />
-                      <span>{locatingGps ? 'جارٍ الالتقاط...' : 'التقاط موقعي'}</span>
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="number"
-                      step="any"
-                      value={propLatitude}
-                      onChange={(e) => setPropLatitude(e.target.value)}
-                      placeholder="Latitude"
-                      className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      value={propLongitude}
-                      onChange={(e) => setPropLongitude(e.target.value)}
-                      placeholder="Longitude"
-                      className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                    />
+                    <div>
+                      <label className="block text-[11px] font-bold mb-1">عدد المحلات</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={propShopsCount}
+                        onChange={(e) => setPropShopsCount(e.target.value)}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold mb-1">الملحقات</label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={propAnnexesCount}
+                        onChange={(e) => setPropAnnexesCount(e.target.value)}
+                        className="w-full min-h-[38px] px-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -2529,7 +2673,7 @@ export const TaxpayersScreen: React.FC = () => {
                   : `إضافة وحدة عقارية جديدة — ${unitModalProperty.title}`}
               </h3>
               <form onSubmit={handleSaveUnitInDossier} className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold mb-1">رقم / مسمى الوحدة *</label>
                     <input
@@ -2540,6 +2684,28 @@ export const TaxpayersScreen: React.FC = () => {
                       className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
                     />
                   </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">الطابق *</label>
+                    <select
+                      value={unitFloor}
+                      onChange={(e) => setUnitFloor(e.target.value)}
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-semibold"
+                    >
+                      {!getAvailableFloorOptions(unitModalProperty).includes(unitFloor) && (
+                        <option value={unitFloor}>
+                          {unitFloor ? `${unitFloor} (القيمة المحفوظة)` : 'غير محدد (القيمة المحفوظة)'}
+                        </option>
+                      )}
+                      {getAvailableFloorOptions(unitModalProperty).map((fl) => (
+                        <option key={fl} value={fl}>
+                          {fl}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold mb-1">نوع الوحدة *</label>
                     <select
@@ -2555,19 +2721,7 @@ export const TaxpayersScreen: React.FC = () => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">الطابق</label>
-                    <input
-                      type="text"
-                      value={unitFloor}
-                      onChange={(e) => setUnitFloor(e.target.value)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">حالة الإشغال</label>
+                    <label className="block text-xs font-semibold mb-1">حالة الإشغال *</label>
                     <select
                       value={unitOccupancy}
                       onChange={(e) => setUnitOccupancy(e.target.value as OccupancyStatus)}
@@ -2580,26 +2734,64 @@ export const TaxpayersScreen: React.FC = () => {
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">اسم الشاغل / المستأجر</label>
-                    <input
-                      type="text"
-                      value={unitTenantName}
-                      onChange={(e) => setUnitTenantName(e.target.value)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">الإيجار السنوي التقديري</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={unitAnnualRent}
-                      onChange={(e) => setUnitAnnualRent(e.target.value)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
-                    />
-                  </div>
                 </div>
+
+                {unitOccupancy === 'occupied' ? (
+                  <div className="p-3.5 rounded-2xl bg-[#ECFDF5]/60 dark:bg-emerald-950/25 border border-[#A7F3D0] dark:border-emerald-800/60 space-y-3">
+                    <div className="text-xs font-extrabold text-[#059669] dark:text-emerald-300">
+                      بيانات الإيجار للوحدة المؤجرة
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">قيمة الإيجار *</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          required
+                          value={unitAnnualRent}
+                          onChange={(e) => setUnitAnnualRent(e.target.value)}
+                          className="w-full min-h-[42px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold mb-1">فترة الإيجار *</label>
+                        <select
+                          value={unitRentPeriod}
+                          onChange={(e) =>
+                            setUnitRentPeriod(e.target.value as RentPeriod | 'legacy_unclassified')
+                          }
+                          className="w-full min-h-[42px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-bold"
+                        >
+                          {editingUnit && !editingUnit.rentPeriod && (
+                            <option value="legacy_unclassified">
+                              تقدير سابق (الاحتفاظ بالقيمة دون تحديد فترة)
+                            </option>
+                          )}
+                          {Object.entries(RENT_PERIOD_LABELS).map(([k, v]) => (
+                            <option key={k} value={k}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">اسم المستأجر (عند التوفر)</label>
+                      <input
+                        type="text"
+                        value={unitTenantName}
+                        onChange={(e) => setUnitTenantName(e.target.value)}
+                        className="w-full min-h-[42px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-800 text-xs text-[#64748B]">
+                    الوحدة في حالة «<strong>{OCCUPANCY_LABELS[unitOccupancy]}</strong>» — لا يُطلب
+                    إدخال إيجار حالي أو اسم مستأجر.
+                  </div>
+                )}
 
                 <div className="flex justify-end gap-2 pt-2">
                   <button
@@ -3379,6 +3571,17 @@ export const TaxpayersScreen: React.FC = () => {
                   </div>
                 </div>
 
+                <div>
+                  <label className="block text-xs font-semibold mb-1">ملاحظات المكلف</label>
+                  <textarea
+                    rows={3}
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="أضف أي ملاحظات عامة أو ميدانية خاصة بالمكلف..."
+                    className="w-full p-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs leading-relaxed"
+                  />
+                </div>
+
                 <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
@@ -3414,7 +3617,7 @@ export const TaxpayersScreen: React.FC = () => {
     <div className="space-y-3.5 pb-8 max-w-2xl mx-auto">
       {/* 1. Reference Search Bar + Quick Add Button */}
       <div className="flex items-center gap-2">
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <Search className="w-4 h-4 text-[#64748B] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             ref={searchInputRef}
@@ -3450,7 +3653,7 @@ export const TaxpayersScreen: React.FC = () => {
           type="button"
           onClick={openCreateForm}
           title="إضافة مكلف جديد"
-          className="min-h-[46px] px-3.5 rounded-xl bg-[#0B192C] hover:bg-[#132A46] text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer"
+          className="min-h-[46px] px-3 sm:px-3.5 rounded-xl bg-[#0B192C] hover:bg-[#132A46] text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer"
         >
           <Plus className="w-4 h-4 text-[#B48327]" />
           <span>إضافة مكلف</span>
@@ -3459,7 +3662,7 @@ export const TaxpayersScreen: React.FC = () => {
 
       {/* 2. Reference Filter Pills Row (المنطقة/الحي | حالة المواعيد | حالة الزيارة | الحالة) */}
       {directoryViewMode === 'taxpayers' && (
-        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+        <div className="flex items-center gap-2 rasd-scroll-x pb-0.5">
           {/* Region / Neighborhood Filter Pill */}
           <div className="relative shrink-0">
             <select
@@ -3824,9 +4027,31 @@ export const TaxpayersScreen: React.FC = () => {
                       <span>·</span>
                       <span>{PROPERTY_TYPE_LABELS[prop.propertyType]}</span>
                     </div>
-                    <span className="text-[11px] font-bold text-[#B48327]">
-                      فتح في ملف المكلف ←
-                    </span>
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPropertyNavigationOrigin({
+                            source: 'taxpayers_properties_directory',
+                            taxpayerId: prop.taxpayerId,
+                          });
+                          setSelectedPropertyId(prop.id);
+                          setActiveScreen('properties');
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-[#F4F6F9] dark:bg-slate-800 text-[11px] font-bold text-[#0B192C] dark:text-white cursor-pointer"
+                      >
+                        تفاصيل العقار
+                      </button>
+                      <span
+                        onClick={() => {
+                          setSelectedPropertyId(prop.id);
+                          setSelectedTaxpayerId(prop.taxpayerId);
+                        }}
+                        className="text-[11px] font-bold text-[#B48327] cursor-pointer"
+                      >
+                        فتح في ملف المكلف ←
+                      </span>
+                    </div>
                   </div>
                   <h3 className="text-sm font-extrabold text-[#172334] dark:text-white font-display">
                     {prop.title}
@@ -4246,6 +4471,17 @@ export const TaxpayersScreen: React.FC = () => {
                     className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1">ملاحظات المكلف</label>
+                <textarea
+                  rows={3}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="أضف أي ملاحظات عامة أو ميدانية خاصة بالمكلف..."
+                  className="w-full p-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs leading-relaxed"
+                />
               </div>
 
               <div className="flex justify-end gap-2.5 pt-2">
