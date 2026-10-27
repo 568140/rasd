@@ -501,9 +501,9 @@ const RasdShell: React.FC = () => {
 
   return (
     <div className="min-h-screen min-h-dvh bg-[#F4F6F9] dark:bg-[#060D18] text-[#172334] dark:text-[#F8FAFC] flex flex-col overflow-x-clip" dir="rtl">
-      {/* Reference-Aligned Deep Navy Top App Header (#081729) with Glass UI & Safe Area Top */}
-      <header className="sticky top-0 z-30 min-h-[60px] text-white px-2.5 sm:px-4 pb-2.5 rasd-glass-header">
-        <div className="max-w-5xl mx-auto h-full flex items-center justify-between gap-2 sm:gap-3">
+      {/* White Top App Header (#FFFFFF) with Glass UI & Safe Area Top */}
+      <header className="sticky top-0 z-30 min-h-[60px] bg-white dark:bg-[#0D1829] text-[#0B192C] dark:text-white px-2.5 sm:px-4 pb-2.5 rasd-glass-header">
+        <div className="max-w-5xl mx-auto h-full bg-white/95 dark:bg-transparent text-[#0B192C] dark:text-white flex items-center justify-between gap-2 sm:gap-3">
           {isHomeRoot ? (
             <>
               {/* Right Zone (Start in RTL) on Home: RASD Brand & Golden Shield Emblem */}
@@ -512,16 +512,16 @@ const RasdShell: React.FC = () => {
                   <ShieldCheck className="w-5 h-5" />
                 </div>
                 <div className="leading-none">
-                  <div className="text-base sm:text-lg font-extrabold tracking-tight text-white font-display">
+                  <div className="text-base sm:text-lg font-extrabold tracking-tight text-[#0B192C] dark:text-white font-display">
                     رَصْد
                   </div>
                   <div className="text-[9px] font-mono font-bold tracking-widest text-[#B48327] uppercase mt-0.5 select-none">
                     RASD
                   </div>
                 </div>
-                <div className="hidden sm:flex items-center gap-1.5 mr-2 pr-2.5 border-r border-white/15 text-[11px] text-slate-300">
+                <div className="hidden sm:flex items-center gap-1.5 mr-2 pr-2.5 border-r border-[#E2E8F0] dark:border-white/15 text-[11px] text-[#64748B] dark:text-slate-300">
                   {!isOnline ? (
-                    <span className="text-amber-400 font-semibold inline-flex items-center gap-1">
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold inline-flex items-center gap-1">
                       <WifiOff className="w-3 h-3" />
                       <span>دون اتصال</span>
                     </span>
@@ -531,7 +531,7 @@ const RasdShell: React.FC = () => {
                       <span>مزامنة ({pendingSyncCount})</span>
                     </span>
                   ) : (
-                    <span className="text-emerald-400 font-semibold inline-flex items-center gap-1">
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold inline-flex items-center gap-1">
                       <Wifi className="w-3 h-3" />
                       <span>متصل</span>
                     </span>
@@ -542,7 +542,7 @@ const RasdShell: React.FC = () => {
               </div>
 
               {/* Center Zone: Desktop Quick Navigation (without Map) */}
-              <nav className="hidden lg:flex items-center gap-5 text-xs font-bold text-slate-300">
+              <nav className="hidden lg:flex items-center gap-5 text-xs font-bold text-[#64748B] dark:text-slate-300">
                 <button
                   type="button"
                   onClick={() => {
@@ -551,7 +551,7 @@ const RasdShell: React.FC = () => {
                     setSelectedTaxpayerId(null);
                     setActiveScreen('taxpayers');
                   }}
-                  className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
+                  className="py-1.5 border-b-2 border-transparent hover:text-[#0B192C] dark:hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
                   دافعو الضرائب
                 </button>
@@ -563,7 +563,7 @@ const RasdShell: React.FC = () => {
                     setSelectedTaxpayerId(null);
                     setActiveScreen('properties');
                   }}
-                  className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
+                  className="py-1.5 border-b-2 border-transparent hover:text-[#0B192C] dark:hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
                   العقارات
                 </button>
@@ -575,7 +575,7 @@ const RasdShell: React.FC = () => {
                     setSelectedTaxpayerId(null);
                     setActiveScreen('visits');
                   }}
-                  className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
+                  className="py-1.5 border-b-2 border-transparent hover:text-[#0B192C] dark:hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
                   المحاضر والزيارات
                 </button>
@@ -586,7 +586,7 @@ const RasdShell: React.FC = () => {
                     setSelectedTaxpayerId(null);
                     setActiveScreen('assessments');
                   }}
-                  className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
+                  className="py-1.5 border-b-2 border-transparent hover:text-[#0B192C] dark:hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
                   المؤشرات المالية
                 </button>
@@ -597,7 +597,7 @@ const RasdShell: React.FC = () => {
                     setSelectedTaxpayerId(null);
                     setActiveScreen('reports');
                   }}
-                  className="py-1.5 border-b-2 border-transparent hover:text-white transition-colors whitespace-nowrap cursor-pointer"
+                  className="py-1.5 border-b-2 border-transparent hover:text-[#0B192C] dark:hover:text-white transition-colors whitespace-nowrap cursor-pointer"
                 >
                   التقارير
                 </button>
@@ -641,7 +641,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveScreen('voice')}
-                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 text-[#0B192C] dark:text-white flex items-center justify-center transition-colors cursor-pointer"
                   title="المساعد الصوتي الذكي"
                   aria-label="المساعد الصوتي الذكي"
                 >
@@ -651,7 +651,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsThemeModalOpen(true)}
-                  className="hidden sm:flex min-h-[38px] px-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 items-center gap-1.5 transition-colors cursor-pointer text-white"
+                  className="hidden sm:flex min-h-[38px] px-2.5 rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 items-center gap-1.5 transition-colors cursor-pointer text-[#0B192C] dark:text-white"
                   title="المظهر والسمة"
                   aria-label="المظهر والسمة"
                 >
@@ -661,21 +661,21 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={toggleDarkMode}
-                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 flex items-center justify-center transition-colors cursor-pointer text-[#0B192C] dark:text-white"
                   aria-label="تبديل الوضع الليلي والنهاري"
                   title="تبديل الوضع الليلي والنهاري"
                 >
                   {darkMode ? (
                     <Sun className="w-4 h-4 text-[#B48327]" />
                   ) : (
-                    <Moon className="w-4 h-4 text-slate-200" />
+                    <Moon className="w-4 h-4 text-[#0B192C]" />
                   )}
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setIsNotifOpen(true)}
-                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 flex items-center justify-center transition-colors cursor-pointer text-[#0B192C] dark:text-white"
                   aria-label="مركز الإشعارات والتنبيهات"
                   title="الإشعارات والتنبيهات"
                 >
@@ -690,13 +690,13 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveScreen('more')}
-                  className="relative w-9 h-9 rounded-full bg-slate-200/20 border border-white/25 text-white flex items-center justify-center shrink-0 cursor-pointer hover:border-[#B48327] transition-colors"
+                  className="relative w-9 h-9 rounded-full bg-[#F4F6F9] dark:bg-slate-200/20 border border-[#E2E8F0] dark:border-white/25 text-[#0B192C] dark:text-white flex items-center justify-center shrink-0 cursor-pointer hover:border-[#B48327] transition-colors"
                   aria-label="الملف الشخصي والإعدادات"
                   title={userProfile?.displayName || 'الملف الشخصي'}
                 >
                   <User className="w-4 h-4" />
                   <span
-                    className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#081729] ${
+                    className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-[#081729] ${
                       isOnline ? 'bg-emerald-500' : 'bg-amber-500'
                     }`}
                   />
@@ -704,13 +704,13 @@ const RasdShell: React.FC = () => {
               </div>
             </>
           ) : (
-            /* Subscreens Header (Matches Reference Image: Contextual Action on Right, Title Centered, Back Arrow on Left) */
+            /* Subscreens Header (Contextual Action on Right, Title Centered, Back Arrow on Left) */
             <>
               <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
                 <button
                   type="button"
                   onClick={handleBack}
-                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 text-[#0B192C] dark:text-white flex items-center justify-center transition-colors cursor-pointer"
                   aria-label="رجوع"
                   title="رجوع"
                 >
@@ -719,7 +719,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsNotifOpen(true)}
-                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 flex items-center justify-center transition-colors cursor-pointer text-white"
+                  className="relative min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 flex items-center justify-center transition-colors cursor-pointer text-[#0B192C] dark:text-white"
                   aria-label="مركز الإشعارات والتنبيهات"
                 >
                   <Bell className="w-4 h-4" />
@@ -732,7 +732,7 @@ const RasdShell: React.FC = () => {
               </div>
 
               <div className="flex-1 text-center min-w-0 px-1.5 sm:px-2">
-                <h1 className="text-sm min-[360px]:text-base sm:text-lg font-extrabold text-white truncate font-display">
+                <h1 className="text-sm min-[360px]:text-base sm:text-lg font-extrabold text-[#0B192C] dark:text-white truncate font-display">
                   {resolvedScreenTitle}
                 </h1>
               </div>
@@ -744,7 +744,7 @@ const RasdShell: React.FC = () => {
                   className={`min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                     activeScreen === 'voice'
                       ? 'bg-[#B48327] text-white border-[#B48327]'
-                      : 'bg-white/10 hover:bg-white/15 text-white border-white/15'
+                      : 'bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 text-[#0B192C] dark:text-white border-[#E2E8F0] dark:border-white/15'
                   }`}
                   title="المساعد الصوتي الذكي"
                   aria-label="المساعد الصوتي الذكي"
@@ -754,7 +754,7 @@ const RasdShell: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveScreen('more')}
-                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                  className="min-h-[36px] min-w-[36px] sm:min-h-[38px] sm:min-w-[38px] rounded-xl bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-white/10 dark:hover:bg-white/15 border border-[#E2E8F0] dark:border-white/15 text-[#0B192C] dark:text-white flex items-center justify-center transition-colors cursor-pointer"
                   aria-label="القائمة والإعدادات"
                   title="القائمة والإعدادات"
                 >

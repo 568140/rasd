@@ -352,17 +352,29 @@ html[data-rasd-card-style="bordered"]:not(.dark) main div.rounded-3xl.bg-white {
    8. Refined Professional Glass UI (with Opaque Fallbacks)
    ============================================================================ */
 
-/* Top Header Glass Surface (#081729 Navy base) */
+/* Top Header Glass Surface (White #FFFFFF base in light mode) */
 .rasd-glass-header {
-  background-color: var(--rasd-header-bg, #081729);
+  background-color: #FFFFFF !important;
   padding-top: max(0.5rem, env(safe-area-inset-top, 0px));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
-  box-shadow: 0 4px 18px -4px rgba(8, 23, 41, 0.28);
+  border-bottom: 1px solid var(--rasd-border-light, #E2E8F0);
+  box-shadow: 0 2px 12px -2px rgba(11, 25, 44, 0.06);
+}
+
+html.dark .rasd-glass-header {
+  background-color: var(--rasd-card-dark, #0D1829) !important;
+  border-bottom-color: var(--rasd-border-dark, #1E2F4D);
+  box-shadow: 0 4px 18px -4px rgba(0, 0, 0, 0.45);
 }
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .rasd-glass-header {
-    background-color: color-mix(in srgb, var(--rasd-header-bg, #081729) 88%, transparent);
+    background-color: rgba(255, 255, 255, 0.92) !important;
+    backdrop-filter: blur(16px) saturate(165%);
+    -webkit-backdrop-filter: blur(16px) saturate(165%);
+  }
+
+  html.dark .rasd-glass-header {
+    background-color: color-mix(in srgb, var(--rasd-card-dark, #0D1829) 90%, transparent) !important;
     backdrop-filter: blur(16px) saturate(165%);
     -webkit-backdrop-filter: blur(16px) saturate(165%);
   }
