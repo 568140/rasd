@@ -2,48 +2,54 @@
 
 @layer base {
   :root {
-    font-family: 'Tajawal', 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
+    font-family: 'Cairo', 'Tajawal', 'IBM Plex Sans Arabic', system-ui, -apple-system, sans-serif;
     direction: rtl;
 
-    /* Official Reference Design Tokens (Warm Ivory & Executive Burgundy) */
-    --rasd-primary: #743B46;
-    --rasd-primary-hover: #5D2D37;
-    --rasd-accent: #743B46;
-    --rasd-accent-hover: #5D2D37;
-    --rasd-secondary: #A77B35;
+    /* Official RASD Reference Design Tokens (Navy, Cool Gray & Muted Gold) */
+    --rasd-primary: #0B192C;
+    --rasd-primary-hover: #132A46;
+    --rasd-header-bg: #081729;
+    --rasd-accent: #B48327;
+    --rasd-accent-hover: #966B1D;
+    --rasd-gold: #B48327;
+    --rasd-secondary: #0B192C;
 
-    --rasd-hero-from: #743B46;
-    --rasd-hero-via: #5D2D37;
-    --rasd-hero-to: #472129;
+    --rasd-hero-from: #081729;
+    --rasd-hero-via: #0B192C;
+    --rasd-hero-to: #132A46;
 
-    --rasd-bg-light: #F7F5F0;
-    --rasd-card-light: #FFFEFC;
-    --rasd-card-subtle-light: #F0ECE5;
-    --rasd-border-light: #E7E1D8;
+    --rasd-bg-light: #F4F6F9;
+    --rasd-card-light: #FFFFFF;
+    --rasd-card-subtle-light: #EDF2F7;
+    --rasd-border-light: #E2E8F0;
 
-    --rasd-text-primary: #292725;
-    --rasd-text-secondary: #77716B;
+    --rasd-text-primary: #172334;
+    --rasd-text-secondary: #64748B;
 
-    --rasd-success: #52765D;
-    --rasd-success-bg: #ECF2EE;
-    --rasd-warning: #A77B35;
-    --rasd-warning-bg: #F6EFE2;
-    --rasd-danger: #A64B45;
-    --rasd-danger-bg: #F6E9E7;
+    --rasd-success: #10B981;
+    --rasd-success-bg: #ECFDF5;
+    --rasd-warning: #D97706;
+    --rasd-warning-bg: #FFFBEB;
+    --rasd-danger: #EF4444;
+    --rasd-danger-bg: #FEF2F2;
 
-    --rasd-bg-dark: #161514;
-    --rasd-card-dark: #22201F;
-    --rasd-card-subtle-dark: #2B2826;
-    --rasd-border-dark: #383431;
+    --rasd-radius-card: 16px;
+    --rasd-radius-btn: 12px;
+    --rasd-shadow-card: 0 2px 10px rgba(11, 25, 44, 0.04);
+
+    --rasd-bg-dark: #060D18;
+    --rasd-card-dark: #0D1829;
+    --rasd-card-subtle-dark: #132238;
+    --rasd-border-dark: #1E2F4D;
   }
 
   h1, h2, h3, h4, .font-display {
-    font-family: 'Tajawal', 'Readex Pro', 'IBM Plex Sans Arabic', sans-serif;
+    font-family: 'Cairo', 'Tajawal', 'Readex Pro', 'IBM Plex Sans Arabic', sans-serif;
     letter-spacing: -0.01em;
   }
 
   .font-mono, .tabular-nums {
-    font-family: 'IBM Plex Mono', 'Tajawal', monospace;
+    font-family: 'IBM Plex Mono', 'Cairo', 'Tajawal', monospace;
     font-variant-numeric: tabular-nums;
   }
 }
@@ -56,15 +62,16 @@
 
 html, body {
   overscroll-behavior-y: none;
+  overflow-x: hidden;
   background-color: var(--rasd-bg-light);
   color: var(--rasd-text-primary);
   -webkit-font-smoothing: antialiased;
-  transition: background-color 0.25s ease, color 0.25s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 html.dark, html.dark body {
   background-color: var(--rasd-bg-dark);
-  color: #F4F1EA;
+  color: #F8FAFC;
 }
 
 /* ============================================================================

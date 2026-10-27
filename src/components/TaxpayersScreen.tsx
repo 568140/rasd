@@ -1,6 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Users,
+  User,
   Plus,
   Search,
   Phone,
@@ -26,6 +27,11 @@ import {
   Sparkles,
   History,
   ChevronLeft,
+  Bell,
+  SlidersHorizontal,
+  X,
+  CloudOff,
+  Calendar,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import {
@@ -49,6 +55,8 @@ import {
   MAX_REMINDER_MINUTES,
   validateReminderMinutesInput,
   formatTimeTo12Hour,
+  getAdenTodayString,
+  getAdenTimeString,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 
@@ -193,12 +201,20 @@ export const TaxpayersScreen: React.FC = () => {
   } = useRasd();
 
   const defaultCurrency = workspace?.defaultCurrency || 'YER';
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Directory Mode State (Unified Taxpayers & Properties Directory)
   const [directoryViewMode, setDirectoryViewMode] = useState<'taxpayers' | 'properties'>('taxpayers');
   const [searchQuery, setSearchQuery] = useState('');
+  const [regionFilter, setRegionFilter] = useState<string>('all');
+  const [appointmentFilter, setAppointmentFilter] = useState<'all' | 'has_appointments' | 'overdue_or_due' | 'upcoming' | 'none'>('all');
+  const [visitFilter, setVisitFilter] = useState<'all' | 'visited' | 'not_visited' | 'requires_followup'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [propertyTypeFilter, setPropertyTypeFilter] = useState<string>('all');
+  const [showFiltersPanel, setShowFiltersPanel] = useState(false);
+
+  // Taxpayer Appointments Bell Modal State
+  const [bellModalTaxpayer, setBellModalTaxpayer] = useState<Taxpayer | null>(null);
 
   // Dossier Sub-tab State
   const [dossierTab, setDossierTab] = useState<
@@ -333,22 +349,130 @@ export const TaxpayersScreen: React.FC = () => {
   const [confirmDeletePropId, setConfirmDeletePropId] = useState<string | null>(null);
   const [confirmDeleteUnit, setConfirmDeleteUnit] = useState<PropertyUnit | null>(null);
 
-  // Similarity / Duplicate Detection for Taxpayer
-  const similarTaxpayers = useMemo(() => {
-    if (editingTaxpayer) return [];
-    const nameClean = fullName.trim().toLowerCase();
+  // Exact Blocking Duplicate Detection (رقم الملف internalCode أو رقم الهوية/المكلف nationalOrCommercialId)
+  const exactDuplicateMatch = useMemo(() => {
     const codeClean = internalCode.trim().toLowerCase();
     const natClean = nationalOrCommercialId.trim().toLowerCase();
 
-    if (nameClean.length < 3 && !codeClean && !natClean) return [];
+    if (!codeClean && !natClean) return null;
+
+    for (const t of taxpayers) {
+      if (editingTaxpayer && t.id === editingTaxpayer.id) continue;
+
+      if (codeClean && (t.internalCode || '').trim().toLowerCase() === codeClean) {
+        return {
+          taxpayer: t,
+          fieldLabel: 'رقم الملف (المعرف الداخلي)',
+          duplicateValue: internalCode.trim(),
+        };
+      }
+
+      if (natClean && (t.nationalOrCommercialId || '').trim().toLowerCase() === natClean) {
+        return {
+          taxpayer: t,
+          fieldLabel: 'رقم المكلف / الهوية أو السجل التجاري',
+          duplicateValue: nationalOrCommercialId.trim(),
+        };
+      }
+    }
+    return null;
+  }, [taxpayers, editingTaxpayer, internalCode, nationalOrCommercialId]);
+
+  // Advisory Name Similarity Detection (تشابه الاسم فقط دون تطابق رقم الملف أو الهوية)
+  const similarTaxpayers = useMemo(() => {
+    if (editingTaxpayer) return [];
+    const nameClean = fullName.trim().toLowerCase();
+    if (nameClean.length < 3) return [];
 
     return taxpayers.filter((t) => {
-      const sameName = nameClean.length >= 3 && t.fullName.toLowerCase().includes(nameClean);
-      const sameCode = codeClean.length >= 2 && t.internalCode.toLowerCase() === codeClean;
-      const sameNat = natClean.length >= 4 && t.nationalOrCommercialId.toLowerCase() === natClean;
-      return sameName || sameCode || sameNat;
+      if (exactDuplicateMatch && exactDuplicateMatch.taxpayer.id === t.id) return false;
+      return t.fullName.toLowerCase().includes(nameClean);
     });
-  }, [taxpayers, editingTaxpayer, fullName, internalCode, nationalOrCommercialId]);
+  }, [taxpayers, editingTaxpayer, fullName, exactDuplicateMatch]);
+
+  // Available unique regions for filter pill
+  const availableRegions = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of taxpayers) {
+      if (t.region && t.region.trim()) {
+        set.add(t.region.trim());
+      }
+    }
+    return Array.from(set);
+  }, [taxpayers]);
+
+  // Helper to get appointment status summary for a taxpayer
+  const getTaxpayerAppointmentsStatus = useMemo(() => {
+    const todayStr = getAdenTodayString();
+    const nowTimeStr = getAdenTimeString();
+    const [nowH, nowM] = (nowTimeStr || '00:00').split(':').map((n) => parseInt(n, 10) || 0);
+    const nowMinutes = nowH * 60 + nowM;
+
+    const map = new Map<
+      string,
+      {
+        all: Appointment[];
+        activeCount: number;
+        overdueOrDueCount: number;
+        upcomingCount: number;
+        completedCount: number;
+        badgeState: 'overdue_or_due' | 'upcoming' | 'completed' | 'none';
+      }
+    >();
+
+    for (const tp of taxpayers) {
+      const tpPropIds = new Set(properties.filter((p) => p.taxpayerId === tp.id).map((p) => p.id));
+      const tpAppts = appointments
+        .filter((a) => a.taxpayerId === tp.id || tpPropIds.has(a.propertyId))
+        .sort((a, b) => `${a.scheduledDate} ${a.scheduledTime}`.localeCompare(`${b.scheduledDate} ${b.scheduledTime}`));
+
+      let overdueOrDueCount = 0;
+      let upcomingCount = 0;
+      let completedCount = 0;
+
+      for (const a of tpAppts) {
+        if (a.status === 'completed') {
+          completedCount += 1;
+          continue;
+        }
+        if (a.status === 'cancelled') continue;
+
+        if (a.scheduledDate < todayStr) {
+          overdueOrDueCount += 1;
+        } else if (a.scheduledDate === todayStr) {
+          const [hh, mm] = (a.scheduledTime || '00:00').split(':').map((n) => parseInt(n, 10) || 0);
+          if (hh * 60 + mm <= nowMinutes) {
+            overdueOrDueCount += 1;
+          } else {
+            upcomingCount += 1;
+          }
+        } else {
+          upcomingCount += 1;
+        }
+      }
+
+      const activeCount = overdueOrDueCount + upcomingCount;
+      let badgeState: 'overdue_or_due' | 'upcoming' | 'completed' | 'none' = 'none';
+      if (overdueOrDueCount > 0) {
+        badgeState = 'overdue_or_due';
+      } else if (upcomingCount > 0) {
+        badgeState = 'upcoming';
+      } else if (completedCount > 0) {
+        badgeState = 'completed';
+      }
+
+      map.set(tp.id, {
+        all: tpAppts,
+        activeCount,
+        overdueOrDueCount,
+        upcomingCount,
+        completedCount,
+        badgeState,
+      });
+    }
+
+    return map;
+  }, [taxpayers, properties, appointments]);
 
   const filteredTaxpayers = useMemo(() => {
     return taxpayers.filter((t) => {
@@ -362,10 +486,54 @@ export const TaxpayersScreen: React.FC = () => {
         t.region.toLowerCase().includes(q) ||
         t.address.toLowerCase().includes(q) ||
         (t.notes || '').toLowerCase().includes(q);
+
       const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
-      return matchesQ && matchesStatus;
+      const matchesRegion = regionFilter === 'all' || (t.region || '').trim() === regionFilter;
+
+      const apptSummary = getTaxpayerAppointmentsStatus.get(t.id);
+      let matchesAppt = true;
+      if (appointmentFilter === 'has_appointments') {
+        matchesAppt = (apptSummary?.all.length || 0) > 0;
+      } else if (appointmentFilter === 'overdue_or_due') {
+        matchesAppt = (apptSummary?.overdueOrDueCount || 0) > 0;
+      } else if (appointmentFilter === 'upcoming') {
+        matchesAppt = (apptSummary?.upcomingCount || 0) > 0;
+      } else if (appointmentFilter === 'none') {
+        matchesAppt = (apptSummary?.activeCount || 0) === 0;
+      }
+
+      let matchesVisit = true;
+      if (visitFilter !== 'all') {
+        const tpPropIds = new Set(properties.filter((p) => p.taxpayerId === t.id).map((p) => p.id));
+        const tpVisits = fieldVisits.filter((v) => v.taxpayerId === t.id || tpPropIds.has(v.propertyId));
+        if (visitFilter === 'visited') {
+          matchesVisit = tpVisits.some((v) => v.status === 'completed');
+        } else if (visitFilter === 'not_visited') {
+          matchesVisit = tpVisits.length === 0;
+        } else if (visitFilter === 'requires_followup') {
+          matchesVisit = tpVisits.some(
+            (v) =>
+              v.status === 'requires_followup' ||
+              v.status === 'postponed' ||
+              v.status === 'impeded' ||
+              v.status === 'occupant_absent'
+          );
+        }
+      }
+
+      return matchesQ && matchesStatus && matchesRegion && matchesAppt && matchesVisit;
     });
-  }, [taxpayers, searchQuery, statusFilter]);
+  }, [
+    taxpayers,
+    searchQuery,
+    statusFilter,
+    regionFilter,
+    appointmentFilter,
+    visitFilter,
+    getTaxpayerAppointmentsStatus,
+    properties,
+    fieldVisits,
+  ]);
 
   const filteredProperties = useMemo(() => {
     return properties.filter((p) => {
@@ -455,6 +623,37 @@ export const TaxpayersScreen: React.FC = () => {
     setIsFormOpen(true);
   };
 
+  // Consume quick actions or search queries passed from Home Screen
+  useEffect(() => {
+    try {
+      const quickSearch = sessionStorage.getItem('rasd_quick_search_q');
+      if (quickSearch) {
+        sessionStorage.removeItem('rasd_quick_search_q');
+        setSelectedPropertyId(null);
+        setSelectedTaxpayerId(null);
+        setDirectoryViewMode('taxpayers');
+        setSearchQuery(quickSearch);
+      }
+
+      const quickAction = sessionStorage.getItem('rasd_quick_action');
+      if (quickAction === 'open_add_taxpayer') {
+        sessionStorage.removeItem('rasd_quick_action');
+        setSelectedPropertyId(null);
+        setSelectedTaxpayerId(null);
+        openCreateForm();
+      } else if (quickAction === 'focus_search') {
+        sessionStorage.removeItem('rasd_quick_action');
+        setSelectedPropertyId(null);
+        setSelectedTaxpayerId(null);
+        setTimeout(() => {
+          searchInputRef.current?.focus();
+        }, 80);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   const openEditForm = (tp: Taxpayer) => {
     setEditingTaxpayer(tp);
     setFullName(tp.fullName);
@@ -477,9 +676,20 @@ export const TaxpayersScreen: React.FC = () => {
   const handleSaveTaxpayer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
+
+    // Strict blocking check for duplicate file code or national/commercial ID
+    if (exactDuplicateMatch) {
+      showToast(
+        `لا يمكن الحفظ: ${exactDuplicateMatch.fieldLabel} (${exactDuplicateMatch.duplicateValue}) مسجل مسبقًا للمكلف «${exactDuplicateMatch.taxpayer.fullName}».`,
+        'error'
+      );
+      return;
+    }
+
     if (similarTaxpayers.length > 0 && !ignoreDuplicateWarning) {
       return;
     }
+
     setSubmitting(true);
     try {
       let composedNotes = notes.trim();
@@ -531,6 +741,8 @@ export const TaxpayersScreen: React.FC = () => {
         setSelectedTaxpayerId(createdId);
       }
       setIsFormOpen(false);
+    } catch {
+      // Keep form open with user's entered inputs intact if validation/save fails
     } finally {
       setSubmitting(false);
     }
@@ -1052,153 +1264,163 @@ export const TaxpayersScreen: React.FC = () => {
     const totalOffices = tpUnits.filter((u) => u.unitType === 'office').length;
 
     return (
-      <div className="space-y-5 pb-8">
+      <div className="space-y-4 pb-8 max-w-2xl mx-auto">
         {/* Top Navigation & Dossier Management Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={() => {
               setSelectedPropertyId(null);
               setSelectedTaxpayerId(null);
             }}
-            className="min-h-[44px] px-4 rounded-2xl bg-white dark:bg-[#0D1829] border border-slate-200 dark:border-slate-800 text-xs font-bold text-[#0B192C] dark:text-slate-200 flex items-center gap-2 shadow-2xs cursor-pointer"
+            className="min-h-[40px] px-3.5 rounded-xl bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 text-xs font-bold text-[#0B192C] dark:text-slate-200 flex items-center gap-1.5 shadow-2xs cursor-pointer"
           >
-            <ArrowRight className="w-4 h-4 text-[#0284C7]" />
-            <span>العودة لدليل المكلفين والعقارات</span>
+            <ArrowRight className="w-4 h-4 text-[#0B192C] dark:text-slate-200" />
+            <span>قائمة المكلفين</span>
           </button>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              onClick={() => {
-                setActiveScreen('voice');
-              }}
-              className="min-h-[42px] px-3.5 rounded-2xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/60 border border-teal-200 dark:border-teal-800 text-xs font-bold text-[#0D9488] dark:text-teal-300 flex items-center gap-1.5 cursor-pointer"
+              onClick={() => setActiveScreen('voice')}
+              className="min-h-[40px] px-3 rounded-xl bg-white hover:bg-slate-50 dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 text-xs font-bold text-[#0B192C] dark:text-slate-200 flex items-center gap-1.5 cursor-pointer"
             >
-              <Mic className="w-4 h-4" />
-              <span>أمر صوتي على هذا الملف</span>
+              <Mic className="w-3.5 h-3.5 text-[#B48327]" />
+              <span>أمر صوتي</span>
             </button>
             <button
               type="button"
               onClick={() => openEditForm(selectedTaxpayer)}
-              className="min-h-[42px] px-3.5 rounded-2xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+              className="min-h-[40px] px-3.5 rounded-xl bg-[#0B192C] hover:bg-[#132A46] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
             >
-              <Edit3 className="w-4 h-4" />
-              <span>تعديل بيانات المكلف</span>
+              <Edit3 className="w-3.5 h-3.5 text-[#B48327]" />
+              <span>تعديل</span>
             </button>
             {(isOwner || canDeleteRecords) && (
               <button
                 type="button"
                 onClick={() => setConfirmDeleteTpId(selectedTaxpayer.id)}
-                className="min-h-[42px] px-3.5 rounded-2xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 text-xs font-semibold text-rose-700 dark:text-rose-300 flex items-center gap-1.5 cursor-pointer"
+                className="min-h-[40px] px-3 rounded-xl bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/50 text-xs font-bold text-rose-700 dark:text-rose-300 flex items-center gap-1 cursor-pointer"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="w-3.5 h-3.5" />
                 <span>حذف</span>
               </button>
             )}
           </div>
         </div>
 
-        {/* 1. Unified Taxpayer Dossier Hero Card (Basic Info + Contacts + Agents + Quick Stats) */}
-        <div className="rounded-3xl bg-gradient-to-l from-[#0B192C] via-[#102A46] to-[#0B4F6C] text-white p-5 sm:p-6 shadow-md border border-sky-400/20">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-sky-200 mb-1.5">
-                <span className="px-2.5 py-0.5 rounded-md bg-teal-400/20 border border-teal-300/30 font-mono font-bold text-teal-300">
-                  {selectedTaxpayer.internalCode}
-                </span>
-                <span>·</span>
-                <span className="font-bold text-white">{STATUS_LABELS[selectedTaxpayer.status]}</span>
-                <span>·</span>
-                <span>{selectedTaxpayer.region || 'غير محدد'}</span>
-                {selectedTaxpayer.nationalOrCommercialId && (
-                  <>
-                    <span>·</span>
-                    <span className="font-mono text-sky-200">
-                      هوية/سجل: {selectedTaxpayer.nationalOrCommercialId}
-                    </span>
-                  </>
-                )}
+        {/* 1. Reference-Aligned Taxpayer Details Card (بطاقة تفاصيل المكلف وفق المرجع البصري) */}
+        <div className="rounded-2xl bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 p-4 sm:p-5 shadow-2xs">
+          <div className="flex items-start justify-between gap-3">
+            {/* Right side: Avatar + Name + File Code + ID */}
+            <div className="flex items-start gap-3.5 min-w-0">
+              <div className="w-12 h-12 rounded-full bg-[#F4F6F9] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 flex items-center justify-center shrink-0 text-[#0B192C] dark:text-white">
+                <User className="w-6 h-6 stroke-[1.8]" />
               </div>
-              <h1 className="text-xl sm:text-2xl font-extrabold font-display tracking-tight">
-                {selectedTaxpayer.fullName}
-              </h1>
-              <p className="text-xs text-sky-100/80 mt-1">
-                ملف المكلف الموحد — يجمع العقارات والوحدات والوكلاء والذمة المالية والزيارات والمواعيد في نقطة عمل واحدة
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="px-3.5 py-2 rounded-2xl bg-white/10 border border-white/15 text-right">
-                <div className="text-[10px] text-sky-200">إجمالي العقارات والوحدات</div>
-                <div className="text-xs font-extrabold text-teal-300 mt-0.5">
-                  {tpProps.length} عقار · {tpUnits.length} وحدة ({totalApartments} شقة، {totalCommercialShops} فتحة تجارية)
+              <div className="min-w-0">
+                <h1 className="text-base sm:text-lg font-extrabold text-[#172334] dark:text-white font-display leading-snug">
+                  {selectedTaxpayer.fullName}
+                </h1>
+                <div className="text-xs text-[#64748B] dark:text-slate-400 mt-1 space-y-0.5">
+                  <div>
+                    الملف:{' '}
+                    <span className="font-mono font-bold text-[#172334] dark:text-slate-200">
+                      {selectedTaxpayer.internalCode}
+                    </span>
+                  </div>
+                  <div>
+                    الهوية:{' '}
+                    <span className="font-mono font-bold text-[#172334] dark:text-slate-200">
+                      {selectedTaxpayer.nationalOrCommercialId || 'غير مسجل'}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* Contact Channels Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-white/15 text-xs">
-            <div className="flex items-center gap-2 text-slate-100 bg-white/5 rounded-xl px-3 py-2">
-              <Phone className="w-4 h-4 text-teal-300 shrink-0" />
-              <div>
-                <div className="text-[10px] text-sky-200">هاتف المكلف</div>
-                <div className="font-mono font-bold">{selectedTaxpayer.phone || 'غير مسجل'}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-slate-100 bg-white/5 rounded-xl px-3 py-2">
-              <MapPin className="w-4 h-4 text-teal-300 shrink-0" />
-              <div>
-                <div className="text-[10px] text-sky-200">العنوان والموقع</div>
-                <div className="font-bold">{selectedTaxpayer.address || selectedTaxpayer.region || 'غير مسجل'}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-slate-100 bg-white/5 rounded-xl px-3 py-2">
-              <Mail className="w-4 h-4 text-teal-300 shrink-0" />
-              <div>
-                <div className="text-[10px] text-sky-200">البريد الإلكتروني</div>
-                <div className="font-mono">{selectedTaxpayer.email || 'غير مسجل'}</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Linked Agents Section (الوكلاء المرتبطون بالمكلف وبياناتهم) */}
-          <div className="mt-4 pt-3.5 border-t border-white/15 flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-extrabold text-teal-300 flex items-center gap-1.5">
-                <UserCheck className="w-4 h-4" />
-                الوكلاء المرتبطون بالمكلف:
+            {/* Left side: Active Status Badge */}
+            <div className="flex flex-col items-end gap-1.5 shrink-0">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold ${
+                  selectedTaxpayer.status === 'active'
+                    ? 'bg-[#ECFDF5] text-[#059669] border border-[#A7F3D0]/60'
+                    : selectedTaxpayer.status === 'under_review'
+                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                    : 'bg-slate-100 text-slate-600 border border-slate-200'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    selectedTaxpayer.status === 'active'
+                      ? 'bg-[#10B981]'
+                      : selectedTaxpayer.status === 'under_review'
+                      ? 'bg-amber-500'
+                      : 'bg-slate-400'
+                  }`}
+                />
+                {STATUS_LABELS[selectedTaxpayer.status]}
               </span>
-              {extractedAgents.length === 0 ? (
-                <span className="text-xs text-sky-200/80">لا يوجد وكيل مسجل حاليًا</span>
-              ) : (
-                extractedAgents.map((ag, idx) => (
-                  <span
-                    key={idx}
-                    className="px-3 py-1 rounded-xl bg-slate-950/50 border border-teal-400/30 text-xs font-bold text-white inline-flex items-center gap-2"
-                  >
-                    <span>الوكيل: {ag.name}</span>
-                    {ag.phone && (
-                      <span className="font-mono text-teal-300" dir="ltr">
-                        ({ag.phone})
-                      </span>
-                    )}
-                  </span>
-                ))
+              {selectedTaxpayer.isPendingSync && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[10px] font-bold">
+                  <CloudOff className="w-3 h-3" />
+                  محلي بانتظار المزامنة
+                </span>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setQuickAgentName(extractedAgents[0]?.name || '');
-                setQuickAgentPhone(extractedAgents[0]?.phone || selectedTaxpayer.phone || '');
-                setIsAgentModalOpen(true);
-              }}
-              className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-bold text-teal-200 transition cursor-pointer"
-            >
-              {extractedAgents.length > 0 ? 'تحديث بيانات الوكيل' : '+ إضافة وكيل للمكلف'}
-            </button>
+          </div>
+
+          {/* Contact & Agent Rows matching Screen 3 of the Reference Image */}
+          <div className="mt-4 pt-3.5 border-t border-[#E2E8F0] dark:border-slate-800 space-y-2 text-xs text-[#172334] dark:text-slate-200">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Phone className="w-4 h-4 text-[#0B192C] dark:text-slate-300 shrink-0" />
+                <span className="font-mono font-bold" dir="ltr">
+                  {selectedTaxpayer.phone || 'لا يوجد رقم هاتف'}
+                </span>
+              </div>
+              {selectedTaxpayer.phone && (
+                <a
+                  href={`tel:${selectedTaxpayer.phone}`}
+                  className="px-2.5 py-1 rounded-lg bg-[#F4F6F9] hover:bg-slate-200/70 dark:bg-slate-800 text-[11px] font-bold text-[#0B192C] dark:text-white inline-flex items-center gap-1"
+                >
+                  <Phone className="w-3 h-3 text-[#B48327]" />
+                  اتصال
+                </a>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-[#0B192C] dark:text-slate-300 shrink-0" />
+              <span className="font-semibold text-[#172334] dark:text-slate-200">
+                {selectedTaxpayer.region || 'صنعاء'}
+                {selectedTaxpayer.address ? ` - ${selectedTaxpayer.address}` : ''}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <div className="flex items-center gap-2 min-w-0">
+                <UserCheck className="w-4 h-4 text-[#0B192C] dark:text-slate-300 shrink-0" />
+                {extractedAgents.length === 0 ? (
+                  <span className="text-[#64748B]">الوكيل: غير مسجل</span>
+                ) : (
+                  <span className="font-semibold truncate">
+                    الوكيل: {extractedAgents[0].name}
+                    {extractedAgents[0].phone ? ` - ${extractedAgents[0].phone}` : ''}
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickAgentName(extractedAgents[0]?.name || '');
+                  setQuickAgentPhone(extractedAgents[0]?.phone || selectedTaxpayer.phone || '');
+                  setIsAgentModalOpen(true);
+                }}
+                className="text-[11px] font-bold text-[#B48327] hover:underline shrink-0 cursor-pointer"
+              >
+                {extractedAgents.length > 0 ? 'تعديل الوكيل' : '+ إضافة وكيل'}
+              </button>
+            </div>
           </div>
         </div>
 
@@ -3020,10 +3242,38 @@ export const TaxpayersScreen: React.FC = () => {
         {/* Edit Taxpayer Modal (when opened from inside Dossier) */}
         {isFormOpen && (
           <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-            <div className="w-full max-w-xl bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto shadow-xl">
+            <div className="w-full max-w-xl bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-[#E2E8F0] dark:border-slate-800 max-h-[90vh] overflow-y-auto shadow-xl">
               <h2 className="text-lg font-bold text-[#0B192C] dark:text-white mb-4 font-display">
                 تعديل بيانات المكلف والوكيل
               </h2>
+
+              {exactDuplicateMatch && (
+                <div className="mb-4 p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-extrabold text-rose-700 dark:text-rose-300">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>
+                      منع التكرار: {exactDuplicateMatch.fieldLabel} ({exactDuplicateMatch.duplicateValue}) مسجل مسبقًا!
+                    </span>
+                  </div>
+                  <div className="text-xs text-rose-600 dark:text-rose-300 flex items-center justify-between gap-2">
+                    <span>
+                      المكلف المسجل: <strong>{exactDuplicateMatch.taxpayer.fullName}</strong> (ملف:{' '}
+                      {exactDuplicateMatch.taxpayer.internalCode})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsFormOpen(false);
+                        setSelectedTaxpayerId(exactDuplicateMatch.taxpayer.id);
+                      }}
+                      className="underline font-bold cursor-pointer shrink-0"
+                    >
+                      فتح ملف المكلف
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <form onSubmit={handleSaveTaxpayer} className="space-y-3.5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
@@ -3033,29 +3283,29 @@ export const TaxpayersScreen: React.FC = () => {
                       required
                       value={fullName}
                       onChange={(e) => setFullName(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">المعرف الداخلي *</label>
+                    <label className="block text-xs font-semibold mb-1">رقم الملف (المعرف الداخلي) *</label>
                     <input
                       type="text"
                       required
                       value={internalCode}
                       onChange={(e) => setInternalCode(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold mb-1">رقم الهوية / السجل</label>
+                    <label className="block text-xs font-semibold mb-1">رقم المكلف / الهوية</label>
                     <input
                       type="text"
                       value={nationalOrCommercialId}
                       onChange={(e) => setNationalOrCommercialId(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono"
                     />
                   </div>
                   <div>
@@ -3065,7 +3315,7 @@ export const TaxpayersScreen: React.FC = () => {
                       dir="ltr"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono text-left"
                     />
                   </div>
                   <div>
@@ -3073,7 +3323,7 @@ export const TaxpayersScreen: React.FC = () => {
                     <select
                       value={status}
                       onChange={(e) => setStatus(e.target.value as TaxpayerStatus)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                     >
                       {Object.entries(STATUS_LABELS).map(([k, v]) => (
                         <option key={k} value={k}>
@@ -3091,8 +3341,8 @@ export const TaxpayersScreen: React.FC = () => {
                       type="text"
                       value={agentNameInput}
                       onChange={(e) => setAgentNameInput(e.target.value)}
-                      placeholder="مثال: توفيق"
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      placeholder="مثال: محمد عبدالله"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                     />
                   </div>
                   <div>
@@ -3103,28 +3353,28 @@ export const TaxpayersScreen: React.FC = () => {
                       value={agentPhoneInput}
                       onChange={(e) => setAgentPhoneInput(e.target.value)}
                       placeholder="777..."
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono text-left"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-xs font-semibold mb-1">المنطقة</label>
+                    <label className="block text-xs font-semibold mb-1">المنطقة / المديرية</label>
                     <input
                       type="text"
                       value={region}
                       onChange={(e) => setRegion(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                     />
                   </div>
                   <div>
-                    <label className="block text-xs font-semibold mb-1">العنوان</label>
+                    <label className="block text-xs font-semibold mb-1">العنوان / الحي</label>
                     <input
                       type="text"
                       value={address}
                       onChange={(e) => setAddress(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                     />
                   </div>
                 </div>
@@ -3139,8 +3389,8 @@ export const TaxpayersScreen: React.FC = () => {
                   </button>
                   <button
                     type="submit"
-                    disabled={submitting}
-                    className="min-h-[42px] px-6 rounded-xl bg-[#0B192C] dark:bg-[#0D9488] text-white text-xs font-bold cursor-pointer"
+                    disabled={submitting || Boolean(exactDuplicateMatch)}
+                    className="min-h-[42px] px-6 rounded-xl bg-[#0B192C] text-white text-xs font-bold cursor-pointer disabled:opacity-50"
                   >
                     حفظ التعديلات
                   </button>
@@ -3154,104 +3404,220 @@ export const TaxpayersScreen: React.FC = () => {
   }
 
   // ============================================================================
-  // UNIFIED DIRECTORY VIEW (المدخل الموحد: المكلفون والعقارات)
+  // UNIFIED DIRECTORY VIEW (البحث والتصفية - دافعو الضرائب وفق المرجع البصري)
   // ============================================================================
-  return (
-    <div className="space-y-5 pb-8">
-      {/* Top Unified Header & View Switcher */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-extrabold text-[#0B192C] dark:text-white font-display">
-            المكلفون والعقارات — الملف الميداني الموحد
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-            إجمالي المكلفين: <span className="font-mono font-bold text-[#0284C7]">{taxpayers.length}</span> · العقارات:{' '}
-            <span className="font-mono font-bold text-[#0D9488]">{properties.length}</span> · الوحدات:{' '}
-            <span className="font-mono font-bold text-slate-700 dark:text-slate-300">{propertyUnits.length}</span>
-          </p>
-        </div>
+  const bellModalData = bellModalTaxpayer
+    ? getTaxpayerAppointmentsStatus.get(bellModalTaxpayer.id)
+    : null;
 
-        <div className="flex items-center gap-2">
+  return (
+    <div className="space-y-3.5 pb-8 max-w-2xl mx-auto">
+      {/* 1. Reference Search Bar + Quick Add Button */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="w-4 h-4 text-[#64748B] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder={
+              directoryViewMode === 'taxpayers'
+                ? 'ابحث بالاسم، الرقم، الملف، الهاتف...'
+                : 'ابحث باسم العقار، الرمز، المالك، أو الشارع...'
+            }
+            className="w-full min-h-[46px] pr-10 pl-10 rounded-xl bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 text-xs text-[#172334] dark:text-white placeholder:text-[#64748B] shadow-2xs focus:outline-none focus:border-[#0B192C]"
+          />
           <button
             type="button"
-            onClick={openCreateForm}
-            className="min-h-[44px] px-4 rounded-2xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0D9488] dark:hover:bg-teal-600 text-white text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors shadow-2xs"
+            onClick={() => setShowFiltersPanel((prev) => !prev)}
+            title="تصفية النتائج"
+            className={`w-8 h-8 rounded-lg absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center transition cursor-pointer ${
+              showFiltersPanel ||
+              regionFilter !== 'all' ||
+              appointmentFilter !== 'all' ||
+              visitFilter !== 'all' ||
+              statusFilter !== 'all'
+                ? 'bg-[#0B192C] text-[#B48327]'
+                : 'text-[#64748B] hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
           >
-            <Plus className="w-4 h-4" />
-            <span>إضافة مكلف جديد</span>
+            <SlidersHorizontal className="w-4 h-4" />
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={openCreateForm}
+          title="إضافة مكلف جديد"
+          className="min-h-[46px] px-3.5 rounded-xl bg-[#0B192C] hover:bg-[#132A46] text-white text-xs font-bold flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer"
+        >
+          <Plus className="w-4 h-4 text-[#B48327]" />
+          <span>إضافة مكلف</span>
+        </button>
       </div>
 
-      {/* Unified Segmented Toggle (قائمة المكلفين / دليل العقارات العام) + Search & Filter */}
-      <div className="bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 rounded-3xl p-4 space-y-3 shadow-2xs">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
-          <div className="inline-flex rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 p-1 border border-slate-200/80 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => setDirectoryViewMode('taxpayers')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
-                directoryViewMode === 'taxpayers'
-                  ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
-                  : 'text-slate-600 dark:text-slate-300'
-              }`}
-            >
-              <Users className="w-4 h-4" />
-              <span>ملفات المكلفين ({taxpayers.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDirectoryViewMode('properties')}
-              className={`px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer ${
-                directoryViewMode === 'properties'
-                  ? 'bg-[#0B192C] text-white dark:bg-[#0D9488]'
-                  : 'text-slate-600 dark:text-slate-300'
-              }`}
-            >
-              <Building2 className="w-4 h-4" />
-              <span>جميع العقارات ({properties.length})</span>
-            </button>
-          </div>
-
-          <span className="text-[11px] text-slate-500">
-            اضغط على أي مكلف أو عقار لفتح ملف المكلف الموحد بكامل تفاصيله
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="sm:col-span-2 relative">
-            <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={
-                directoryViewMode === 'taxpayers'
-                  ? 'ابحث باسم المكلف، الرمز، الهاتف، اسم الوكيل، أو المنطقة...'
-                  : 'ابحث باسم العقار، الرمز، اسم المكلف المالك، أو الشارع...'
-              }
-              className="w-full min-h-[44px] pr-10 pl-4 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs focus:outline-none focus:border-[#0284C7]"
-            />
-          </div>
-
-          {directoryViewMode === 'taxpayers' ? (
+      {/* 2. Reference Filter Pills Row (المنطقة/الحي | حالة المواعيد | حالة الزيارة | الحالة) */}
+      {directoryViewMode === 'taxpayers' && (
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {/* Region / Neighborhood Filter Pill */}
+          <div className="relative shrink-0">
             <select
+              aria-label="تصفية حسب المنطقة أو الحي"
+              value={regionFilter}
+              onChange={(e) => setRegionFilter(e.target.value)}
+              className={`min-h-[34px] px-3 rounded-full text-[11px] font-bold border transition cursor-pointer appearance-none pr-3 pl-6 ${
+                regionFilter !== 'all'
+                  ? 'bg-[#0B192C] text-white border-[#0B192C]'
+                  : 'bg-white dark:bg-[#0D1829] text-[#172334] dark:text-slate-200 border-[#E2E8F0] dark:border-slate-800'
+              }`}
+            >
+              <option value="all">المنطقة/الحي</option>
+              {availableRegions.map((reg) => (
+                <option key={reg} value={reg}>
+                  {reg}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[9px] opacity-70">
+              ▼
+            </span>
+          </div>
+
+          {/* Appointments Status Filter Pill */}
+          <div className="relative shrink-0">
+            <select
+              aria-label="تصفية حسب حالة المواعيد"
+              value={appointmentFilter}
+              onChange={(e) =>
+                setAppointmentFilter(
+                  e.target.value as 'all' | 'has_appointments' | 'overdue_or_due' | 'upcoming' | 'none'
+                )
+              }
+              className={`min-h-[34px] px-3 rounded-full text-[11px] font-bold border transition cursor-pointer appearance-none pr-3 pl-6 ${
+                appointmentFilter !== 'all'
+                  ? 'bg-[#0B192C] text-white border-[#0B192C]'
+                  : 'bg-white dark:bg-[#0D1829] text-[#172334] dark:text-slate-200 border-[#E2E8F0] dark:border-slate-800'
+              }`}
+            >
+              <option value="all">حالة المواعيد</option>
+              <option value="overdue_or_due">مواعيد متأخرة / مستحقة</option>
+              <option value="upcoming">مواعيد قادمة</option>
+              <option value="has_appointments">مرتبط بمواعيد</option>
+              <option value="none">بدون مواعيد نشطة</option>
+            </select>
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[9px] opacity-70">
+              ▼
+            </span>
+          </div>
+
+          {/* Visit Status Filter Pill */}
+          <div className="relative shrink-0">
+            <select
+              aria-label="تصفية حسب حالة الزيارة"
+              value={visitFilter}
+              onChange={(e) =>
+                setVisitFilter(
+                  e.target.value as 'all' | 'visited' | 'not_visited' | 'requires_followup'
+                )
+              }
+              className={`min-h-[34px] px-3 rounded-full text-[11px] font-bold border transition cursor-pointer appearance-none pr-3 pl-6 ${
+                visitFilter !== 'all'
+                  ? 'bg-[#0B192C] text-white border-[#0B192C]'
+                  : 'bg-white dark:bg-[#0D1829] text-[#172334] dark:text-slate-200 border-[#E2E8F0] dark:border-slate-800'
+              }`}
+            >
+              <option value="all">حالة الزيارة</option>
+              <option value="visited">تمت زيارته</option>
+              <option value="requires_followup">يحتاج متابعة</option>
+              <option value="not_visited">لم تُسجل زيارة</option>
+            </select>
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[9px] opacity-70">
+              ▼
+            </span>
+          </div>
+
+          {/* Taxpayer Status Filter Pill */}
+          <div className="relative shrink-0">
+            <select
+              aria-label="تصفية حسب حالة الملف"
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
-              className="min-h-[44px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+              className={`min-h-[34px] px-3 rounded-full text-[11px] font-bold border transition cursor-pointer appearance-none pr-3 pl-6 ${
+                statusFilter !== 'all'
+                  ? 'bg-[#0B192C] text-white border-[#0B192C]'
+                  : 'bg-white dark:bg-[#0D1829] text-[#172334] dark:text-slate-200 border-[#E2E8F0] dark:border-slate-800'
+              }`}
             >
-              <option value="all">جميع حالات المكلفين</option>
+              <option value="all">حالة الملف</option>
               {Object.entries(STATUS_LABELS).map(([k, v]) => (
                 <option key={k} value={k}>
                   {v}
                 </option>
               ))}
             </select>
-          ) : (
+            <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[9px] opacity-70">
+              ▼
+            </span>
+          </div>
+
+          {(regionFilter !== 'all' ||
+            appointmentFilter !== 'all' ||
+            visitFilter !== 'all' ||
+            statusFilter !== 'all' ||
+            searchQuery.trim() !== '') && (
+            <button
+              type="button"
+              onClick={() => {
+                setRegionFilter('all');
+                setAppointmentFilter('all');
+                setVisitFilter('all');
+                setStatusFilter('all');
+                setSearchQuery('');
+              }}
+              className="min-h-[34px] px-3 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold shrink-0 cursor-pointer"
+            >
+              مسح الفلاتر
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Optional Expanded Filter & View Mode Bar when SlidersHorizontal is clicked */}
+      {showFiltersPanel && (
+        <div className="bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-2 shadow-2xs">
+          <div className="inline-flex rounded-xl bg-[#F4F6F9] dark:bg-slate-900 p-1 border border-[#E2E8F0] dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => setDirectoryViewMode('taxpayers')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                directoryViewMode === 'taxpayers'
+                  ? 'bg-[#0B192C] text-white'
+                  : 'text-[#64748B] dark:text-slate-300'
+              }`}
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>دافعو الضرائب ({taxpayers.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDirectoryViewMode('properties')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                directoryViewMode === 'properties'
+                  ? 'bg-[#0B192C] text-white'
+                  : 'text-[#64748B] dark:text-slate-300'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>العقارات ({properties.length})</span>
+            </button>
+          </div>
+
+          {directoryViewMode === 'properties' && (
             <select
               value={propertyTypeFilter}
               onChange={(e) => setPropertyTypeFilter(e.target.value)}
-              className="min-h-[44px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+              className="min-h-[36px] px-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
             >
               <option value="all">جميع أنواع العقارات</option>
               {Object.entries(PROPERTY_TYPE_LABELS).map(([k, v]) => (
@@ -3262,35 +3628,42 @@ export const TaxpayersScreen: React.FC = () => {
             </select>
           )}
         </div>
-      </div>
+      )}
 
-      {/* Directory Cards: Taxpayers Mode */}
+      {/* 3. Directory Cards: Taxpayers Mode (مطابق للصورة المرجعية «دافعو الضرائب») */}
       {directoryViewMode === 'taxpayers' ? (
         filteredTaxpayers.length === 0 ? (
-          <div className="bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 rounded-3xl p-10 text-center shadow-2xs">
-            <Users className="w-10 h-10 text-slate-400 mx-auto mb-3" />
-            <h3 className="text-base font-bold text-[#0B192C] dark:text-white mb-1 font-display">
+          <div className="bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 rounded-2xl p-8 text-center shadow-2xs">
+            <Users className="w-10 h-10 text-[#64748B] mx-auto mb-2.5" />
+            <h3 className="text-sm font-bold text-[#172334] dark:text-white mb-1 font-display">
               لا توجد سجلات مكلفين مطابقة
             </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mb-5">
-              أضف بيانات المكلفين لفتح ملفهم الموحد وإدارة العقارات والوحدات والتحصيلات والزيارات.
+            <p className="text-xs text-[#64748B] dark:text-slate-400 mb-4">
+              جرّب تعديل كلمات البحث أو الفلاتر، أو أضف مكلفًا جديدًا الآن.
             </p>
             <button
               type="button"
               onClick={openCreateForm}
-              className="min-h-[44px] px-5 rounded-2xl bg-[#0D9488] text-white text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
+              className="min-h-[42px] px-5 rounded-xl bg-[#0B192C] text-white text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              <span>إضافة مكلف الآن</span>
+              <Plus className="w-4 h-4 text-[#B48327]" />
+              <span>إضافة مكلف جديد</span>
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-3">
             {filteredTaxpayers.map((tp) => {
-              const tpProps = properties.filter((p) => p.taxpayerId === tp.id);
-              const tpUnits = propertyUnits.filter((u) => u.taxpayerId === tp.id);
-              const fin = getTaxpayerFinancialSummary(tp.id);
-              const agents = extractAgentsFromNotes(tp, tpProps);
+              const apptInfo = getTaxpayerAppointmentsStatus.get(tp.id);
+              const hasAppts = (apptInfo?.all.length || 0) > 0;
+              const badgeCount =
+                (apptInfo?.activeCount || 0) > 0
+                  ? apptInfo?.activeCount || 0
+                  : apptInfo?.all.length || 0;
+              const isCompany =
+                tp.fullName.includes('شركة') ||
+                tp.fullName.includes('مؤسسة') ||
+                tp.fullName.includes('مكتب') ||
+                tp.fullName.includes('مركز');
 
               return (
                 <div
@@ -3299,72 +3672,126 @@ export const TaxpayersScreen: React.FC = () => {
                     setSelectedPropertyId(null);
                     setSelectedTaxpayerId(tp.id);
                   }}
-                  className="bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 hover:border-[#0284C7] rounded-3xl p-5 transition-all cursor-pointer shadow-2xs flex flex-col justify-between gap-3"
+                  className="bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 hover:border-[#0B192C]/40 rounded-2xl p-4 transition-all cursor-pointer shadow-2xs flex items-stretch justify-between gap-3"
                 >
-                  <div className="flex items-start gap-3.5">
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#0B192C] to-[#0284C7] text-white font-bold text-base flex items-center justify-center shrink-0">
-                      {tp.fullName.slice(0, 1)}
+                  {/* Right Side: Avatar + Taxpayer Name + File Number + National/Commercial ID + Location */}
+                  <div className="flex items-start gap-3 min-w-0 flex-1">
+                    <div className="w-11 h-11 rounded-full bg-[#F4F6F9] dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 flex items-center justify-center text-[#0B192C] dark:text-white shrink-0 mt-0.5">
+                      {isCompany ? (
+                        <Building2 className="w-5 h-5 stroke-[1.8]" />
+                      ) : (
+                        <User className="w-5 h-5 stroke-[1.8]" />
+                      )}
                     </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono font-bold text-[#0284C7] dark:text-sky-400">
-                            {tp.internalCode}
-                          </span>
-                          <span>·</span>
-                          <span
-                            className={
-                              tp.status === 'active'
-                                ? 'text-[#0D9488] dark:text-teal-400 font-semibold'
-                                : 'text-amber-600'
-                            }
-                          >
-                            {STATUS_LABELS[tp.status]}
-                          </span>
-                          {tp.region && (
-                            <>
-                              <span>·</span>
-                              <span>{tp.region}</span>
-                            </>
-                          )}
-                        </div>
-                        <span className="text-[11px] font-bold text-[#0284C7] flex items-center gap-0.5">
-                          فتح الملف الموحد
-                          <ChevronLeft className="w-3.5 h-3.5" />
-                        </span>
-                      </div>
-
-                      <h3 className="text-base font-extrabold text-[#0B192C] dark:text-white truncate font-display">
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <h3 className="text-[15px] font-extrabold text-[#172334] dark:text-white truncate font-display leading-snug">
                         {tp.fullName}
                       </h3>
 
-                      {agents.length > 0 && (
-                        <div className="text-[11px] text-[#0D9488] dark:text-teal-400 font-semibold mt-0.5">
-                          الوكيل: {agents[0].name} {agents[0].phone ? `(${agents[0].phone})` : ''}
+                      <div className="text-xs text-[#64748B] dark:text-slate-400 space-y-0.5">
+                        <div>
+                          الملف:{' '}
+                          <span className="font-mono font-bold text-[#172334] dark:text-slate-200">
+                            {tp.internalCode}
+                          </span>
                         </div>
-                      )}
+                        <div>
+                          الهوية:{' '}
+                          <span className="font-mono font-bold text-[#172334] dark:text-slate-200">
+                            {tp.nationalOrCommercialId || '—'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="pt-0.5 flex items-center gap-1 text-xs text-[#64748B] dark:text-slate-400">
+                        <MapPin className="w-3.5 h-3.5 text-[#64748B] shrink-0" />
+                        <span className="truncate">
+                          {tp.region || 'صنعاء'}
+                          {tp.address ? ` - ${tp.address}` : ''}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 grid grid-cols-3 gap-2 text-xs">
-                    <div>
-                      <div className="text-[10px] text-slate-400">العقارات والوحدات</div>
-                      <div className="font-bold text-[#0B192C] dark:text-white mt-0.5">
-                        {tpProps.length} عقار · {tpUnits.length} وحدة
-                      </div>
+                  {/* Left Side: Appointment Bell Indicator + Direct Call Icon + Status Badge */}
+                  <div
+                    className="flex flex-col items-end justify-between shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {/* Top Left: Appointment Bell + Call Button */}
+                    <div className="flex items-center gap-1.5">
+                      {tp.phone && (
+                        <a
+                          href={`tel:${tp.phone}`}
+                          title={`اتصال بالمكلف: ${tp.phone}`}
+                          className="w-8 h-8 rounded-full bg-[#F4F6F9] hover:bg-slate-200/80 dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 flex items-center justify-center text-[#64748B] hover:text-[#0B192C] dark:text-slate-300 transition"
+                        >
+                          <Phone className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+
+                      {hasAppts && (
+                        <button
+                          type="button"
+                          onClick={() => setBellModalTaxpayer(tp)}
+                          title={
+                            apptInfo?.badgeState === 'overdue_or_due'
+                              ? `يوجد (${apptInfo.overdueOrDueCount}) موعد متأخر أو مستحق — اضغط لعرض مواعيد المكلف`
+                              : `يوجد (${badgeCount}) مواعيد مرتبطة بالمكلف — اضغط للعرض`
+                          }
+                          className={`relative w-9 h-9 rounded-full flex items-center justify-center border transition cursor-pointer ${
+                            apptInfo?.badgeState === 'overdue_or_due'
+                              ? 'bg-rose-50 border-rose-200 text-[#EF4444] hover:bg-rose-100'
+                              : apptInfo?.badgeState === 'upcoming'
+                              ? 'bg-amber-50/80 border-amber-200 text-[#B48327] hover:bg-amber-100/80'
+                              : 'bg-emerald-50 border-emerald-200 text-[#059669]'
+                          }`}
+                        >
+                          <Bell className="w-4 h-4 fill-current" />
+                          <span
+                            className={`absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-extrabold text-white flex items-center justify-center shadow-2xs ${
+                              apptInfo?.badgeState === 'overdue_or_due'
+                                ? 'bg-[#EF4444]'
+                                : apptInfo?.badgeState === 'upcoming'
+                                ? 'bg-[#B48327]'
+                                : 'bg-[#059669]'
+                            }`}
+                          >
+                            {badgeCount}
+                          </span>
+                        </button>
+                      )}
                     </div>
-                    <div>
-                      <div className="text-[10px] text-slate-400">التحصيلات المعتمدة</div>
-                      <div className="font-mono font-bold text-[#0D9488] mt-0.5">
-                        {fin.approvedCollectionsTotal.toLocaleString('en-US')}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-slate-400">المتبقي الصافي</div>
-                      <div className="font-mono font-extrabold text-amber-600 dark:text-amber-400 mt-0.5">
-                        {fin.netRemaining.toLocaleString('en-US')} {defaultCurrency}
-                      </div>
+
+                    {/* Bottom Left: Status Pill + Sync Indicator */}
+                    <div className="flex flex-col items-end gap-1 mt-2">
+                      {tp.isPendingSync && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[10px] font-bold">
+                          <CloudOff className="w-2.5 h-2.5" />
+                          محلي
+                        </span>
+                      )}
+                      <span
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold ${
+                          tp.status === 'active'
+                            ? 'bg-[#ECFDF5] text-[#059669]'
+                            : tp.status === 'under_review'
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            tp.status === 'active'
+                              ? 'bg-[#10B981]'
+                              : tp.status === 'under_review'
+                              ? 'bg-amber-500'
+                              : 'bg-slate-400'
+                          }`}
+                        />
+                        {STATUS_LABELS[tp.status]}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -3374,7 +3801,7 @@ export const TaxpayersScreen: React.FC = () => {
         )
       ) : (
         /* Directory Cards: General Properties Mode (linked to Unified Taxpayer Dossier) */
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-3">
           {filteredProperties.map((prop) => {
             const units = propertyUnits.filter((u) => u.propertyId === prop.id);
             const apts = units.filter((u) => u.unitType === 'apartment').length;
@@ -3388,44 +3815,44 @@ export const TaxpayersScreen: React.FC = () => {
                   setSelectedPropertyId(prop.id);
                   setSelectedTaxpayerId(prop.taxpayerId);
                 }}
-                className="bg-white dark:bg-[#0D1829] border border-slate-200/90 dark:border-slate-800 hover:border-[#0284C7] rounded-3xl p-5 transition-all cursor-pointer shadow-2xs flex flex-col justify-between gap-3"
+                className="bg-white dark:bg-[#0D1829] border border-[#E2E8F0] dark:border-slate-800 hover:border-[#0B192C]/40 rounded-2xl p-4 transition-all cursor-pointer shadow-2xs flex flex-col justify-between gap-3"
               >
                 <div>
-                  <div className="flex items-center justify-between text-xs text-slate-500 mb-1.5">
+                  <div className="flex items-center justify-between text-xs text-[#64748B] mb-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-[#0284C7]">{prop.code}</span>
+                      <span className="font-mono font-bold text-[#0B192C] dark:text-sky-400">{prop.code}</span>
                       <span>·</span>
                       <span>{PROPERTY_TYPE_LABELS[prop.propertyType]}</span>
                     </div>
-                    <span className="text-[11px] font-bold text-[#0D9488]">
+                    <span className="text-[11px] font-bold text-[#B48327]">
                       فتح في ملف المكلف ←
                     </span>
                   </div>
-                  <h3 className="text-base font-extrabold text-[#0B192C] dark:text-white font-display">
+                  <h3 className="text-sm font-extrabold text-[#172334] dark:text-white font-display">
                     {prop.title}
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    المكلف المالك: <strong className="text-[#0B192C] dark:text-white">{prop.taxpayerName}</strong> ·{' '}
+                  <p className="text-xs text-[#64748B] mt-0.5">
+                    المكلف المالك: <strong className="text-[#172334] dark:text-white">{prop.taxpayerName}</strong> ·{' '}
                     {prop.address}
                   </p>
                 </div>
 
-                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-xs">
+                <div className="pt-2.5 border-t border-[#E2E8F0] dark:border-slate-800 grid grid-cols-3 gap-2 text-xs">
                   <div>
-                    <div className="text-[10px] text-slate-400">الوحدات التابعة</div>
-                    <div className="font-bold text-[#0B192C] dark:text-white mt-0.5">
-                      {units.length} ({apts} شقة، {shops} فتحة)
+                    <div className="text-[10px] text-[#64748B]">الوحدات التابعة</div>
+                    <div className="font-bold text-[#172334] dark:text-white mt-0.5">
+                      {units.length} ({apts} شقة، {shops} محل)
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400">المدفوعات</div>
-                    <div className="font-mono font-bold text-[#0D9488] mt-0.5">
+                    <div className="text-[10px] text-[#64748B]">المدفوعات</div>
+                    <div className="font-mono font-bold text-[#059669] mt-0.5">
                       {pf.approvedCollectionsTotal.toLocaleString('en-US')}
                     </div>
                   </div>
                   <div>
-                    <div className="text-[10px] text-slate-400">المتبقي على العقار</div>
-                    <div className="font-mono font-extrabold text-amber-600 mt-0.5">
+                    <div className="text-[10px] text-[#64748B]">المتبقي على العقار</div>
+                    <div className="font-mono font-extrabold text-[#B48327] mt-0.5">
                       {pf.netRemaining.toLocaleString('en-US')} {defaultCurrency}
                     </div>
                   </div>
@@ -3436,26 +3863,237 @@ export const TaxpayersScreen: React.FC = () => {
         </div>
       )}
 
-      {/* Add / Edit Taxpayer Modal (from Directory) */}
+      {/* ======================================================================
+          TAXPAYER APPOINTMENTS QUICK MODAL (عند الضغط على جرس المواعيد في البطاقة)
+         ====================================================================== */}
+      {bellModalTaxpayer && bellModalData && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setBellModalTaxpayer(null)}
+        >
+          <div
+            className="w-full max-w-lg bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-5 border border-[#E2E8F0] dark:border-slate-800 max-h-[85vh] overflow-y-auto shadow-xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-[#E2E8F0] dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div
+                  className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+                    bellModalData.badgeState === 'overdue_or_due'
+                      ? 'bg-rose-50 text-[#EF4444]'
+                      : 'bg-amber-50 text-[#B48327]'
+                  }`}
+                >
+                  <Bell className="w-5 h-5 fill-current" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-[#172334] dark:text-white font-display">
+                    مواعيد المكلف: {bellModalTaxpayer.fullName}
+                  </h3>
+                  <p className="text-[11px] text-[#64748B]">
+                    رقم الملف: <span className="font-mono font-bold">{bellModalTaxpayer.internalCode}</span> · إجمالي
+                    المواعيد: {bellModalData.all.length}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBellModalTaxpayer(null)}
+                className="w-8 h-8 rounded-full bg-[#F4F6F9] dark:bg-slate-800 flex items-center justify-center text-[#64748B] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Summary badges */}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2.5 rounded-xl bg-rose-50/70 border border-rose-200/70">
+                <div className="text-[10px] font-bold text-rose-700">متأخرة / مستحقة</div>
+                <div className="text-base font-mono font-extrabold text-[#EF4444]">
+                  {bellModalData.overdueOrDueCount}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-amber-50/70 border border-amber-200/70">
+                <div className="text-[10px] font-bold text-amber-800">قادمة</div>
+                <div className="text-base font-mono font-extrabold text-[#B48327]">
+                  {bellModalData.upcomingCount}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200/70">
+                <div className="text-[10px] font-bold text-emerald-800">مكتملة</div>
+                <div className="text-base font-mono font-extrabold text-[#059669]">
+                  {bellModalData.completedCount}
+                </div>
+              </div>
+            </div>
+
+            {/* Appointments List */}
+            <div className="space-y-2.5">
+              {bellModalData.all.map((appt) => {
+                const todayStr = getAdenTodayString();
+                const isOverdue =
+                  appt.status !== 'completed' &&
+                  appt.status !== 'cancelled' &&
+                  appt.scheduledDate <= todayStr;
+
+                return (
+                  <div
+                    key={appt.id}
+                    className="p-3.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-800 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-extrabold text-[#172334] dark:text-white">
+                          {appt.title}
+                        </div>
+                        <div className="text-[11px] text-[#64748B] mt-0.5 flex items-center gap-2 font-mono">
+                          <span className="inline-flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            {appt.scheduledDate}
+                          </span>
+                          <span>·</span>
+                          <span className="inline-flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatTimeTo12Hour(appt.scheduledTime)}
+                          </span>
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${
+                          appt.status === 'completed'
+                            ? 'bg-[#ECFDF5] text-[#059669]'
+                            : isOverdue
+                            ? 'bg-rose-100 text-[#EF4444]'
+                            : 'bg-amber-100 text-[#B48327]'
+                        }`}
+                      >
+                        {appt.status === 'completed'
+                          ? 'مكتمل'
+                          : isOverdue
+                          ? 'متأخر / مستحق'
+                          : 'قادم'}
+                      </span>
+                    </div>
+
+                    {appt.locationText && (
+                      <div className="text-[11px] text-[#64748B] flex items-center gap-1">
+                        <MapPin className="w-3 h-3 shrink-0" />
+                        <span>{appt.locationText}</span>
+                      </div>
+                    )}
+
+                    {appt.status !== 'completed' && (
+                      <div className="flex items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await updateAppointmentStatus(appt, 'completed');
+                          }}
+                          className="min-h-[34px] px-3 rounded-xl bg-[#059669] text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>إنجاز الموعد</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const targetTp = bellModalTaxpayer;
+                            setBellModalTaxpayer(null);
+                            setSelectedTaxpayerId(targetTp.id);
+                            setDossierTab('visits_and_appointments');
+                          }}
+                          className="min-h-[34px] px-3 rounded-xl bg-white dark:bg-slate-800 border border-[#E2E8F0] dark:border-slate-700 text-[11px] font-bold text-[#0B192C] dark:text-white cursor-pointer"
+                        >
+                          فتح في ملف المكلف
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#E2E8F0] dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  const targetTp = bellModalTaxpayer;
+                  setBellModalTaxpayer(null);
+                  setSelectedTaxpayerId(targetTp.id);
+                  setDossierTab('visits_and_appointments');
+                }}
+                className="min-h-[42px] px-4 rounded-xl bg-[#0B192C] text-white text-xs font-bold flex-1 cursor-pointer"
+              >
+                فتح تبويب مواعيد وزيارات المكلف
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setBellModalTaxpayer(null);
+                  setActiveScreen('appointments');
+                }}
+                className="min-h-[42px] px-4 rounded-xl bg-[#F4F6F9] dark:bg-slate-800 text-[#172334] dark:text-white text-xs font-bold cursor-pointer"
+              >
+                كل المواعيد
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================
+          ADD / EDIT TAXPAYER MODAL (مع منع التكرار الفعلي لرقم الملف ورقم المكلف)
+         ====================================================================== */}
       {isFormOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="w-full max-w-xl bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-slate-200 dark:border-slate-800 max-h-[90vh] overflow-y-auto shadow-xl">
+          <div className="w-full max-w-xl bg-white dark:bg-[#0D1829] rounded-t-3xl sm:rounded-3xl p-6 border border-[#E2E8F0] dark:border-slate-800 max-h-[90vh] overflow-y-auto shadow-xl">
             <div className="w-10 h-1.5 bg-slate-300 dark:bg-slate-700 rounded-full mx-auto mb-4 sm:hidden" />
             <h2 className="text-lg font-bold text-[#0B192C] dark:text-white mb-4 font-display">
               {editingTaxpayer ? 'تعديل بيانات المكلف' : 'إضافة مكلف جديد وفتح ملفه الموحد'}
             </h2>
 
-            {similarTaxpayers.length > 0 && !ignoreDuplicateWarning && (
+            {/* Strict Blocking Duplicate Alert for internalCode or nationalOrCommercialId */}
+            {exactDuplicateMatch && (
+              <div className="mb-4 p-4 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 space-y-2">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-rose-700 dark:text-rose-300">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>
+                    منع التكرار: {exactDuplicateMatch.fieldLabel} ({exactDuplicateMatch.duplicateValue}) مسجل مسبقًا!
+                  </span>
+                </div>
+                <p className="text-[11px] text-rose-600 dark:text-rose-300">
+                  لا يمكن حفظ مكلف جديد بنفس رقم الملف أو رقم الهوية/السجل التجاري. يمكنك تعديل الرقم أدناه أو فتح ملف المكلف المسجل مباشرة:
+                </p>
+                <div className="flex items-center justify-between pt-1 text-xs font-bold text-rose-800 dark:text-rose-200">
+                  <span>
+                    • {exactDuplicateMatch.taxpayer.fullName} (ملف: {exactDuplicateMatch.taxpayer.internalCode})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsFormOpen(false);
+                      setSelectedTaxpayerId(exactDuplicateMatch.taxpayer.id);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    فتح ملف المكلف المسجل
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Advisory Name Similarity Alert */}
+            {!exactDuplicateMatch && similarTaxpayers.length > 0 && !ignoreDuplicateWarning && (
               <div className="mb-4 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 space-y-2">
                 <div className="flex items-center gap-2 text-xs font-bold text-amber-800 dark:text-amber-300">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>تنبيه منع التكرار: تم العثور على سجل مشابه مسجل مسبقًا!</span>
+                  <span>تنبيه تشابه الأسماء: تم العثور على اسم مشابه مسجل مسبقًا:</span>
                 </div>
                 <div className="text-xs text-amber-700 dark:text-amber-300 space-y-1">
                   {similarTaxpayers.map((st) => (
                     <div key={st.id} className="flex items-center justify-between">
                       <span>
-                        • {st.fullName} ({st.internalCode})
+                        • {st.fullName} (ملف: {st.internalCode})
                       </span>
                       <button
                         type="button"
@@ -3465,7 +4103,7 @@ export const TaxpayersScreen: React.FC = () => {
                         }}
                         className="underline font-bold cursor-pointer"
                       >
-                        فتح الملف الموحد الموجود
+                        فتح الملف الموجود
                       </button>
                     </div>
                   ))}
@@ -3492,12 +4130,12 @@ export const TaxpayersScreen: React.FC = () => {
                       setFullName(e.target.value);
                       setIgnoreDuplicateWarning(false);
                     }}
-                    placeholder="مثال: كامل عبد الرحمن"
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    placeholder="مثال: أحمد محمد علي"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold mb-1">المعرف الداخلي *</label>
+                  <label className="block text-xs font-semibold mb-1">رقم الملف (المعرف الداخلي) *</label>
                   <input
                     type="text"
                     required
@@ -3506,16 +4144,20 @@ export const TaxpayersScreen: React.FC = () => {
                       setInternalCode(e.target.value);
                       setIgnoreDuplicateWarning(false);
                     }}
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                    className={`w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border text-xs font-mono ${
+                      exactDuplicateMatch?.fieldLabel.includes('الملف')
+                        ? 'border-rose-500 ring-2 ring-rose-500/20'
+                        : 'border-[#E2E8F0] dark:border-slate-700'
+                    }`}
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold mb-1">رقم الهوية / السجل</label>
+                  <label className="block text-xs font-semibold mb-1">رقم المكلف / الهوية أو السجل</label>
                   <div className="relative">
-                    <IdCard className="w-4 h-4 text-slate-400 absolute right-3 top-3.5" />
+                    <IdCard className="w-4 h-4 text-[#64748B] absolute right-3 top-3.5" />
                     <input
                       type="text"
                       value={nationalOrCommercialId}
@@ -3523,19 +4165,24 @@ export const TaxpayersScreen: React.FC = () => {
                         setNationalOrCommercialId(e.target.value);
                         setIgnoreDuplicateWarning(false);
                       }}
-                      className="w-full min-h-[44px] pr-9 pl-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                      placeholder="987654321"
+                      className={`w-full min-h-[44px] pr-9 pl-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border text-xs font-mono ${
+                        exactDuplicateMatch?.fieldLabel.includes('الهوية')
+                          ? 'border-rose-500 ring-2 ring-rose-500/20'
+                          : 'border-[#E2E8F0] dark:border-slate-700'
+                      }`}
                     />
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold mb-1">رقم الجوال</label>
+                  <label className="block text-xs font-semibold mb-1">رقم الهاتف</label>
                   <input
                     type="tel"
                     dir="ltr"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
                     placeholder="777..."
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono text-left"
                   />
                 </div>
                 <div>
@@ -3543,7 +4190,7 @@ export const TaxpayersScreen: React.FC = () => {
                   <select
                     value={status}
                     onChange={(e) => setStatus(e.target.value as TaxpayerStatus)}
-                    className="w-full min-h-[44px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    className="w-full min-h-[44px] px-3 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   >
                     {Object.entries(STATUS_LABELS).map(([k, v]) => (
                       <option key={k} value={k}>
@@ -3561,8 +4208,8 @@ export const TaxpayersScreen: React.FC = () => {
                     type="text"
                     value={agentNameInput}
                     onChange={(e) => setAgentNameInput(e.target.value)}
-                    placeholder="مثال: توفيق"
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    placeholder="مثال: محمد عبدالله"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   />
                 </div>
                 <div>
@@ -3573,19 +4220,20 @@ export const TaxpayersScreen: React.FC = () => {
                     value={agentPhoneInput}
                     onChange={(e) => setAgentPhoneInput(e.target.value)}
                     placeholder="777..."
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono text-left"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs font-mono text-left"
                   />
                 </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold mb-1">المنطقة</label>
+                  <label className="block text-xs font-semibold mb-1">المنطقة / المديرية</label>
                   <input
                     type="text"
                     value={region}
                     onChange={(e) => setRegion(e.target.value)}
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    placeholder="صنعاء - حدة"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   />
                 </div>
                 <div>
@@ -3594,7 +4242,8 @@ export const TaxpayersScreen: React.FC = () => {
                     type="text"
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
-                    className="w-full min-h-[44px] px-3.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                    placeholder="شارع الستين"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                   />
                 </div>
               </div>
@@ -3603,14 +4252,18 @@ export const TaxpayersScreen: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsFormOpen(false)}
-                  className="min-h-[46px] px-5 rounded-2xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold cursor-pointer"
+                  className="min-h-[46px] px-5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-semibold cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || (similarTaxpayers.length > 0 && !ignoreDuplicateWarning)}
-                  className="min-h-[46px] px-6 rounded-2xl bg-[#0B192C] dark:bg-[#0D9488] text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                  disabled={
+                    submitting ||
+                    Boolean(exactDuplicateMatch) ||
+                    (similarTaxpayers.length > 0 && !ignoreDuplicateWarning)
+                  }
+                  className="min-h-[46px] px-6 rounded-xl bg-[#0B192C] text-white text-xs font-bold cursor-pointer disabled:opacity-50"
                 >
                   {submitting ? 'جاري الحفظ...' : 'حفظ وفتح ملف المكلف'}
                 </button>

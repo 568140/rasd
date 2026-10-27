@@ -3445,6 +3445,32 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       >
     ): Promise<string> => {
       if (!firebaseUser || !workspace || !userProfile) throw new Error('غير مصرح');
+
+      const normalizedCode = (input.internalCode || '').trim().toLowerCase();
+      const normalizedNatId = (input.nationalOrCommercialId || '').trim().toLowerCase();
+
+      if (normalizedCode) {
+        const duplicateByCode = taxpayers.find(
+          (t) => (t.internalCode || '').trim().toLowerCase() === normalizedCode
+        );
+        if (duplicateByCode) {
+          const msg = `لا يمكن الحفظ: رقم الملف (${input.internalCode.trim()}) مسجل مسبقًا باسم المكلف «${duplicateByCode.fullName}».`;
+          showToast(msg, 'error');
+          throw new Error(msg);
+        }
+      }
+
+      if (normalizedNatId) {
+        const duplicateByNatId = taxpayers.find(
+          (t) => (t.nationalOrCommercialId || '').trim().toLowerCase() === normalizedNatId
+        );
+        if (duplicateByNatId) {
+          const msg = `لا يمكن الحفظ: رقم المكلف / الهوية (${input.nationalOrCommercialId.trim()}) مسجل مسبقًا باسم المكلف «${duplicateByNatId.fullName}».`;
+          showToast(msg, 'error');
+          throw new Error(msg);
+        }
+      }
+
       const id = generateSafeId('tp');
       const path = `taxpayers/${id}`;
       try {
@@ -3473,7 +3499,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         handleFirestoreError(error, OperationType.CREATE, path);
       }
     },
-    [firebaseUser, workspace, userProfile, writeAuditLog, showToast, isOnline]
+    [firebaseUser, workspace, userProfile, taxpayers, writeAuditLog, showToast, isOnline]
   );
 
   const updateTaxpayer = useCallback(
@@ -3481,6 +3507,34 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!firebaseUser || !workspace) return;
       const existing = taxpayers.find((t) => t.id === id);
       if (!existing) return;
+
+      const nextCode = (input.internalCode ?? existing.internalCode ?? '').trim();
+      const nextNatId = (input.nationalOrCommercialId ?? existing.nationalOrCommercialId ?? '').trim();
+
+      if (nextCode) {
+        const duplicateByCode = taxpayers.find(
+          (t) => t.id !== id && (t.internalCode || '').trim().toLowerCase() === nextCode.toLowerCase()
+        );
+        if (duplicateByCode) {
+          const msg = `لا يمكن التحديث: رقم الملف (${nextCode}) مستخدم بالفعل للمكلف «${duplicateByCode.fullName}».`;
+          showToast(msg, 'error');
+          throw new Error(msg);
+        }
+      }
+
+      if (nextNatId) {
+        const duplicateByNatId = taxpayers.find(
+          (t) =>
+            t.id !== id &&
+            (t.nationalOrCommercialId || '').trim().toLowerCase() === nextNatId.toLowerCase()
+        );
+        if (duplicateByNatId) {
+          const msg = `لا يمكن التحديث: رقم المكلف / الهوية (${nextNatId}) مستخدم بالفعل للمكلف «${duplicateByNatId.fullName}».`;
+          showToast(msg, 'error');
+          throw new Error(msg);
+        }
+      }
+
       const path = `taxpayers/${id}`;
       try {
         await updateDoc(doc(db, 'taxpayers', id), {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Building2,
   Plus,
@@ -82,7 +82,7 @@ export const PropertiesScreen: React.FC = () => {
   const [taxpayerId, setTaxpayerId] = useState('');
   const [propertyType, setPropertyType] = useState<PropertyType>('commercial');
   const [status, setStatus] = useState<PropertyStatus>('active');
-  const [region, setRegion] = useState('الرياض');
+  const [region, setRegion] = useState('صنعاء');
   const [address, setAddress] = useState('');
   const [areaSqm, setAreaSqm] = useState('350');
   const [latitude, setLatitude] = useState('');
@@ -145,7 +145,7 @@ export const PropertiesScreen: React.FC = () => {
     setTaxpayerId(taxpayers[0]?.id || '');
     setPropertyType('commercial');
     setStatus('active');
-    setRegion('الرياض');
+    setRegion('صنعاء');
     setAddress('');
     setAreaSqm('350');
     setLatitude('');
@@ -153,6 +153,18 @@ export const PropertiesScreen: React.FC = () => {
     setNotes('');
     setIsFormOpen(true);
   };
+
+  useEffect(() => {
+    try {
+      const action = sessionStorage.getItem('rasd_quick_action');
+      if (action === 'open_add_property') {
+        sessionStorage.removeItem('rasd_quick_action');
+        openCreateForm();
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
 
   const openEditForm = (prop: Property) => {
     setEditingProperty(prop);

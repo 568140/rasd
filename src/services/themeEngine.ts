@@ -56,13 +56,41 @@ export interface ThemeSettings {
 }
 
 const STORAGE_KEY = 'rasd_ui_theme_settings_v2';
+const DEFAULT_MIGRATION_KEY = 'rasd_navy_reference_default_v1';
 
 export const RASD_THEME_PALETTES: ThemePaletteDefinition[] = [
   {
-    id: 'rasd_reference_burgundy',
-    name: 'الهوية الرسمية الدافئة (المرجع الأساسي)',
-    subtitle: 'عاجي دافئ (#F7F5F0) وعنابي رسمي هادئ (#743B46) مطابق للتصميم المرجعي المعتمد',
+    id: 'classic_navy',
+    name: 'الكلاسيكية (البحرية والذهبي)',
+    subtitle: 'الهوية الرسمية المعتمدة: كحلي (#0B192C) ورمادي فاتح (#F4F6F9) ولمسات ذهبية هادئة (#B48327)',
     badgeText: 'المرجع الرسمي',
+    previewSwatches: ['#0B192C', '#B48327', '#64748B'],
+    vars: {
+      primary: '#0B192C',
+      primaryHover: '#132A46',
+      accent: '#B48327',
+      accentHover: '#966B1D',
+      secondary: '#0B192C',
+      heroFrom: '#081729',
+      heroVia: '#0B192C',
+      heroTo: '#132A46',
+      bgLight: '#F4F6F9',
+      cardLight: '#FFFFFF',
+      cardSubtleLight: '#EDF2F7',
+      borderLight: '#E2E8F0',
+      bgDark: '#060D18',
+      cardDark: '#0D1829',
+      cardSubtleDark: '#132238',
+      borderDark: '#1E2F4D',
+      tintBgLight: '#F4F6F9',
+      tintBgDark: '#0D1829',
+    },
+  },
+  {
+    id: 'rasd_reference_burgundy',
+    name: 'العنابي (البورغندي)',
+    subtitle: 'عاجي دافئ (#F7F5F0) وعنابي رسمي هادئ (#743B46)',
+    badgeText: 'دافئ',
     previewSwatches: ['#743B46', '#A77B35', '#52765D'],
     vars: {
       primary: '#743B46',
@@ -220,37 +248,10 @@ export const RASD_THEME_PALETTES: ThemePaletteDefinition[] = [
       tintBgDark: '#431407',
     },
   },
-  {
-    id: 'classic_navy',
-    name: 'الكحلي والتركواز الرسمي',
-    subtitle: 'الهوية الكلاسيكية المتزنة باللون الكحلي العميق والتركواز الميداني',
-    badgeText: 'كلاسيكي',
-    previewSwatches: ['#0B192C', '#0D9488', '#0284C7'],
-    vars: {
-      primary: '#0B192C',
-      primaryHover: '#132A46',
-      accent: '#0D9488',
-      accentHover: '#0F766E',
-      secondary: '#0284C7',
-      heroFrom: '#0B192C',
-      heroVia: '#102A46',
-      heroTo: '#0B4F6C',
-      bgLight: '#F4F7FA',
-      cardLight: '#FFFFFF',
-      cardSubtleLight: '#EDF2F7',
-      borderLight: '#DCE4EE',
-      bgDark: '#060D18',
-      cardDark: '#0D1829',
-      cardSubtleDark: '#132238',
-      borderDark: '#1E2F4D',
-      tintBgLight: '#F0FDFA',
-      tintBgDark: '#042F2E',
-    },
-  },
 ];
 
 const DEFAULT_THEME_SETTINGS: ThemeSettings = {
-  paletteId: 'rasd_reference_burgundy',
+  paletteId: 'classic_navy',
   cardStyle: 'elevated',
 };
 
@@ -266,14 +267,30 @@ class ThemeEngineService {
   private loadSettings() {
     if (typeof window === 'undefined') return;
     try {
+      const migratedToNavyDefault = localStorage.getItem(DEFAULT_MIGRATION_KEY);
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<ThemeSettings>;
         const exists = RASD_THEME_PALETTES.some((p) => p.id === parsed.paletteId);
+        // Adopt the new official Navy/Gray/Gold default once if the stored setting was the old automatic default
+        const resolvedPaletteId: ThemePaletteId =
+          !migratedToNavyDefault && parsed.paletteId === 'rasd_reference_burgundy'
+            ? 'classic_navy'
+            : exists && parsed.paletteId
+            ? parsed.paletteId
+            : DEFAULT_THEME_SETTINGS.paletteId;
+
         this.settings = {
-          paletteId: exists && parsed.paletteId ? parsed.paletteId : DEFAULT_THEME_SETTINGS.paletteId,
+          paletteId: resolvedPaletteId,
           cardStyle: parsed.cardStyle || DEFAULT_THEME_SETTINGS.cardStyle,
         };
+        if (!migratedToNavyDefault) {
+          localStorage.setItem(DEFAULT_MIGRATION_KEY, '1');
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
+        }
+      } else {
+        this.settings = DEFAULT_THEME_SETTINGS;
+        localStorage.setItem(DEFAULT_MIGRATION_KEY, '1');
       }
     } catch {
       this.settings = DEFAULT_THEME_SETTINGS;
@@ -324,8 +341,10 @@ class ThemeEngineService {
 
     root.style.setProperty('--rasd-primary', palette.vars.primary);
     root.style.setProperty('--rasd-primary-hover', palette.vars.primaryHover);
+    root.style.setProperty('--rasd-header-bg', palette.id === 'classic_navy' ? '#081729' : palette.vars.heroFrom);
     root.style.setProperty('--rasd-accent', palette.vars.accent);
     root.style.setProperty('--rasd-accent-hover', palette.vars.accentHover);
+    root.style.setProperty('--rasd-gold', '#B48327');
     root.style.setProperty('--rasd-secondary', palette.vars.secondary);
     root.style.setProperty('--rasd-hero-from', palette.vars.heroFrom);
     root.style.setProperty('--rasd-hero-via', palette.vars.heroVia);
