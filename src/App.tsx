@@ -24,11 +24,19 @@ import {
   Bell,
   Palette,
   User,
+  Fingerprint,
+  Lock,
+  LogOut,
 } from 'lucide-react';
 import { RasdProvider, useRasd } from './context/RasdContext';
 import { ActiveAlertBanner } from './components/ActiveAlertBanner';
 import { themeEngine } from './services/themeEngine';
 import { alertSound } from './services/alertSound';
+import {
+  isSessionBiometricLocked,
+  verifyBiometric,
+  getBiometricConfig,
+} from './services/biometricService';
 import { evaluateAppointmentStatus, sanitizeReminderMinutes } from './utils/dateUtils';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { useLiveAdenClock } from './hooks/useLiveAdenClock';
@@ -175,10 +183,16 @@ const RasdShell: React.FC = () => {
     canAccessPlatformAdmin,
     ownerSessionDiagnostic,
     receivedRegistrationRequests,
+    logout,
   } = useRasd();
 
   const [isNotifOpen, setIsNotifOpen] = React.useState(false);
   const [isThemeModalOpen, setIsThemeModalOpen] = React.useState(false);
+  const [isBiometricLocked, setIsBiometricLocked] = React.useState<boolean>(() =>
+    isSessionBiometricLocked()
+  );
+  const [isUnlockingBiometric, setIsUnlockingBiometric] = React.useState(false);
+  const [biometricUnlockError, setBiometricUnlockError] = React.useState<string | null>(null);
   const [defaultReminderMins, setDefaultReminderMins] = React.useState<number>(() =>
     alertSound.getDefaultReminderMinutes()
   );
@@ -192,9 +206,18 @@ const RasdShell: React.FC = () => {
 
   React.useEffect(() => {
     themeEngine.applyToDOM();
-    return alertSound.subscribe((updated) => {
+    const syncBioLock = () => {
+      setIsBiometricLocked(isSessionBiometricLocked());
+      setBiometricUnlockError(null);
+    };
+    window.addEventListener('rasd:biometric-state-change', syncBioLock);
+    const unsubSound = alertSound.subscribe((updated) => {
       setDefaultReminderMins(updated.defaultReminderMinutes);
     });
+    return () => {
+      window.removeEventListener('rasd:biometric-state-change', syncBioLock);
+      unsubSound();
+    };
   }, []);
 
   // Deep-link handling for Notification clicks (URL query params + Service Worker postMessage + local Notification click)
@@ -469,6 +492,94 @@ const RasdShell: React.FC = () => {
           <RegistrationApprovalGateScreen />
         </Suspense>
       </>
+    );
+  }
+
+  // بوابة القفل بالبصمة (Biometric Lock Gate) عند تفعيل البصمة على الجهاز
+  if (isBiometricLocked) {
+    const bioConfig = getBiometricConfig();
+    return (
+      <div
+        className="min-h-screen w-full bg-[#F7F5F0] dark:bg-[#161514] text-[#292725] dark:text-[#F4F1EA] flex flex-col items-center justify-center p-6"
+        dir="rtl"
+      >
+        <div className="w-full max-w-md bg-[#FFFEFC] dark:bg-[#22201F] border border-[#E7E1D8] dark:border-[#383431] rounded-[28px] p-7 sm:p-8 shadow-lg text-center space-y-5">
+          <div className="mx-auto w-20 h-20 rounded-3xl bg-gradient-to-br from-[#743B46] via-[#65313B] to-[#50242D] text-[#FFFEFC] flex items-center justify-center shadow-md border border-[#8B4B57]/40 relative">
+            <Fingerprint className="w-10 h-10 text-[#FFFEFC]" />
+            <span className="absolute -bottom-1 -left-1 w-6 h-6 rounded-full bg-[#A77B35] border-2 border-[#FFFEFC] dark:border-[#22201F] flex items-center justify-center">
+              <Lock className="w-3 h-3 text-white" />
+            </span>
+          </div>
+
+          <div className="space-y-1.5">
+            <h1 className="text-xl sm:text-2xl font-extrabold text-[#292725] dark:text-[#F4F1EA] font-display">
+              المنصة مقفلة بالبصمة
+            </h1>
+            <p className="text-xs sm:text-sm text-[#77716B] dark:text-[#ACA59C]">
+              مرحبًا{' '}
+              <span className="font-bold text-[#292725] dark:text-white">
+                {userProfile?.displayName ||
+                  bioConfig?.userDisplayName ||
+                  firebaseUser.email}
+              </span>
+              ، يرجى تأكيد بصمة الإصبع أو الوجه لفتح مساحة العمل.
+            </p>
+          </div>
+
+          {biometricUnlockError && (
+            <div className="p-3.5 rounded-2xl bg-[#F6E9E7] dark:bg-[#3A2020] border border-[#E2C2BE] dark:border-[#5C3030] text-xs text-[#8E352F] dark:text-[#F2B8B5] font-medium leading-relaxed text-right">
+              {biometricUnlockError}
+            </div>
+          )}
+
+          <div className="space-y-2.5 pt-1">
+            <button
+              type="button"
+              disabled={isUnlockingBiometric}
+              onClick={async () => {
+                setBiometricUnlockError(null);
+                setIsUnlockingBiometric(true);
+                try {
+                  await verifyBiometric();
+                  setIsBiometricLocked(false);
+                  showToast('تم فتح قفل المنصة بالبصمة بنجاح.', 'success');
+                } catch (err) {
+                  setBiometricUnlockError(
+                    err instanceof Error
+                      ? err.message
+                      : 'تعذر التحقق من البصمة. حاول مرة أخرى.'
+                  );
+                } finally {
+                  setIsUnlockingBiometric(false);
+                }
+              }}
+              className="w-full min-h-[50px] px-5 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] text-[#FFFEFC] font-extrabold text-sm flex items-center justify-center gap-2.5 shadow-md cursor-pointer disabled:opacity-60 transition-all"
+            >
+              {isUnlockingBiometric ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>يرجى تأكيد البصمة من جهازك...</span>
+                </>
+              ) : (
+                <>
+                  <Fingerprint className="w-5 h-5" />
+                  <span>فتح القفل بالبصمة الآن</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              disabled={isUnlockingBiometric}
+              onClick={logout}
+              className="w-full min-h-[44px] px-4 rounded-2xl bg-[#F7F5F0] hover:bg-[#EFECE6] dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] text-xs font-bold text-[#77716B] dark:text-[#ACA59C] flex items-center justify-center gap-2 cursor-pointer transition-colors"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>تسجيل الخروج والدخول بكلمة المرور أو حساب آخر</span>
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 

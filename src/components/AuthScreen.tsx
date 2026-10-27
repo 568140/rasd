@@ -18,6 +18,14 @@ import {
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
 import { translateFirebaseError } from '../services/firebase';
+import {
+  BiometricConfig,
+  getBiometricConfig,
+  enrollBiometric,
+  verifyBiometric,
+  saveEncryptedCredentialsForBiometric,
+  markSessionBiometricUnlocked,
+} from '../services/biometricService';
 
 const REMEMBERED_EMAIL_KEY = 'rasd_remembered_login_email_v1';
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -29,6 +37,7 @@ export const AuthScreen: React.FC = () => {
     loginWithEmail,
     registerWithEmail,
     resetPassword,
+    showToast,
   } = useRasd();
 
   const [mode, setMode] = useState<'login' | 'register' | 'reset'>('login');
@@ -38,23 +47,36 @@ export const AuthScreen: React.FC = () => {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [enrollBiometricOnLogin, setEnrollBiometricOnLogin] = useState(false);
+  const [biometricConfig, setBiometricConfig] = useState<BiometricConfig | null>(() =>
+    getBiometricConfig()
+  );
+  const [biometricSubmitting, setBiometricSubmitting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetSuccess, setResetSuccess] = useState(false);
   const [biometricNotice, setBiometricNotice] = useState<string | null>(null);
 
-  // Load remembered email (never passwords) if previously saved
+  // Load remembered email (never plain passwords) and sync biometric config
   useEffect(() => {
     try {
       const savedEmail = localStorage.getItem(REMEMBERED_EMAIL_KEY);
+      const currentBio = getBiometricConfig();
+      setBiometricConfig(currentBio);
       if (savedEmail) {
         setEmail(savedEmail);
         setRememberMe(true);
+      } else if (currentBio?.userEmail) {
+        setEmail(currentBio.userEmail);
       }
     } catch {
       // Ignore storage access errors
     }
+
+    const syncBio = () => setBiometricConfig(getBiometricConfig());
+    window.addEventListener('rasd:biometric-state-change', syncBio);
+    return () => window.removeEventListener('rasd:biometric-state-change', syncBio);
   }, []);
 
   const trimmedEmail = email.trim();
@@ -70,7 +92,7 @@ export const AuthScreen: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (submitting || googleSubmitting) return;
+    if (submitting || googleSubmitting || biometricSubmitting) return;
     setLocalError(null);
     setResetSuccess(false);
     setBiometricNotice(null);
@@ -96,7 +118,7 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    // Persist or clear only the email preference (never store passwords)
+    // Persist or clear only the email preference (never store plain passwords)
     try {
       if (rememberMe && mode === 'login') {
         localStorage.setItem(REMEMBERED_EMAIL_KEY, trimmedEmail);
@@ -111,6 +133,30 @@ export const AuthScreen: React.FC = () => {
     try {
       if (mode === 'login') {
         await loginWithEmail(trimmedEmail, password);
+        markSessionBiometricUnlocked();
+        if (enrollBiometricOnLogin) {
+          try {
+            const enrolled = await enrollBiometric({
+              uid: trimmedEmail.toLowerCase(),
+              email: trimmedEmail,
+              displayName: trimmedEmail.split('@')[0] || 'مستخدم رَصْد',
+              authMethod: 'email',
+              passwordForQuickLogin: password,
+              requireUnlockOnLaunch: true,
+            });
+            setBiometricConfig(enrolled);
+            showToast('تم تفعيل الدخول والقفل بالبصمة على هذا الجهاز بنجاح.', 'success');
+          } catch (bioErr) {
+            showToast(
+              bioErr instanceof Error
+                ? bioErr.message
+                : 'تم تسجيل الدخول، ويمكنك تفعيل البصمة لاحقًا من تبويب المزيد.',
+              'warning'
+            );
+          }
+        } else {
+          await saveEncryptedCredentialsForBiometric(trimmedEmail, password);
+        }
       } else if (mode === 'register') {
         if (fullName.trim().length < 2) {
           setLocalError('يرجى إدخال الاسم الكامل (حرفان على الأقل).');
@@ -123,6 +169,7 @@ export const AuthScreen: React.FC = () => {
           return;
         }
         await registerWithEmail(fullName.trim(), trimmedEmail, password);
+        markSessionBiometricUnlocked();
       } else if (mode === 'reset') {
         await resetPassword(trimmedEmail);
         setResetSuccess(true);
@@ -135,7 +182,7 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleGoogleLogin = async () => {
-    if (submitting || googleSubmitting) return;
+    if (submitting || googleSubmitting || biometricSubmitting) return;
     setLocalError(null);
     setResetSuccess(false);
     setBiometricNotice(null);
@@ -146,6 +193,27 @@ export const AuthScreen: React.FC = () => {
     setGoogleSubmitting(true);
     try {
       await loginWithGoogle();
+      markSessionBiometricUnlocked();
+      if (enrollBiometricOnLogin) {
+        try {
+          const enrolled = await enrollBiometric({
+            uid: trimmedEmail || 'google-user',
+            email: trimmedEmail || 'حساب Google',
+            displayName: trimmedEmail || 'مستخدم Google',
+            authMethod: 'google',
+            requireUnlockOnLaunch: true,
+          });
+          setBiometricConfig(enrolled);
+          showToast('تم تفعيل البصمة على هذا الجهاز بنجاح.', 'success');
+        } catch (bioErr) {
+          showToast(
+            bioErr instanceof Error
+              ? bioErr.message
+              : 'تم الدخول عبر Google. يمكنك تفعيل البصمة من تبويب المزيد.',
+            'warning'
+          );
+        }
+      }
     } catch (err) {
       setLocalError(translateFirebaseError(err));
     } finally {
@@ -153,13 +221,51 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  const handleBiometricClick = () => {
-    if (submitting || googleSubmitting) return;
+  const handleBiometricClick = async () => {
+    if (submitting || googleSubmitting || biometricSubmitting) return;
     setLocalError(null);
     setResetSuccess(false);
-    setBiometricNotice(
-      'الدخول بالبصمة غير مفعّل في نظام المصادقة الحالي. يرجى تسجيل الدخول باستخدام البريد الإلكتروني وكلمة المرور أو عبر حساب Google.'
-    );
+    setBiometricNotice(null);
+
+    const activeBio = getBiometricConfig();
+    if (!activeBio || !activeBio.enabled) {
+      setEnrollBiometricOnLogin(true);
+      setBiometricNotice(
+        'لتفعيل الدخول السريع بالبصمة على هذا الجهاز: تم تفعيل خيار «ربط البصمة تلقائيًا بعد الدخول» بالأسفل — سجّل دخولك الآن بالبريد أو عبر Google ليطلب منك الهاتف تأكيد بصمتك وحفظها، أو فعّلها من تبويب «المزيد» داخل المنصة.'
+      );
+      return;
+    }
+
+    if (!isOnline) {
+      setLocalError('يتطلب تسجيل الدخول بالبصمة اتصالًا بالإنترنت لاستئناف جلسة Firebase.');
+      return;
+    }
+
+    setBiometricSubmitting(true);
+    try {
+      const result = await verifyBiometric();
+      if (result.verified) {
+        if (result.decryptedCredentials?.email && result.decryptedCredentials?.password) {
+          await loginWithEmail(
+            result.decryptedCredentials.email,
+            result.decryptedCredentials.password
+          );
+          showToast('تم التحقق من البصمة وتسجيل الدخول بنجاح.', 'success');
+        } else if (result.config.authMethod === 'google') {
+          await loginWithGoogle();
+          showToast('تم التحقق من البصمة وتسجيل الدخول عبر Google بنجاح.', 'success');
+        } else {
+          setEmail(result.config.userEmail);
+          setBiometricNotice(
+            'تم التحقق من بصمتك بنجاح! أدخل كلمة المرور هذه المرة فقط ليتم حفظها مشفرة مع البصمة للدخول الفوري في المرات القادمة.'
+          );
+        }
+      }
+    } catch (err) {
+      setLocalError(err instanceof Error ? err.message : 'تعذر التحقق من البصمة.');
+    } finally {
+      setBiometricSubmitting(false);
+    }
   };
 
   return (
@@ -553,37 +659,63 @@ export const AuthScreen: React.FC = () => {
               </div>
             )}
 
-            {/* 4 & 5. Remember Me Interactive Checkbox & Forgot Password Trigger */}
+            {/* 4 & 5. Remember Me Interactive Checkbox, Biometric Enrollment Toggle & Forgot Password Trigger */}
             {mode === 'login' && (
-              <div className="flex items-center justify-between gap-2 pt-0.5">
-                <label className="inline-flex items-center gap-2.5 cursor-pointer select-none py-1 group">
-                  <input
-                    type="checkbox"
-                    checked={rememberMe}
-                    onChange={(e) => setRememberMe(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <span
-                    className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all duration-150 ${
-                      rememberMe
-                        ? 'bg-[#743B46] border-[#743B46] text-[#FFFEFC] shadow-2xs'
-                        : 'bg-[#F7F5F0] dark:bg-[#1B1918] border-[#D5CEC4] dark:border-[#4A4541] group-hover:border-[#743B46]'
-                    } peer-focus-visible:ring-3 peer-focus-visible:ring-[#743B46]/25`}
-                  >
-                    {rememberMe && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
-                  </span>
-                  <span className="text-xs font-semibold text-[#5C554E] dark:text-[#D5CFC7] group-hover:text-[#292725] dark:group-hover:text-[#F4F1EA] transition-colors">
-                    تذكرني
-                  </span>
-                </label>
+              <div className="space-y-2 pt-0.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="inline-flex items-center gap-2.5 cursor-pointer select-none py-1 group">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <span
+                      className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all duration-150 ${
+                        rememberMe
+                          ? 'bg-[#743B46] border-[#743B46] text-[#FFFEFC] shadow-2xs'
+                          : 'bg-[#F7F5F0] dark:bg-[#1B1918] border-[#D5CEC4] dark:border-[#4A4541] group-hover:border-[#743B46]'
+                      } peer-focus-visible:ring-3 peer-focus-visible:ring-[#743B46]/25`}
+                    >
+                      {rememberMe && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                    </span>
+                    <span className="text-xs font-semibold text-[#5C554E] dark:text-[#D5CFC7] group-hover:text-[#292725] dark:group-hover:text-[#F4F1EA] transition-colors">
+                      تذكرني
+                    </span>
+                  </label>
 
-                <button
-                  type="button"
-                  onClick={() => switchMode('reset')}
-                  className="text-xs font-bold text-[#743B46] dark:text-[#E5B9C0] hover:text-[#5D2D37] dark:hover:text-[#F2D5DA] py-1 transition-colors cursor-pointer"
-                >
-                  نسيت كلمة المرور؟
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => switchMode('reset')}
+                    className="text-xs font-bold text-[#743B46] dark:text-[#E5B9C0] hover:text-[#5D2D37] dark:hover:text-[#F2D5DA] py-1 transition-colors cursor-pointer"
+                  >
+                    نسيت كلمة المرور؟
+                  </button>
+                </div>
+
+                {!biometricConfig?.enabled && (
+                  <label className="inline-flex items-center gap-2.5 cursor-pointer select-none py-1 group">
+                    <input
+                      type="checkbox"
+                      checked={enrollBiometricOnLogin}
+                      onChange={(e) => setEnrollBiometricOnLogin(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <span
+                      className={`w-5 h-5 rounded-lg border flex items-center justify-center transition-all duration-150 ${
+                        enrollBiometricOnLogin
+                          ? 'bg-[#A77B35] border-[#A77B35] text-[#FFFEFC] shadow-2xs'
+                          : 'bg-[#F7F5F0] dark:bg-[#1B1918] border-[#D5CEC4] dark:border-[#4A4541] group-hover:border-[#A77B35]'
+                      } peer-focus-visible:ring-3 peer-focus-visible:ring-[#A77B35]/25`}
+                    >
+                      {enrollBiometricOnLogin && <Check className="w-3.5 h-3.5 stroke-[2.5]" />}
+                    </span>
+                    <span className="text-xs font-semibold text-[#5C554E] dark:text-[#D5CFC7] group-hover:text-[#292725] dark:group-hover:text-[#F4F1EA] transition-colors inline-flex items-center gap-1.5">
+                      <Fingerprint className="w-3.5 h-3.5 text-[#A77B35]" />
+                      <span>ربط البصمة تلقائيًا بهذا الجهاز بعد الدخول</span>
+                    </span>
+                  </label>
+                )}
               </div>
             )}
 
@@ -591,7 +723,7 @@ export const AuthScreen: React.FC = () => {
             <div className="pt-1.5">
               <button
                 type="submit"
-                disabled={submitting || googleSubmitting}
+                disabled={submitting || googleSubmitting || biometricSubmitting}
                 className="w-full min-h-[50px] px-5 rounded-2xl bg-[#743B46] hover:bg-[#5D2D37] active:bg-[#4E242D] active:scale-[0.985] motion-reduce:transform-none text-[#FFFEFC] font-bold text-sm flex items-center justify-center gap-2.5 shadow-[0_8px_20px_-6px_rgba(116,59,70,0.45)] transition-all duration-150 cursor-pointer disabled:opacity-60 disabled:pointer-events-none"
               >
                 {submitting ? (
@@ -621,7 +753,7 @@ export const AuthScreen: React.FC = () => {
             </div>
           </form>
 
-          {/* Secondary Auth Options: Google Sign-In & Honest Biometric Trigger */}
+          {/* Secondary Auth Options: Google Sign-In & Real Biometric Trigger */}
           {mode !== 'reset' && (
             <div className="mt-5">
               <div className="relative my-4 flex items-center justify-center">
@@ -632,57 +764,94 @@ export const AuthScreen: React.FC = () => {
                 <div className="border-t border-[#E7E1D8] dark:border-[#383431] w-full" />
               </div>
 
-              <div className="flex items-center gap-2.5">
-                {/* Google Sign-In Button */}
-                <button
-                  type="button"
-                  disabled={submitting || googleSubmitting}
-                  onClick={handleGoogleLogin}
-                  className="flex-1 min-h-[48px] px-4 rounded-2xl bg-[#F7F5F0]/70 hover:bg-[#EFECE6] active:scale-[0.99] motion-reduce:transform-none dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] disabled:opacity-60 disabled:pointer-events-none text-[#292725] dark:text-[#F4F1EA] font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer"
-                >
-                  {googleSubmitting ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin text-[#743B46] dark:text-[#E5B9C0]" />
-                      <span>جاري الاتصال بـ Google...</span>
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          fill="#4285F4"
-                          d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"
-                        />
-                        <path
-                          fill="#34A853"
-                          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24Z"
-                        />
-                        <path
-                          fill="#FBBC05"
-                          d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09Z"
-                        />
-                        <path
-                          fill="#EA4335"
-                          d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96Z"
-                        />
-                      </svg>
-                      <span>حساب Google</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Biometric Info Button (Transparent status without fake simulation) */}
-                {mode === 'login' && (
+              <div className="flex flex-col gap-2.5">
+                {mode === 'login' && biometricConfig?.enabled && (
                   <button
                     type="button"
-                    disabled={submitting || googleSubmitting}
+                    disabled={submitting || googleSubmitting || biometricSubmitting}
                     onClick={handleBiometricClick}
-                    title="الدخول بالبصمة (غير مفعّل حاليًا)"
-                    aria-label="معلومات الدخول بالبصمة"
-                    className="min-h-[48px] min-w-[48px] px-3.5 rounded-2xl bg-[#F7F5F0]/70 hover:bg-[#EFECE6] active:scale-[0.98] motion-reduce:transform-none dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] text-[#77716B] hover:text-[#743B46] dark:text-[#ACA59C] dark:hover:text-[#E5B9C0] flex items-center justify-center transition-all duration-150 cursor-pointer shrink-0"
+                    className="w-full min-h-[48px] px-4 rounded-2xl bg-[#F6EFE2] hover:bg-[#EFE4CF] active:scale-[0.99] dark:bg-[#2E261B] dark:hover:bg-[#3A3022] border border-[#DFC9A4] dark:border-[#5C4930] text-[#5C3F14] dark:text-[#E5C17B] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer disabled:opacity-60"
                   >
-                    <Fingerprint className="w-5 h-5" />
+                    {biometricSubmitting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#A77B35]" />
+                        <span>جاري التحقق من بصمة الجهاز...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Fingerprint className="w-5 h-5 text-[#A77B35]" />
+                        <span>
+                          الدخول السريع بالبصمة ({biometricConfig.userDisplayName || biometricConfig.userEmail})
+                        </span>
+                      </>
+                    )}
                   </button>
                 )}
+
+                <div className="flex items-center gap-2.5">
+                  {/* Google Sign-In Button */}
+                  <button
+                    type="button"
+                    disabled={submitting || googleSubmitting || biometricSubmitting}
+                    onClick={handleGoogleLogin}
+                    className="flex-1 min-h-[48px] px-4 rounded-2xl bg-[#F7F5F0]/70 hover:bg-[#EFECE6] active:scale-[0.99] motion-reduce:transform-none dark:bg-[#2B2826] dark:hover:bg-[#35312F] border border-[#E7E1D8] dark:border-[#383431] disabled:opacity-60 disabled:pointer-events-none text-[#292725] dark:text-[#F4F1EA] font-bold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer"
+                  >
+                    {googleSubmitting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin text-[#743B46] dark:text-[#E5B9C0]" />
+                        <span>جاري الاتصال بـ Google...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            fill="#4285F4"
+                            d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82Z"
+                          />
+                          <path
+                            fill="#34A853"
+                            d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24Z"
+                          />
+                          <path
+                            fill="#FBBC05"
+                            d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.13-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09Z"
+                          />
+                          <path
+                            fill="#EA4335"
+                            d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09c.95-2.85 3.6-4.96 6.73-4.96Z"
+                          />
+                        </svg>
+                        <span>حساب Google</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* Biometric Trigger Button */}
+                  {mode === 'login' && (
+                    <button
+                      type="button"
+                      disabled={submitting || googleSubmitting || biometricSubmitting}
+                      onClick={handleBiometricClick}
+                      title={
+                        biometricConfig?.enabled
+                          ? `الدخول بالبصمة (${biometricConfig.userEmail})`
+                          : 'تفعيل أو استخدام البصمة'
+                      }
+                      aria-label="الدخول بالبصمة"
+                      className={`min-h-[48px] min-w-[48px] px-3.5 rounded-2xl border flex items-center justify-center transition-all duration-150 cursor-pointer shrink-0 ${
+                        biometricConfig?.enabled
+                          ? 'bg-[#F6EFE2] hover:bg-[#EFE4CF] dark:bg-[#2E261B] border-[#DFC9A4] dark:border-[#5C4930] text-[#A77B35]'
+                          : 'bg-[#F7F5F0]/70 hover:bg-[#EFECE6] dark:bg-[#2B2826] dark:hover:bg-[#35312F] border-[#E7E1D8] dark:border-[#383431] text-[#77716B] hover:text-[#743B46] dark:text-[#ACA59C] dark:hover:text-[#E5B9C0]'
+                      }`}
+                    >
+                      {biometricSubmitting ? (
+                        <RefreshCw className="w-5 h-5 animate-spin" />
+                      ) : (
+                        <Fingerprint className="w-5 h-5" />
+                      )}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}
