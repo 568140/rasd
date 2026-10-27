@@ -2,6 +2,7 @@
  * Hierarchical Geographical Service for RASD
  * Governorate (المحافظة) -> Directorate (المديرية) -> Zone / Neighborhood (الحي / الحارة / المربع)
  */
+import { YEMEN_LOCATIONS_HIERARCHY } from '../utils/yemenLocations';
 
 export interface GeoGovernorate {
   id: string;
@@ -20,49 +21,53 @@ export interface GeoZone {
   name: string;
 }
 
-export const DEFAULT_GOVERNORATES: GeoGovernorate[] = [
-  { id: 'gov_sanaa', name: 'أمانة العاصمة / صنعاء' },
-  { id: 'gov_aden', name: 'محافظة عدن' },
-  { id: 'gov_taiz', name: 'محافظة تعز' },
-  { id: 'gov_hod', name: 'محافظة الحديدة' },
-  { id: 'gov_had', name: 'محافظة حضرموت' },
-];
+export const DEFAULT_GOVERNORATES: GeoGovernorate[] = YEMEN_LOCATIONS_HIERARCHY.map((g) => ({
+  id: g.id === 'gov_amanat_sanaa' ? 'gov_sanaa' : g.id,
+  name: g.name,
+}));
 
-export const DEFAULT_DIRECTORATES: GeoDirectorate[] = [
-  // Sana'a Directorates
-  { id: 'dir_thawra', governorateId: 'gov_sanaa', name: 'مديرية الثورة' },
-  { id: 'dir_bani_harith', governorateId: 'gov_sanaa', name: 'مديرية بني الحارث' },
-  { id: 'dir_sabeen', governorateId: 'gov_sanaa', name: 'مديرية السبعين' },
-  { id: 'dir_wahdah', governorateId: 'gov_sanaa', name: 'مديرية الوحدة' },
-  { id: 'dir_safia', governorateId: 'gov_sanaa', name: 'مديرية الصافية' },
-  { id: 'dir_main', governorateId: 'gov_sanaa', name: 'مديرية معين' },
+export const DEFAULT_DIRECTORATES: GeoDirectorate[] = YEMEN_LOCATIONS_HIERARCHY.flatMap((g) => {
+  const govId = g.id === 'gov_amanat_sanaa' ? 'gov_sanaa' : g.id;
+  return g.districts.map((d, idx) => {
+    let dirId = `dir_${govId}_${idx}`;
+    if (d.name === 'مديرية الثورة') dirId = 'dir_thawra';
+    else if (d.name === 'مديرية بني الحارث') dirId = 'dir_bani_harith';
+    else if (d.name === 'مديرية السبعين') dirId = 'dir_sabeen';
+    else if (d.name === 'مديرية الوحدة') dirId = 'dir_wahdah';
+    else if (d.name === 'مديرية الصافية') dirId = 'dir_safia';
+    else if (d.name === 'مديرية معين') dirId = 'dir_main';
+    else if (d.name === 'مديرية صيرة (كريتر)') dirId = 'dir_crater';
+    else if (d.name === 'مديرية المنصورة') dirId = 'dir_mansoura';
+    else if (d.name === 'مديرية خور مكسر') dirId = 'dir_khormaksar';
+    else if (d.name === 'مديرية المعلا') dirId = 'dir_mualla';
+    else if (d.name === 'مديرية التواهي') dirId = 'dir_tawahi';
+    else if (d.name === 'مديرية الشيخ عثمان') dirId = 'dir_sheikh_othman';
 
-  // Aden Directorates
-  { id: 'dir_crater', governorateId: 'gov_aden', name: 'مديرية صيرة (كريتر)' },
-  { id: 'dir_mansoura', governorateId: 'gov_aden', name: 'مديرية المنصورة' },
-  { id: 'dir_khormaksar', governorateId: 'gov_aden', name: 'مديرية خور مكسر' },
-  { id: 'dir_mualla', governorateId: 'gov_aden', name: 'مديرية المعلا' },
-  { id: 'dir_tawahi', governorateId: 'gov_aden', name: 'مديرية التواهي' },
-  { id: 'dir_sheikh_othman', governorateId: 'gov_aden', name: 'مديرية الشيخ عثمان' },
-];
+    return {
+      id: dirId,
+      governorateId: govId,
+      name: d.name,
+    };
+  });
+});
 
-export const DEFAULT_ZONES: GeoZone[] = [
-  // Under Bani Harith & Thawra (Sana'a)
-  { id: 'zone_rawdah', directorateId: 'dir_bani_harith', name: 'الروضة' },
-  { id: 'zone_souq_inab', directorateId: 'dir_bani_harith', name: 'سوق العنب' },
-  { id: 'zone_quraish', directorateId: 'dir_bani_harith', name: 'حارة قريش' },
-  { id: 'zone_matar', directorateId: 'dir_bani_harith', name: 'حي المطار' },
-  { id: 'zone_hasabah', directorateId: 'dir_thawra', name: 'الحصبة' },
-  { id: 'zone_jaraf', directorateId: 'dir_thawra', name: 'حي الجراف' },
-  { id: 'zone_tahrir', directorateId: 'dir_wahdah', name: 'حي التحرير' },
+export const DEFAULT_ZONES: GeoZone[] = YEMEN_LOCATIONS_HIERARCHY.flatMap((g) => {
+  const govId = g.id === 'gov_amanat_sanaa' ? 'gov_sanaa' : g.id;
+  return g.districts.flatMap((d, dIdx) => {
+    const matchedDir = DEFAULT_DIRECTORATES.find(
+      (dir) => dir.governorateId === govId && dir.name === d.name
+    );
+    const dirId = matchedDir ? matchedDir.id : `dir_${govId}_${dIdx}`;
 
-  // Under Mansoura & Crater (Aden)
-  { id: 'zone_rimy', directorateId: 'dir_mansoura', name: 'حي ريمي' },
-  { id: 'zone_qahera', directorateId: 'dir_mansoura', name: 'حي القاهرة' },
-  { id: 'zone_saada', directorateId: 'dir_khormaksar', name: 'حي السعادة' },
-  { id: 'zone_mallaha', directorateId: 'dir_khormaksar', name: 'حي الملاحات' },
-  { id: 'zone_aidroos', directorateId: 'dir_crater', name: 'حي العيدروس' },
-];
+    return d.subDistricts.flatMap((s, sIdx) =>
+      s.neighborhoods.map((n, nIdx) => ({
+        id: `zone_${dirId}_${sIdx}_${nIdx}`,
+        directorateId: dirId,
+        name: n,
+      }))
+    );
+  });
+});
 
 /**
  * Parses free text address into geographical parts if matching known zones
@@ -96,7 +101,10 @@ export function detectGeographyFromText(text: string): {
   }
 
   for (const g of DEFAULT_GOVERNORATES) {
-    if (text.includes(g.name) || text.includes(g.name.replace('محافظة ', '').replace('أمانة العاصمة / ', ''))) {
+    if (
+      text.includes(g.name) ||
+      text.includes(g.name.replace('محافظة ', '').replace('أمانة العاصمة ', ''))
+    ) {
       result.governorate = g;
       return result;
     }

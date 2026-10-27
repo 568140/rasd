@@ -44,6 +44,7 @@ import {
   normalizeFloorLabel,
 } from '../utils/propertyFloors';
 import { resolvePropertyBackTransition } from '../utils/taxpayerNotes';
+import { CascadingLocationSelector } from './CascadingLocationSelector';
 
 const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   residential: 'سكني',
@@ -215,14 +216,15 @@ export const PropertiesScreen: React.FC = () => {
       setActiveScreen('taxpayers');
       return;
     }
+    const firstTp = taxpayers[0];
     setEditingProperty(null);
-    setTaxpayerId(taxpayers[0]?.id || '');
+    setTaxpayerId(firstTp?.id || '');
     setTitle('');
     setCode(`PR-${Math.floor(1000 + Math.random() * 9000)}`);
     setPropertyType('commercial');
     setStatus('active');
-    setRegion(workspace?.regionName || 'صنعاء');
-    setAddress('');
+    setRegion(firstTp?.region || workspace?.regionName || 'أمانة العاصمة صنعاء');
+    setAddress(firstTp?.address || '');
     setAreaSqm('250');
     setFloorsCount('4');
     setHasBasement(false);
@@ -1486,28 +1488,17 @@ export const PropertiesScreen: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">المنطقة / المديرية *</label>
-                    <input
-                      type="text"
-                      required
-                      value={region}
-                      onChange={(e) => setRegion(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">العنوان / الشارع *</label>
-                    <input
-                      type="text"
-                      required
-                      value={address}
-                      onChange={(e) => setAddress(e.target.value)}
-                      className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                    />
-                  </div>
-                </div>
+                <CascadingLocationSelector
+                  region={region}
+                  address={address}
+                  onChange={({ region: nextReg, address: nextAddr }) => {
+                    setRegion(nextReg);
+                    setAddress(nextAddr);
+                  }}
+                  title="موقع العقار (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                  streetPlaceholder="اسم الشارع، رقم المبنى، أو المعلم القريب للعقار"
+                  streetRequired
+                />
 
                 <div>
                   <label className="block text-xs font-semibold mb-1">ملاحظات إضافية</label>
@@ -1786,7 +1777,17 @@ export const PropertiesScreen: React.FC = () => {
                 <select
                   required
                   value={taxpayerId}
-                  onChange={(e) => setTaxpayerId(e.target.value)}
+                  onChange={(e) => {
+                    const nextTpId = e.target.value;
+                    setTaxpayerId(nextTpId);
+                    if (!editingProperty) {
+                      const tp = taxpayers.find((t) => t.id === nextTpId);
+                      if (tp) {
+                        if (tp.region) setRegion(tp.region);
+                        if (tp.address) setAddress(tp.address);
+                      }
+                    }
+                  }}
                   className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
                 >
                   {taxpayers.map((tp) => (
@@ -1899,29 +1900,17 @@ export const PropertiesScreen: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold mb-1">المنطقة / المدينة *</label>
-                  <input
-                    type="text"
-                    required
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold mb-1">العنوان التفصيلي *</label>
-                  <input
-                    type="text"
-                    required
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    placeholder="الحي، الشارع"
-                    className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                  />
-                </div>
-              </div>
+              <CascadingLocationSelector
+                region={region}
+                address={address}
+                onChange={({ region: nextReg, address: nextAddr }) => {
+                  setRegion(nextReg);
+                  setAddress(nextAddr);
+                }}
+                title="موقع العقار (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                streetPlaceholder="اسم الشارع، رقم المبنى، أو المعلم القريب للعقار"
+                streetRequired
+              />
 
               <div>
                 <label className="block text-xs font-semibold mb-1">ملاحظات إضافية</label>

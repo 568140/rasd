@@ -29,6 +29,7 @@ import {
   DEFAULT_ZONES,
   detectGeographyFromText,
 } from '../services/geographyService';
+import { CascadingLocationSelector } from './CascadingLocationSelector';
 
 const PURPOSE_LABELS: Record<VisitPurpose, string> = {
   initial_survey: 'مسح ميداني أولي وحصر',
@@ -83,6 +84,8 @@ export const FieldVisitsScreen: React.FC = () => {
   const [govId, setGovId] = useState('gov_sanaa');
   const [dirId, setDirId] = useState('dir_bani_harith');
   const [zoneName, setZoneName] = useState('الروضة');
+  const [visitRegion, setVisitRegion] = useState('أمانة العاصمة صنعاء - مديرية بني الحارث');
+  const [visitAddress, setVisitAddress] = useState('عزلة الروضة - الروضة');
   const [latitude, setLatitude] = useState('');
   const [longitude, setLongitude] = useState('');
   const [photoSummary, setPhotoSummary] = useState('');
@@ -102,13 +105,16 @@ export const FieldVisitsScreen: React.FC = () => {
     return DEFAULT_DIRECTORATES.filter((d) => d.governorateId === filterGovId);
   }, [filterGovId]);
 
-  const formDirectorates = useMemo(() => {
-    return DEFAULT_DIRECTORATES.filter((d) => d.governorateId === govId);
-  }, [govId]);
-
-  const formZones = useMemo(() => {
-    return DEFAULT_ZONES.filter((z) => z.directorateId === dirId);
-  }, [dirId]);
+  const availableFilterZones = useMemo(() => {
+    if (filterDirId !== 'all') {
+      return DEFAULT_ZONES.filter((z) => z.directorateId === filterDirId);
+    }
+    if (filterGovId !== 'all') {
+      const dirIds = new Set(availableDirectorates.map((d) => d.id));
+      return DEFAULT_ZONES.filter((z) => dirIds.has(z.directorateId));
+    }
+    return DEFAULT_ZONES;
+  }, [filterGovId, filterDirId, availableDirectorates]);
 
   // Daily Plan Target Zones Counter Metrics (Al-Inab, Al-Rawdah, Haret Quraish, etc.)
   const dailyPlanMetrics = useMemo(() => {
@@ -165,15 +171,29 @@ export const FieldVisitsScreen: React.FC = () => {
 
         // Geographical cascading filters
         if (filterGovId !== 'all') {
-          const detected = detectGeographyFromText(`${v.zone || ''} ${v.propertyTitle || ''} ${v.notes || ''}`);
-          if (v.governorate && v.governorate !== filterGovId) return false;
-          if (!v.governorate && detected.governorate?.id !== filterGovId) return false;
+          const selectedGov = DEFAULT_GOVERNORATES.find((g) => g.id === filterGovId);
+          const detected = detectGeographyFromText(
+            `${v.governorate || ''} ${v.directorate || ''} ${v.zone || ''} ${v.propertyTitle || ''} ${v.notes || ''}`
+          );
+          const matchesGovId = v.governorate === filterGovId || detected.governorate?.id === filterGovId;
+          const matchesGovName =
+            selectedGov &&
+            ((v.governorate && v.governorate.includes(selectedGov.name)) ||
+              (v.zone && v.zone.includes(selectedGov.name)));
+          if (!matchesGovId && !matchesGovName) return false;
         }
 
         if (filterDirId !== 'all') {
-          const detected = detectGeographyFromText(`${v.zone || ''} ${v.propertyTitle || ''} ${v.notes || ''}`);
-          if (v.directorate && v.directorate !== filterDirId) return false;
-          if (!v.directorate && detected.directorate?.id !== filterDirId) return false;
+          const selectedDir = DEFAULT_DIRECTORATES.find((d) => d.id === filterDirId);
+          const detected = detectGeographyFromText(
+            `${v.directorate || ''} ${v.zone || ''} ${v.propertyTitle || ''} ${v.notes || ''}`
+          );
+          const matchesDirId = v.directorate === filterDirId || detected.directorate?.id === filterDirId;
+          const matchesDirName =
+            selectedDir &&
+            ((v.directorate && v.directorate.includes(selectedDir.name)) ||
+              (v.zone && v.zone.includes(selectedDir.name)));
+          if (!matchesDirId && !matchesDirName) return false;
         }
 
         if (filterZoneName !== 'all') {
@@ -207,10 +227,17 @@ export const FieldVisitsScreen: React.FC = () => {
     setPurpose('periodic_inspection');
     setStatus('planned');
 
-    const geo = detectGeographyFromText(defaultProp.address || defaultProp.region || '');
+    const initReg = defaultProp.region || 'أمانة العاصمة صنعاء - مديرية بني الحارث';
+    const initAddr = defaultProp.address || 'عزلة الروضة - الروضة';
+    setVisitRegion(initReg);
+    setVisitAddress(initAddr);
+
+    const geo = detectGeographyFromText(`${initReg} ${initAddr}`);
     setGovId(geo.governorate?.id || 'gov_sanaa');
     setDirId(geo.directorate?.id || 'dir_bani_harith');
-    setZoneName(geo.zone?.name || 'الروضة');
+    setZoneName(
+      [initReg, initAddr].filter(Boolean).join(' — ') || geo.zone?.name || 'الروضة'
+    );
 
     setLatitude(defaultProp.hasCoordinates ? String(defaultProp.latitude) : '');
     setLongitude(defaultProp.hasCoordinates ? String(defaultProp.longitude) : '');
@@ -490,7 +517,7 @@ export const FieldVisitsScreen: React.FC = () => {
             className="min-h-[40px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
           >
             <option value="all">جميع الأحياء والمربعات</option>
-            {DEFAULT_ZONES.map((z) => (
+            {availableFilterZones.map((z) => (
               <option key={z.id} value={z.name}>
                 {z.name}
               </option>
@@ -694,10 +721,19 @@ export const FieldVisitsScreen: React.FC = () => {
                     setPropertyId(id);
                     const prop = properties.find((p) => p.id === id);
                     if (prop) {
-                      const geo = detectGeographyFromText(prop.address || prop.region || '');
+                      const nextReg = prop.region || 'أمانة العاصمة صنعاء';
+                      const nextAddr = prop.address || '';
+                      setVisitRegion(nextReg);
+                      setVisitAddress(nextAddr);
+                      const geo = detectGeographyFromText(`${nextReg} ${nextAddr}`);
                       if (geo.governorate) setGovId(geo.governorate.id);
                       if (geo.directorate) setDirId(geo.directorate.id);
-                      if (geo.zone) setZoneName(geo.zone.name);
+                      setZoneName(
+                        [nextReg, nextAddr].filter(Boolean).join(' — ') ||
+                          geo.zone?.name ||
+                          nextAddr ||
+                          nextReg
+                      );
                       if (prop.hasCoordinates) {
                         setLatitude(String(prop.latitude));
                         setLongitude(String(prop.longitude));
@@ -735,63 +771,36 @@ export const FieldVisitsScreen: React.FC = () => {
                 </select>
               </div>
 
-              {/* Geographical Hierarchy */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    المحافظة
-                  </label>
-                  <select
-                    value={govId}
-                    onChange={(e) => {
-                      setGovId(e.target.value);
-                      const dirs = DEFAULT_DIRECTORATES.filter((d) => d.governorateId === e.target.value);
-                      if (dirs[0]) {
-                        setDirId(dirs[0].id);
-                        const zones = DEFAULT_ZONES.filter((z) => z.directorateId === dirs[0].id);
-                        if (zones[0]) setZoneName(zones[0].name);
-                      }
-                    }}
-                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                  >
-                    {DEFAULT_GOVERNORATES.map((g) => (
-                      <option key={g.id} value={g.id}>{g.name}</option>
-                    ))}
-                  </select>
-                </div>
+              {/* Cascading Geographical Hierarchy (Governorate -> District -> Sub-district -> Neighborhood -> Street) */}
+              <CascadingLocationSelector
+                region={visitRegion}
+                address={visitAddress}
+                onChange={(loc) => {
+                  setVisitRegion(loc.region);
+                  setVisitAddress(loc.address);
+                  const matchedGov = DEFAULT_GOVERNORATES.find(
+                    (g) => g.name === loc.governorate || loc.governorate.includes(g.name)
+                  );
+                  setGovId(matchedGov ? matchedGov.id : loc.governorate || 'gov_sanaa');
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    المديرية
-                  </label>
-                  <select
-                    value={dirId}
-                    onChange={(e) => {
-                      setDirId(e.target.value);
-                      const zones = DEFAULT_ZONES.filter((z) => z.directorateId === e.target.value);
-                      if (zones[0]) setZoneName(zones[0].name);
-                    }}
-                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                  >
-                    {formDirectorates.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </select>
-                </div>
+                  const matchedDir = DEFAULT_DIRECTORATES.find(
+                    (d) => d.name === loc.district || loc.district.includes(d.name)
+                  );
+                  setDirId(matchedDir ? matchedDir.id : loc.district || '');
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    الحي / المربع
-                  </label>
-                  <input
-                    type="text"
-                    value={zoneName}
-                    onChange={(e) => setZoneName(e.target.value)}
-                    placeholder="مثال: الروضة، سوق العنب"
-                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                  />
-                </div>
-              </div>
+                  const formattedZone = [
+                    loc.district,
+                    loc.subDistrict,
+                    loc.neighborhood,
+                    loc.streetAddress,
+                  ]
+                    .filter(Boolean)
+                    .join(' - ');
+                  setZoneName(formattedZone || loc.zoneLabel || loc.region);
+                }}
+                title="موقع المحضر / الزيارة الميدانية (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                streetPlaceholder="الشارع أو المعلم التفصيلي لموقع المحضر الميداني..."
+              />
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

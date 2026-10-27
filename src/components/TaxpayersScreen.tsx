@@ -80,6 +80,7 @@ import {
   getAdenTimeString,
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
+import { CascadingLocationSelector } from './CascadingLocationSelector';
 
 const STATUS_LABELS: Record<TaxpayerStatus, string> = {
   active: 'نشط',
@@ -359,6 +360,11 @@ export const TaxpayersScreen: React.FC = () => {
   const [visitStatus, setVisitStatus] = useState<VisitStatus>('completed');
   const [visitLat, setVisitLat] = useState('');
   const [visitLng, setVisitLng] = useState('');
+  const [visitRegion, setVisitRegion] = useState('');
+  const [visitAddress, setVisitAddress] = useState('');
+  const [visitGovName, setVisitGovName] = useState('');
+  const [visitDistName, setVisitDistName] = useState('');
+  const [visitZoneLabel, setVisitZoneLabel] = useState('');
   const [visitPhotoSummary, setVisitPhotoSummary] = useState('');
   const [visitNotes, setVisitNotes] = useState('');
 
@@ -1309,6 +1315,11 @@ export const TaxpayersScreen: React.FC = () => {
     setVisitTime(new Date().toTimeString().slice(0, 5));
     setVisitPurpose('periodic_inspection');
     setVisitStatus('completed');
+    setVisitRegion(chosenProp?.region || selectedTaxpayer.region || 'أمانة العاصمة صنعاء');
+    setVisitAddress(chosenProp?.address || selectedTaxpayer.address || '');
+    setVisitGovName('');
+    setVisitDistName('');
+    setVisitZoneLabel(chosenProp?.address || selectedTaxpayer.address || chosenProp?.region || '');
     setVisitLat(chosenProp?.hasCoordinates ? String(chosenProp.latitude) : '');
     setVisitLng(chosenProp?.hasCoordinates ? String(chosenProp.longitude) : '');
     setVisitPhotoSummary('');
@@ -1332,6 +1343,8 @@ export const TaxpayersScreen: React.FC = () => {
       lngNum <= 180 &&
       (latNum !== 0 || lngNum !== 0);
 
+    const fullLocationLabel = [visitRegion, visitAddress].filter(Boolean).join(' — ');
+
     setSubmitting(true);
     try {
       await addFieldVisit({
@@ -1348,6 +1361,9 @@ export const TaxpayersScreen: React.FC = () => {
         hasCoordinates: hasCoords,
         photoSummary: visitPhotoSummary || 'معاينة ميدانية موثقة',
         notes: visitNotes,
+        governorate: visitGovName || visitRegion,
+        directorate: visitDistName || visitRegion,
+        zone: visitZoneLabel || fullLocationLabel,
       });
       setIsVisitModalOpen(false);
       setDossierTab('visits_and_appointments');
@@ -2759,43 +2775,32 @@ export const TaxpayersScreen: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">نوع الاستخدام</label>
-                    <select
-                      value={propType}
-                      onChange={(e) => setPropType(e.target.value as PropertyType)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                    >
-                      {Object.entries(PROPERTY_TYPE_LABELS).map(([k, v]) => (
-                        <option key={k} value={k}>
-                          {v}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">المنطقة / المدينة *</label>
-                    <input
-                      type="text"
-                      required
-                      value={propRegion}
-                      onChange={(e) => setPropRegion(e.target.value)}
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1">العنوان / الشارع *</label>
-                    <input
-                      type="text"
-                      required
-                      value={propAddress}
-                      onChange={(e) => setPropAddress(e.target.value)}
-                      placeholder="مثال: شارع الثلاثين"
-                      className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
-                    />
-                  </div>
+                <div>
+                  <label className="block text-xs font-semibold mb-1">نوع الاستخدام</label>
+                  <select
+                    value={propType}
+                    onChange={(e) => setPropType(e.target.value as PropertyType)}
+                    className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                  >
+                    {Object.entries(PROPERTY_TYPE_LABELS).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+
+                <CascadingLocationSelector
+                  region={propRegion}
+                  address={propAddress}
+                  onChange={({ region: nextReg, address: nextAddr }) => {
+                    setPropRegion(nextReg);
+                    setPropAddress(nextAddr);
+                  }}
+                  title="موقع العقار (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                  streetPlaceholder="اسم الشارع أو المعلم القريب للعقار (مثال: شارع الثلاثين)"
+                  streetRequired
+                />
 
                 {/* Floors, Basement, Apartments, Shops, and Annexes */}
                 <div className="p-3.5 rounded-2xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 space-y-2.5">
@@ -3796,16 +3801,24 @@ export const TaxpayersScreen: React.FC = () => {
         {/* In-Dossier Record Field Visit Modal */}
         {isVisitModalOpen && (
           <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="w-full max-w-lg bg-white dark:bg-[#0D1829] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xl">
+            <div className="w-full max-w-xl bg-white dark:bg-[#0D1829] rounded-3xl p-6 border border-slate-200 dark:border-slate-800 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto">
               <h3 className="text-base font-extrabold text-[#0B192C] dark:text-white font-display">
-                تسجيل زيارة ميدانية — {selectedTaxpayer.fullName}
+                تسجيل محضر / زيارة ميدانية — {selectedTaxpayer.fullName}
               </h3>
               <form onSubmit={handleSaveVisitInDossier} className="space-y-3">
                 <div>
                   <label className="block text-xs font-semibold mb-1">العقار الذي تمت زيارته *</label>
                   <select
                     value={visitPropertyId}
-                    onChange={(e) => setVisitPropertyId(e.target.value)}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setVisitPropertyId(nextId);
+                      const chosen = tpProps.find((p) => p.id === nextId);
+                      if (chosen) {
+                        setVisitRegion(chosen.region || selectedTaxpayer.region || '');
+                        setVisitAddress(chosen.address || selectedTaxpayer.address || '');
+                      }
+                    }}
                     className="w-full min-h-[42px] px-3 rounded-xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
                   >
                     {tpProps.map((p) => (
@@ -3816,6 +3829,24 @@ export const TaxpayersScreen: React.FC = () => {
                     <option value="general_prop">زيارة عامة للمكلف ({selectedTaxpayer.fullName})</option>
                   </select>
                 </div>
+
+                <CascadingLocationSelector
+                  region={visitRegion}
+                  address={visitAddress}
+                  onChange={(loc) => {
+                    setVisitRegion(loc.region);
+                    setVisitAddress(loc.address);
+                    setVisitGovName(loc.governorate);
+                    setVisitDistName(loc.district);
+                    setVisitZoneLabel(
+                      [loc.subDistrict, loc.neighborhood, loc.streetAddress]
+                        .filter(Boolean)
+                        .join(' - ') || loc.zoneLabel
+                    );
+                  }}
+                  title="موقع المحضر / المعاينة الميدانية (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                  streetPlaceholder="الشارع أو المعلم التفصيلي لموقع المعاينة..."
+                />
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -5239,28 +5270,16 @@ export const TaxpayersScreen: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold mb-1">المنطقة / المديرية</label>
-                  <input
-                    type="text"
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    placeholder="صنعاء - حدة"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold mb-1">العنوان التفصيلي</label>
-                  <input
-                    type="text"
-                    value={address}
-                    onChange={(e) => setAddress(e.target.value)}
-                    placeholder="شارع الستين"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl bg-[#F4F6F9] dark:bg-slate-900 border border-[#E2E8F0] dark:border-slate-700 text-xs"
-                  />
-                </div>
-              </div>
+              <CascadingLocationSelector
+                region={region}
+                address={address}
+                onChange={({ region: nextReg, address: nextAddr }) => {
+                  setRegion(nextReg);
+                  setAddress(nextAddr);
+                }}
+                title="عنوان وموقع المكلف (المحافظة ← المديرية ← العزلة ← الحي ← الشارع)"
+                streetPlaceholder="الشارع أو العنوان التفصيلي (مثال: شارع الستين جوار جولة المصباحي)"
+              />
 
               <div>
                 <label className="block text-xs font-semibold mb-1">ملاحظات المكلف</label>
