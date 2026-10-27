@@ -1856,7 +1856,11 @@ export const MoreScreen: React.FC = () => {
             }`}
           >
             <LogOut className="w-4 h-4" />
-            <span>تسجيل الخروج الآمن ومسح الجلسة المحلية</span>
+            <span>
+              {biometricConfig?.enabled
+                ? 'تسجيل الخروج (مع بقاء الدخول السريع بالبصمة)'
+                : 'تسجيل الخروج الآمن ومسح الجلسة المحلية'}
+            </span>
           </button>
         ) : (
           <div
@@ -1867,7 +1871,7 @@ export const MoreScreen: React.FC = () => {
             <div className="text-xs font-bold text-rose-800 dark:text-rose-200">
               تأكيد تسجيل الخروج من الجلسة الحالية؟
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setConfirmLogout(false)}
@@ -1877,11 +1881,20 @@ export const MoreScreen: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={logout}
+                onClick={() => void logout()}
                 className="min-h-[34px] px-3.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold cursor-pointer"
               >
-                تأكيد الخروج
+                {biometricConfig?.enabled ? 'خروج (تبقى البصمة جاهزة)' : 'تأكيد الخروج'}
               </button>
+              {biometricConfig?.enabled && (
+                <button
+                  type="button"
+                  onClick={() => void logout({ forceFullSignOut: true, disableBiometricOnLogout: true })}
+                  className="min-h-[34px] px-3 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold cursor-pointer"
+                >
+                  خروج + إلغاء البصمة
+                </button>
+              )}
             </div>
           </div>
         )}

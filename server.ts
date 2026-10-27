@@ -575,13 +575,40 @@ async function startServer() {
 
   app.get('/api/admin/pending-registrations', (req, res) => {
     const wsId = typeof req.query?.workspaceId === 'string' ? req.query.workspaceId.trim() : '';
-    if (wsId) {
-      const single = pendingRegistrationsStore.get(wsId) || null;
+    const queryEmail =
+      typeof req.query?.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+    const queryUid = typeof req.query?.uid === 'string' ? req.query.uid.trim() : '';
+
+    if (wsId || queryEmail || queryUid) {
+      let matched = wsId ? pendingRegistrationsStore.get(wsId) || null : null;
+
+      // Also search by email or uid so if the user logged in via Google after registering by email (or cleared cookies),
+      // an active/decided registration is always found.
+      const allEntries = Array.from(pendingRegistrationsStore.values());
+      const matchedByIdentity = allEntries.find((item) => {
+        const emailMatch =
+          queryEmail &&
+          queryEmail !== 'user@rasd.app' &&
+          item.applicantEmail &&
+          item.applicantEmail.trim().toLowerCase() === queryEmail;
+        const uidMatch = queryUid && item.applicantUid && item.applicantUid === queryUid;
+        return Boolean(emailMatch || uidMatch);
+      });
+
+      if (
+        matchedByIdentity &&
+        (!matched ||
+          (matched.status === 'pending' &&
+            (matchedByIdentity.status === 'active' || matchedByIdentity.status === 'suspended')))
+      ) {
+        matched = matchedByIdentity;
+      }
+
       res.json({
         success: true,
-        request: single,
-        requests: single ? [single] : [],
-        count: single ? 1 : 0,
+        request: matched,
+        requests: matched ? [matched] : [],
+        count: matched ? 1 : 0,
       });
       return;
     }
@@ -620,15 +647,36 @@ async function startServer() {
     } = body;
 
     const wsId = workspaceId || (applicantUid ? `ws_${applicantUid}` : `ws_req_${Date.now()}`);
-    const existing = pendingRegistrationsStore.get(wsId);
+    const normalizedIncomingEmail = (applicantEmail || '').trim().toLowerCase();
 
-    // If this workspace was already decided (approved/active or rejected/suspended), preserve that decision
+    let existing = pendingRegistrationsStore.get(wsId);
+    if (!existing && (normalizedIncomingEmail || applicantUid)) {
+      existing = Array.from(pendingRegistrationsStore.values()).find((item) => {
+        const emailMatch =
+          normalizedIncomingEmail &&
+          normalizedIncomingEmail !== 'user@rasd.app' &&
+          item.applicantEmail &&
+          item.applicantEmail.trim().toLowerCase() === normalizedIncomingEmail;
+        const uidMatch = applicantUid && item.applicantUid && item.applicantUid === applicantUid;
+        return Boolean(emailMatch || uidMatch);
+      });
+    }
+
+    // If this workspace or user email was already decided (approved/active or rejected/suspended), preserve that decision
     // unless an explicit reset is requested without upsertOnlyIfMissing.
     if (
       existing &&
       (existing.status === 'active' || existing.status === 'suspended') &&
       (upsertOnlyIfMissing || !status || status === 'pending')
     ) {
+      if (wsId && !pendingRegistrationsStore.has(wsId)) {
+        pendingRegistrationsStore.set(wsId, {
+          ...existing,
+          workspaceId: wsId,
+          applicantUid: applicantUid || existing.applicantUid,
+        });
+        persistRegistrationsToFile();
+      }
       res.json({
         success: true,
         alreadyDecided: true,
@@ -760,6 +808,32 @@ async function startServer() {
     };
 
     pendingRegistrationsStore.set(workspaceId, updatedItem);
+    const normEmail = updatedItem.applicantEmail.trim().toLowerCase();
+    for (const [keyWsId, entry] of pendingRegistrationsStore.entries()) {
+      if (keyWsId === workspaceId) continue;
+      const sameEmail =
+        normEmail &&
+        normEmail !== 'user@rasd.app' &&
+        entry.applicantEmail &&
+        entry.applicantEmail.trim().toLowerCase() === normEmail;
+      const sameUid =
+        updatedItem.applicantUid &&
+        entry.applicantUid &&
+        entry.applicantUid === updatedItem.applicantUid;
+      if (sameEmail || sameUid) {
+        pendingRegistrationsStore.set(keyWsId, {
+          ...entry,
+          status: nextStatus,
+          requestedPlanId: updatedItem.requestedPlanId,
+          maxMembers: updatedItem.maxMembers,
+          startsAtIso: updatedItem.startsAtIso,
+          expiresAtIso: updatedItem.expiresAtIso,
+          notes: updatedItem.notes,
+          reviewedAtIso: updatedItem.reviewedAtIso,
+          reviewedByUid: updatedItem.reviewedByUid,
+        });
+      }
+    }
     persistRegistrationsToFile();
 
     res.json({ success: true, updated: true, request: updatedItem });

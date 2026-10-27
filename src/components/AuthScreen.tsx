@@ -17,12 +17,13 @@ import {
   Info,
 } from 'lucide-react';
 import { useRasd } from '../context/RasdContext';
-import { translateFirebaseError } from '../services/firebase';
+import { auth, translateFirebaseError } from '../services/firebase';
 import {
   BiometricConfig,
   getBiometricConfig,
   enrollBiometric,
   verifyBiometric,
+  disableBiometric,
   saveEncryptedCredentialsForBiometric,
   markSessionBiometricUnlocked,
 } from '../services/biometricService';
@@ -37,6 +38,7 @@ export const AuthScreen: React.FC = () => {
     loginWithEmail,
     registerWithEmail,
     resetPassword,
+    resumeSessionWithBiometric,
     showToast,
   } = useRasd();
 
@@ -196,10 +198,11 @@ export const AuthScreen: React.FC = () => {
       markSessionBiometricUnlocked();
       if (enrollBiometricOnLogin) {
         try {
+          const liveUser = auth.currentUser;
           const enrolled = await enrollBiometric({
-            uid: trimmedEmail || 'google-user',
-            email: trimmedEmail || 'حساب Google',
-            displayName: trimmedEmail || 'مستخدم Google',
+            uid: liveUser?.uid || trimmedEmail || 'google-user',
+            email: liveUser?.email || trimmedEmail || 'حساب Google',
+            displayName: liveUser?.displayName || trimmedEmail || 'مستخدم Google',
             authMethod: 'google',
             requireUnlockOnLaunch: true,
           });
@@ -236,30 +239,11 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    if (!isOnline) {
-      setLocalError('يتطلب تسجيل الدخول بالبصمة اتصالًا بالإنترنت لاستئناف جلسة Firebase.');
-      return;
-    }
-
     setBiometricSubmitting(true);
     try {
       const result = await verifyBiometric();
       if (result.verified) {
-        if (result.decryptedCredentials?.email && result.decryptedCredentials?.password) {
-          await loginWithEmail(
-            result.decryptedCredentials.email,
-            result.decryptedCredentials.password
-          );
-          showToast('تم التحقق من البصمة وتسجيل الدخول بنجاح.', 'success');
-        } else if (result.config.authMethod === 'google') {
-          await loginWithGoogle();
-          showToast('تم التحقق من البصمة وتسجيل الدخول عبر Google بنجاح.', 'success');
-        } else {
-          setEmail(result.config.userEmail);
-          setBiometricNotice(
-            'تم التحقق من بصمتك بنجاح! أدخل كلمة المرور هذه المرة فقط ليتم حفظها مشفرة مع البصمة للدخول الفوري في المرات القادمة.'
-          );
-        }
+        await resumeSessionWithBiometric(result.decryptedCredentials);
       }
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'تعذر التحقق من البصمة.');
@@ -766,26 +750,42 @@ export const AuthScreen: React.FC = () => {
 
               <div className="flex flex-col gap-2.5">
                 {mode === 'login' && biometricConfig?.enabled && (
-                  <button
-                    type="button"
-                    disabled={submitting || googleSubmitting || biometricSubmitting}
-                    onClick={handleBiometricClick}
-                    className="w-full min-h-[48px] px-4 rounded-2xl bg-[#F6EFE2] hover:bg-[#EFE4CF] active:scale-[0.99] dark:bg-[#2E261B] dark:hover:bg-[#3A3022] border border-[#DFC9A4] dark:border-[#5C4930] text-[#5C3F14] dark:text-[#E5C17B] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer disabled:opacity-60"
-                  >
-                    {biometricSubmitting ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin text-[#A77B35]" />
-                        <span>جاري التحقق من بصمة الجهاز...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Fingerprint className="w-5 h-5 text-[#A77B35]" />
-                        <span>
-                          الدخول السريع بالبصمة ({biometricConfig.userDisplayName || biometricConfig.userEmail})
-                        </span>
-                      </>
-                    )}
-                  </button>
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      disabled={submitting || googleSubmitting || biometricSubmitting}
+                      onClick={handleBiometricClick}
+                      className="w-full min-h-[48px] px-4 rounded-2xl bg-[#F6EFE2] hover:bg-[#EFE4CF] active:scale-[0.99] dark:bg-[#2E261B] dark:hover:bg-[#3A3022] border border-[#DFC9A4] dark:border-[#5C4930] text-[#5C3F14] dark:text-[#E5C17B] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all duration-150 cursor-pointer disabled:opacity-60"
+                    >
+                      {biometricSubmitting ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin text-[#A77B35]" />
+                          <span>جاري التحقق من بصمة الجهاز...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Fingerprint className="w-5 h-5 text-[#A77B35]" />
+                          <span>
+                            الدخول السريع بالبصمة ({biometricConfig.userDisplayName || biometricConfig.userEmail})
+                          </span>
+                        </>
+                      )}
+                    </button>
+                    <div className="flex items-center justify-between px-1 text-[11px] text-[#77716B] dark:text-[#ACA59C]">
+                      <span>يعمل فورًا بلمسة البصمة (بإنترنت أو بدون إنترنت)</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          disableBiometric();
+                          setBiometricConfig(null);
+                          showToast('تم إلغاء تفعيل البصمة من هذا الجهاز.', 'info');
+                        }}
+                        className="font-bold text-[#8E352F] dark:text-[#F2B8B5] hover:underline cursor-pointer"
+                      >
+                        إلغاء تفعيل البصمة
+                      </button>
+                    </div>
+                  </div>
                 )}
 
                 <div className="flex items-center gap-2.5">

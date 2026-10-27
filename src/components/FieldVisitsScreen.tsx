@@ -59,6 +59,8 @@ export const FieldVisitsScreen: React.FC = () => {
     appointments,
     userProfile,
     isOnline,
+    addTaxpayer,
+    addProperty,
     addFieldVisit,
     updateFieldVisitStatus,
     setActiveScreen,
@@ -75,7 +77,16 @@ export const FieldVisitsScreen: React.FC = () => {
 
   // New Visit Form State
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [entryMode, setEntryMode] = useState<'existing' | 'direct'>('existing');
   const [propertyId, setPropertyId] = useState('');
+  const [directTaxpayerMode, setDirectTaxpayerMode] = useState<'new_taxpayer' | 'existing_taxpayer'>('new_taxpayer');
+  const [selectedDirectTaxpayerId, setSelectedDirectTaxpayerId] = useState('');
+  const [directTaxpayerName, setDirectTaxpayerName] = useState('');
+  const [directTaxpayerPhone, setDirectTaxpayerPhone] = useState('');
+  const [directTaxpayerNatId, setDirectTaxpayerNatId] = useState('');
+  const [directPropertyTitle, setDirectPropertyTitle] = useState('');
+  const [directPropertyType, setDirectPropertyType] = useState<'residential' | 'commercial' | 'mixed' | 'industrial' | 'agricultural'>('residential');
+  const [directUnitsCount, setDirectUnitsCount] = useState('');
   const [linkedAppointmentId, setLinkedAppointmentId] = useState('');
   const [visitDate, setVisitDate] = useState(() => getAdenTodayString());
   const [visitTime, setVisitTime] = useState(() => getAdenTimeString());
@@ -213,36 +224,55 @@ export const FieldVisitsScreen: React.FC = () => {
       .sort((a, b) => `${b.visitDate} ${b.visitTime}`.localeCompare(`${a.visitDate} ${a.visitTime}`));
   }, [fieldVisits, activeTab, filterGovId, filterDirId, filterZoneName, searchQuery, todayStr]);
 
-  const openNewVisitModal = () => {
-    if (properties.length === 0) {
-      showToast('يرجى إضافة عقار واحد على الأقل قبل توثيق زيارة ميدانية.', 'warning');
-      setActiveScreen('taxpayers');
-      return;
-    }
-    const defaultProp = properties[0];
-    setPropertyId(defaultProp.id);
+  const openNewVisitModal = (preferredMode?: 'existing' | 'direct') => {
     setLinkedAppointmentId('');
     setVisitDate(todayStr);
     setVisitTime(getAdenTimeString());
     setPurpose('periodic_inspection');
     setStatus('planned');
-
-    const initReg = defaultProp.region || 'أمانة العاصمة صنعاء - مديرية بني الحارث';
-    const initAddr = defaultProp.address || 'عزلة الروضة - الروضة';
-    setVisitRegion(initReg);
-    setVisitAddress(initAddr);
-
-    const geo = detectGeographyFromText(`${initReg} ${initAddr}`);
-    setGovId(geo.governorate?.id || 'gov_sanaa');
-    setDirId(geo.directorate?.id || 'dir_bani_harith');
-    setZoneName(
-      [initReg, initAddr].filter(Boolean).join(' — ') || geo.zone?.name || 'الروضة'
-    );
-
-    setLatitude(defaultProp.hasCoordinates ? String(defaultProp.latitude) : '');
-    setLongitude(defaultProp.hasCoordinates ? String(defaultProp.longitude) : '');
+    setDirectTaxpayerMode('new_taxpayer');
+    setSelectedDirectTaxpayerId(taxpayers[0]?.id || '');
+    setDirectTaxpayerName('');
+    setDirectTaxpayerPhone('');
+    setDirectTaxpayerNatId('');
+    setDirectPropertyTitle('');
+    setDirectPropertyType('residential');
+    setDirectUnitsCount('');
     setPhotoSummary('');
     setNotes('');
+
+    if (properties.length > 0 && preferredMode !== 'direct') {
+      setEntryMode('existing');
+      const defaultProp = properties[0];
+      setPropertyId(defaultProp.id);
+
+      const initReg = defaultProp.region || 'أمانة العاصمة صنعاء - مديرية بني الحارث';
+      const initAddr = defaultProp.address || 'عزلة الروضة - الروضة';
+      setVisitRegion(initReg);
+      setVisitAddress(initAddr);
+
+      const geo = detectGeographyFromText(`${initReg} ${initAddr}`);
+      setGovId(geo.governorate?.id || 'gov_sanaa');
+      setDirId(geo.directorate?.id || 'dir_bani_harith');
+      setZoneName(
+        [initReg, initAddr].filter(Boolean).join(' — ') || geo.zone?.name || 'الروضة'
+      );
+
+      setLatitude(defaultProp.hasCoordinates ? String(defaultProp.latitude) : '');
+      setLongitude(defaultProp.hasCoordinates ? String(defaultProp.longitude) : '');
+    } else {
+      setEntryMode('direct');
+      setPropertyId(properties[0]?.id || '');
+      const initReg = 'أمانة العاصمة صنعاء - مديرية بني الحارث';
+      const initAddr = 'عزلة الروضة - الروضة';
+      setVisitRegion(initReg);
+      setVisitAddress(initAddr);
+      setGovId('gov_sanaa');
+      setDirId('dir_bani_harith');
+      setZoneName([initReg, initAddr].filter(Boolean).join(' — '));
+      setLatitude('');
+      setLongitude('');
+    }
     setIsFormOpen(true);
   };
 
@@ -254,9 +284,7 @@ export const FieldVisitsScreen: React.FC = () => {
         setActiveTab('all');
       } else if (quickAction === 'open_add_visit') {
         sessionStorage.removeItem('rasd_quick_action');
-        if (properties.length > 0) {
-          openNewVisitModal();
-        }
+        openNewVisitModal();
       }
     } catch {
       // ignore storage errors
@@ -296,8 +324,6 @@ export const FieldVisitsScreen: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (submitting) return;
-    const prop = properties.find((p) => p.id === propertyId);
-    if (!prop) return;
 
     const latNum = parseFloat(latitude);
     const lngNum = parseFloat(longitude);
@@ -305,11 +331,89 @@ export const FieldVisitsScreen: React.FC = () => {
 
     setSubmitting(true);
     try {
+      let targetPropId = '';
+      let targetPropTitle = '';
+      let targetTaxpayerId = '';
+      let targetTaxpayerName = '';
+
+      if (entryMode === 'existing') {
+        const prop = properties.find((p) => p.id === propertyId);
+        if (!prop) {
+          showToast('يرجى اختيار العقار المستهدف أو التبديل إلى خيار الإدخال الفوري المباشر.', 'warning');
+          setSubmitting(false);
+          return;
+        }
+        targetPropId = prop.id;
+        targetPropTitle = prop.title;
+        targetTaxpayerId = prop.taxpayerId;
+        targetTaxpayerName = prop.taxpayerName;
+      } else {
+        // Direct Field Entry Mode (إدخال مباشر وتحرير محضر فوري لمكلف أو عقار غير مسجل مسبقاً)
+        const cleanPropTitle = directPropertyTitle.trim();
+        if (cleanPropTitle.length < 2) {
+          showToast('يرجى إدخال اسم أو وصف العقار الميداني (حرفان على الأقل).', 'warning');
+          setSubmitting(false);
+          return;
+        }
+
+        if (directTaxpayerMode === 'existing_taxpayer' && taxpayers.length > 0) {
+          const existingTp = taxpayers.find((t) => t.id === selectedDirectTaxpayerId);
+          if (!existingTp) {
+            showToast('يرجى اختيار المكلف من القائمة أو اختيار «مكلف جديد غير مسجل».', 'warning');
+            setSubmitting(false);
+            return;
+          }
+          targetTaxpayerId = existingTp.id;
+          targetTaxpayerName = existingTp.fullName;
+        } else {
+          const cleanTpName = directTaxpayerName.trim();
+          if (cleanTpName.length < 2) {
+            showToast('يرجى إدخال اسم المكلف (حرفان على الأقل) لتحرير المحضر الفوري.', 'warning');
+            setSubmitting(false);
+            return;
+          }
+          // Check if a taxpayer with the exact same name already exists to avoid duplicate clutter, or create a new one
+          const newTpId = await addTaxpayer({
+            fullName: cleanTpName,
+            internalCode: `TP-${Date.now().toString().slice(-5)}`,
+            nationalOrCommercialId: directTaxpayerNatId.trim(),
+            phone: directTaxpayerPhone.trim(),
+            email: '',
+            address: visitAddress || zoneName || 'عنوان ميداني',
+            region: visitRegion || 'أمانة العاصمة صنعاء',
+            status: 'active',
+            notes: notes.trim() ? `تم تسجيله ميدانياً عبر محضر فوري: ${notes.trim().slice(0, 200)}` : 'تم تسجيله ميدانياً عبر محضر زيارة فوري',
+          });
+          targetTaxpayerId = newTpId;
+          targetTaxpayerName = cleanTpName;
+        }
+
+        const parsedUnits = Math.max(0, parseInt(directUnitsCount, 10) || 0);
+        const newPropId = await addProperty({
+          taxpayerId: targetTaxpayerId,
+          taxpayerName: targetTaxpayerName,
+          title: cleanPropTitle,
+          code: `PR-${Date.now().toString().slice(-5)}`,
+          propertyType: directPropertyType,
+          status: 'active',
+          region: visitRegion || 'أمانة العاصمة صنعاء',
+          address: visitAddress || zoneName || 'عنوان ميداني',
+          latitude: hasCoords ? latNum : 0,
+          longitude: hasCoords ? lngNum : 0,
+          hasCoordinates: hasCoords,
+          unitsCount: parsedUnits,
+          areaSqm: 0,
+          notes: notes.trim() ? `محضر حصر ميداني فوري: ${notes.trim().slice(0, 250)}` : 'تمت إضافته مباشرة من شاشة المحاضر والزيارات الميدانية',
+        });
+        targetPropId = newPropId;
+        targetPropTitle = cleanPropTitle;
+      }
+
       await addFieldVisit({
-        propertyId: prop.id,
-        propertyTitle: prop.title,
-        taxpayerId: prop.taxpayerId,
-        taxpayerName: prop.taxpayerName,
+        propertyId: targetPropId,
+        propertyTitle: targetPropTitle,
+        taxpayerId: targetTaxpayerId,
+        taxpayerName: targetTaxpayerName,
         visitDate,
         visitTime,
         purpose,
@@ -355,14 +459,24 @@ export const FieldVisitsScreen: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openNewVisitModal}
-          className="min-h-[42px] px-4 rounded-2xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0D9488] dark:hover:bg-teal-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          <span>توثيق زيارة ميدانية</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => openNewVisitModal('existing')}
+            className="min-h-[42px] px-4 rounded-2xl bg-[#0B192C] hover:bg-[#132A46] dark:bg-[#0D9488] dark:hover:bg-teal-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            <span>توثيق زيارة ميدانية</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => openNewVisitModal('direct')}
+            className="min-h-[42px] px-4 rounded-2xl bg-teal-50 hover:bg-teal-100 dark:bg-teal-950/60 dark:hover:bg-teal-900/70 text-[#0D9488] dark:text-teal-300 border border-teal-200 dark:border-teal-800 text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer transition-colors"
+          >
+            <ClipboardCheck className="w-4 h-4" />
+            <span>محضر فوري (مكلف / عقار جديد)</span>
+          </button>
+        </div>
       </div>
 
       {/* Daily Plan Metrics Dashboard Card */}
@@ -709,46 +823,242 @@ export const FieldVisitsScreen: React.FC = () => {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4 pt-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  العقار المستهدف *
-                </label>
-                <select
-                  required
-                  value={propertyId}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    setPropertyId(id);
-                    const prop = properties.find((p) => p.id === id);
-                    if (prop) {
-                      const nextReg = prop.region || 'أمانة العاصمة صنعاء';
-                      const nextAddr = prop.address || '';
-                      setVisitRegion(nextReg);
-                      setVisitAddress(nextAddr);
-                      const geo = detectGeographyFromText(`${nextReg} ${nextAddr}`);
-                      if (geo.governorate) setGovId(geo.governorate.id);
-                      if (geo.directorate) setDirId(geo.directorate.id);
-                      setZoneName(
-                        [nextReg, nextAddr].filter(Boolean).join(' — ') ||
-                          geo.zone?.name ||
-                          nextAddr ||
-                          nextReg
-                      );
-                      if (prop.hasCoordinates) {
-                        setLatitude(String(prop.latitude));
-                        setLongitude(String(prop.longitude));
-                      }
+              {/* Dual Mode Selector: Existing Registered Property vs. Direct Instant Field Report */}
+              <div className="p-1.5 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (properties.length === 0) {
+                      showToast('لا توجد عقارات مسجلة حالياً؛ يمكنك الإدخال المباشر الفوري من هذه النافذة.', 'info');
+                      return;
+                    }
+                    setEntryMode('existing');
+                    if (!propertyId && properties[0]) {
+                      setPropertyId(properties[0].id);
                     }
                   }}
-                  className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                  className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    entryMode === 'existing'
+                      ? 'bg-[#0B192C] dark:bg-[#0D9488] text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-[#0B192C] dark:hover:text-white'
+                  }`}
                 >
-                  {properties.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.title} — {p.taxpayerName} ({p.region || 'عام'})
-                    </option>
-                  ))}
-                </select>
+                  <Building2 className="w-3.5 h-3.5 shrink-0" />
+                  <span>اختيار عقار / مكلف مسجل مسبقاً</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setEntryMode('direct')}
+                  className={`min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    entryMode === 'direct'
+                      ? 'bg-[#0D9488] dark:bg-teal-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-[#0D9488] dark:hover:text-teal-300'
+                  }`}
+                >
+                  <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>إدخال مباشر (محضر فوري لمكلف/عقار جديد)</span>
+                </button>
               </div>
+
+              {entryMode === 'existing' ? (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    العقار المستهدف (المسجل في النظام) *
+                  </label>
+                  <select
+                    required
+                    value={propertyId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setPropertyId(id);
+                      const prop = properties.find((p) => p.id === id);
+                      if (prop) {
+                        const nextReg = prop.region || 'أمانة العاصمة صنعاء';
+                        const nextAddr = prop.address || '';
+                        setVisitRegion(nextReg);
+                        setVisitAddress(nextAddr);
+                        const geo = detectGeographyFromText(`${nextReg} ${nextAddr}`);
+                        if (geo.governorate) setGovId(geo.governorate.id);
+                        if (geo.directorate) setDirId(geo.directorate.id);
+                        setZoneName(
+                          [nextReg, nextAddr].filter(Boolean).join(' — ') ||
+                            geo.zone?.name ||
+                            nextAddr ||
+                            nextReg
+                        );
+                        if (prop.hasCoordinates) {
+                          setLatitude(String(prop.latitude));
+                          setLongitude(String(prop.longitude));
+                        }
+                      }
+                    }}
+                    className="w-full min-h-[42px] px-3 rounded-2xl bg-[#F4F7FA] dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                  >
+                    {properties.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.title} — {p.taxpayerName} ({p.region || 'عام'})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-teal-50/50 dark:bg-teal-950/20 border border-teal-200/80 dark:border-teal-800/70 space-y-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <User className="w-4 h-4 text-[#0D9488] dark:text-teal-400" />
+                      <span className="text-xs font-bold text-[#0B192C] dark:text-white">
+                        بيانات المكلف والعقار للمحضر الفوري
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-teal-100 dark:bg-teal-900/60 text-teal-800 dark:text-teal-300">
+                      يُنشئ ملف المكلف والعقار ويربط المحضر تلقائياً
+                    </span>
+                  </div>
+
+                  {taxpayers.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDirectTaxpayerMode('new_taxpayer')}
+                        className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                          directTaxpayerMode === 'new_taxpayer'
+                            ? 'bg-[#0B192C] dark:bg-[#0D9488] text-white'
+                            : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                        }`}
+                      >
+                        + مكلف جديد غير مسجل مسبقاً
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDirectTaxpayerMode('existing_taxpayer');
+                          if (!selectedDirectTaxpayerId && taxpayers[0]) {
+                            setSelectedDirectTaxpayerId(taxpayers[0].id);
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                          directTaxpayerMode === 'existing_taxpayer'
+                            ? 'bg-[#0B192C] dark:bg-[#0D9488] text-white'
+                            : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                        }`}
+                      >
+                        اختيار مكلف مسجل (لعقار جديد)
+                      </button>
+                    </div>
+                  )}
+
+                  {directTaxpayerMode === 'existing_taxpayer' && taxpayers.length > 0 ? (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        اختر المكلف المسجل *
+                      </label>
+                      <select
+                        required
+                        value={selectedDirectTaxpayerId}
+                        onChange={(e) => setSelectedDirectTaxpayerId(e.target.value)}
+                        className="w-full min-h-[40px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      >
+                        {taxpayers.map((tp) => (
+                          <option key={tp.id} value={tp.id}>
+                            {tp.fullName} ({tp.internalCode || 'بدون رمز'})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                          اسم المكلف (المالك / الحائز) *
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={directTaxpayerName}
+                          onChange={(e) => setDirectTaxpayerName(e.target.value)}
+                          placeholder="مثال: محمد عبدالله صالح السنحاني..."
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
+                            رقم هاتف المكلف (اختياري)
+                          </label>
+                          <input
+                            type="tel"
+                            value={directTaxpayerPhone}
+                            onChange={(e) => setDirectTaxpayerPhone(e.target.value)}
+                            placeholder="77xxxxxxx"
+                            className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
+                            رقم الهوية / السجل (اختياري)
+                          </label>
+                          <input
+                            type="text"
+                            value={directTaxpayerNatId}
+                            onChange={(e) => setDirectTaxpayerNatId(e.target.value)}
+                            placeholder="رقم البطاقة أو السجل..."
+                            className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-teal-200/60 dark:border-teal-800/50 space-y-2.5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                        اسم أو وصف العقار في المحضر الميداني *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={directPropertyTitle}
+                        onChange={(e) => setDirectPropertyTitle(e.target.value)}
+                        placeholder="مثال: عمارة سكنية تجارية 4 أدوار / برج النور / مركز تجاري..."
+                        className="w-full min-h-[40px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
+                          تصنيف العقار
+                        </label>
+                        <select
+                          value={directPropertyType}
+                          onChange={(e) => setDirectPropertyType(e.target.value as any)}
+                          className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs"
+                        >
+                          <option value="residential">سكني</option>
+                          <option value="commercial">تجاري</option>
+                          <option value="mixed">مختلط (سكني / تجاري)</option>
+                          <option value="industrial">صناعي / مستودعات</option>
+                          <option value="agricultural">زراعي / أرض</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-400 mb-1">
+                          عدد الوحدات / الشقق التقديري (اختياري)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          value={directUnitsCount}
+                          onChange={(e) => setDirectUnitsCount(e.target.value)}
+                          placeholder="مثال: 8"
+                          className="w-full min-h-[38px] px-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Linked Appointment Selection (Independent Lifecycle) */}
               <div>

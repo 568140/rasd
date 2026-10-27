@@ -10,6 +10,8 @@ const BIOMETRIC_CONFIG_KEY = 'rasd_biometric_config_v1';
 const BIOMETRIC_VAULT_KEY = 'rasd_biometric_vault_v1';
 const BIOMETRIC_SESSION_UNLOCKED_KEY = 'rasd_biometric_session_unlocked_v1';
 const BIOMETRIC_MANUAL_LOCK_KEY = 'rasd_biometric_manual_lock_v1';
+const BIOMETRIC_SOFT_LOGOUT_KEY = 'rasd_biometric_soft_logout_v1';
+const BIOMETRIC_OFFLINE_SESSION_KEY = 'rasd_biometric_offline_session_v1';
 
 export interface BiometricConfig {
   enabled: boolean;
@@ -21,6 +23,16 @@ export interface BiometricConfig {
   requireUnlockOnLaunch: boolean;
   hasEncryptedCredentials: boolean;
   enrolledAt: string;
+}
+
+export interface BiometricOfflineSession {
+  uid: string;
+  email: string;
+  displayName: string;
+  activeWorkspaceId: string;
+  emailVerified: boolean;
+  isGoogleProvider: boolean;
+  savedAt: string;
 }
 
 interface EncryptedVaultPayload {
@@ -128,6 +140,48 @@ export function getBiometricConfig(): BiometricConfig | null {
     return parsed;
   } catch {
     return null;
+  }
+}
+
+export function saveBiometricOfflineSession(session: BiometricOfflineSession): void {
+  try {
+    localStorage.setItem(BIOMETRIC_OFFLINE_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function getBiometricOfflineSession(): BiometricOfflineSession | null {
+  try {
+    const raw = localStorage.getItem(BIOMETRIC_OFFLINE_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as BiometricOfflineSession;
+    if (!parsed || !parsed.uid) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function isBiometricSoftLoggedOut(): boolean {
+  try {
+    return localStorage.getItem(BIOMETRIC_SOFT_LOGOUT_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function setBiometricSoftLoggedOut(loggedOut: boolean): void {
+  try {
+    if (loggedOut) {
+      localStorage.setItem(BIOMETRIC_SOFT_LOGOUT_KEY, '1');
+      sessionStorage.removeItem(BIOMETRIC_SESSION_UNLOCKED_KEY);
+    } else {
+      localStorage.removeItem(BIOMETRIC_SOFT_LOGOUT_KEY);
+    }
+    notifyBiometricStateChanged();
+  } catch {
+    // Ignore storage errors
   }
 }
 
@@ -288,9 +342,21 @@ export async function enrollBiometric(params: {
       enrolledAt: new Date().toISOString(),
     };
 
+    const defaultWsId = `ws_${(params.uid || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'default'}`;
+    saveBiometricOfflineSession({
+      uid: params.uid,
+      email: params.email.trim(),
+      displayName: params.displayName.trim() || params.email.trim(),
+      activeWorkspaceId: defaultWsId,
+      emailVerified: true,
+      isGoogleProvider: params.authMethod === 'google',
+      savedAt: new Date().toISOString(),
+    });
+
     localStorage.setItem(BIOMETRIC_CONFIG_KEY, JSON.stringify(config));
     sessionStorage.setItem(BIOMETRIC_SESSION_UNLOCKED_KEY, '1');
     localStorage.removeItem(BIOMETRIC_MANUAL_LOCK_KEY);
+    localStorage.removeItem(BIOMETRIC_SOFT_LOGOUT_KEY);
     notifyBiometricStateChanged();
     return config;
   } catch (err: unknown) {
@@ -318,6 +384,7 @@ export async function verifyBiometric(): Promise<{
   verified: boolean;
   config: BiometricConfig;
   decryptedCredentials: { email: string; password: string } | null;
+  offlineSession: BiometricOfflineSession | null;
 }> {
   const config = getBiometricConfig();
   if (!config || !config.enabled || !config.credentialIdBase64) {
@@ -358,6 +425,7 @@ export async function verifyBiometric(): Promise<{
 
     sessionStorage.setItem(BIOMETRIC_SESSION_UNLOCKED_KEY, '1');
     localStorage.removeItem(BIOMETRIC_MANUAL_LOCK_KEY);
+    localStorage.removeItem(BIOMETRIC_SOFT_LOGOUT_KEY);
     notifyBiometricStateChanged();
 
     const decryptedCredentials = config.hasEncryptedCredentials
@@ -368,6 +436,7 @@ export async function verifyBiometric(): Promise<{
       verified: true,
       config,
       decryptedCredentials,
+      offlineSession: getBiometricOfflineSession(),
     };
   } catch (err: unknown) {
     const domErr = err as { name?: string; message?: string };
@@ -404,6 +473,8 @@ export function disableBiometric(): void {
     localStorage.removeItem(BIOMETRIC_CONFIG_KEY);
     localStorage.removeItem(BIOMETRIC_VAULT_KEY);
     localStorage.removeItem(BIOMETRIC_MANUAL_LOCK_KEY);
+    localStorage.removeItem(BIOMETRIC_SOFT_LOGOUT_KEY);
+    localStorage.removeItem(BIOMETRIC_OFFLINE_SESSION_KEY);
     sessionStorage.removeItem(BIOMETRIC_SESSION_UNLOCKED_KEY);
     notifyBiometricStateChanged();
   } catch {
@@ -440,6 +511,7 @@ export function markSessionBiometricUnlocked(): void {
   try {
     sessionStorage.setItem(BIOMETRIC_SESSION_UNLOCKED_KEY, '1');
     localStorage.removeItem(BIOMETRIC_MANUAL_LOCK_KEY);
+    localStorage.removeItem(BIOMETRIC_SOFT_LOGOUT_KEY);
     notifyBiometricStateChanged();
   } catch {
     // Ignore storage errors

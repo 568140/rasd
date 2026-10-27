@@ -108,6 +108,15 @@ import {
 } from '../utils/dateUtils';
 import { alertSound } from '../services/alertSound';
 import { pushService } from '../services/pushService';
+import {
+  getBiometricConfig,
+  getBiometricOfflineSession,
+  saveBiometricOfflineSession,
+  isBiometricSoftLoggedOut,
+  setBiometricSoftLoggedOut,
+  markSessionBiometricUnlocked,
+  disableBiometric,
+} from '../services/biometricService';
 
 export function validateAndEncodeMetaIntoNotes(
   notes: string,
@@ -220,7 +229,10 @@ interface RasdContextValue {
   resetPassword: (email: string) => Promise<void>;
   resendVerificationEmail: () => Promise<void>;
   refreshAuthUser: () => Promise<void>;
-  logout: () => Promise<void>;
+  resumeSessionWithBiometric: (
+    decryptedCredentials?: { email: string; password: string } | null
+  ) => Promise<void>;
+  logout: (options?: { forceFullSignOut?: boolean; disableBiometricOnLogout?: boolean } | unknown) => Promise<void>;
 
   // Workspace, Approval Gate & Permissions
   workspace: Workspace | null;
@@ -768,26 +780,6 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // التحقق الصارم المتطابق مع licenseService.ts وقواعد Firestore: لا تُمنح صفة المالك الدائم إلا بتوثيق البريد الفعلي (emailVerified === true)
           const isVerifiedOwnerNow = ownerCheck.isVerifiedOwner;
 
-          // الحساب الجديد المسجل ذاتيًا: لم يكن له سجل مستخدم أو مساحة عمل سابقة أو تم تسجيله صراحةً الآن وليس مالكًا دائمًا موثقًا ولا عضو فريق مدعوًا
-          const isNewSelfRegistration =
-            !isVerifiedOwnerNow &&
-            !isInvitedTeamMember &&
-            (Boolean(options?.isExplicitRegistration) ||
-              (!userExistedPrior && !wsExistedPrior && !memberExistedPrior));
-
-          const needsUserDoc =
-            !userExistedPrior ||
-            Boolean(options?.isExplicitRegistration) ||
-            (userExistedPrior && userSnap.data().activeWorkspaceId !== activeWsId);
-          const needsWsDoc =
-            isOwnDefaultWs &&
-            wsSnap !== null &&
-            (!wsExistedPrior || Boolean(options?.isExplicitRegistration));
-          const needsMemberDoc =
-            isOwnDefaultWs &&
-            memberSnap !== null &&
-            (!memberExistedPrior || Boolean(options?.isExplicitRegistration));
-
           const displayName = sanitizeText(
             customDisplayName ||
               liveUser.displayName ||
@@ -817,24 +809,111 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             'مساحة العمل الميدانية'
           );
 
+          // فحص مبكر لوثيقة الترخيص في Firestore ولحالة الاعتماد على الخادم (بالبريد والمعرف ومساحة العمل)
+          // لضمان عدم إعادة المستخدم المعتمد إلى حالة انتظار الموافقة بعد مسح الكوكيز أو الدخول عبر Google
+          const licRef = doc(db, 'account_licenses', activeWsId);
+          let existingLicSnap = null;
+          try {
+            existingLicSnap = await getDoc(licRef);
+          } catch {
+            existingLicSnap = null;
+          }
+
+          let earlyServerDecision: (RegistrationRequestMetadata & {
+            maxMembers?: number;
+            startsAtIso?: string;
+            expiresAtIso?: string;
+          }) | null = null;
+          try {
+            const srvEarlyRes = await fetch(
+              `/api/admin/pending-registrations?workspaceId=${encodeURIComponent(
+                activeWsId
+              )}&email=${encodeURIComponent(email.toLowerCase())}&uid=${encodeURIComponent(uid)}`
+            );
+            if (srvEarlyRes.ok) {
+              const srvEarlyData = await srvEarlyRes.json();
+              if (srvEarlyData?.request) {
+                earlyServerDecision = srvEarlyData.request;
+              }
+            }
+          } catch {
+            // non-fatal if offline
+          }
+
+          const isAlreadyApprovedPrior =
+            (existingLicSnap &&
+              existingLicSnap.exists() &&
+              existingLicSnap.data().status === 'active') ||
+            earlyServerDecision?.status === 'active';
+
+          const isAlreadySuspendedPrior =
+            !isAlreadyApprovedPrior &&
+            ((existingLicSnap &&
+              existingLicSnap.exists() &&
+              existingLicSnap.data().status === 'suspended') ||
+              earlyServerDecision?.status === 'suspended');
+
+          // الحساب الجديد المسجل ذاتيًا: لم يكن معتمدًا مسبقًا ولم يكن له سجل مستخدم أو مساحة عمل سابقة أو تم تسجيله صراحةً الآن وليس مالكًا دائمًا موثقًا ولا عضو فريق مدعوًا
+          const isNewSelfRegistration =
+            !isVerifiedOwnerNow &&
+            !isInvitedTeamMember &&
+            !isAlreadyApprovedPrior &&
+            !isAlreadySuspendedPrior &&
+            (Boolean(options?.isExplicitRegistration) ||
+              (!userExistedPrior && !wsExistedPrior && !memberExistedPrior));
+
+          const needsUserDoc =
+            !userExistedPrior ||
+            Boolean(options?.isExplicitRegistration) ||
+            (userExistedPrior && userSnap.data().activeWorkspaceId !== activeWsId);
+          const needsWsDoc =
+            isOwnDefaultWs &&
+            wsSnap !== null &&
+            (!wsExistedPrior || Boolean(options?.isExplicitRegistration));
+          const needsMemberDoc =
+            isOwnDefaultWs &&
+            memberSnap !== null &&
+            (!memberExistedPrior || Boolean(options?.isExplicitRegistration));
+
           // تحديد المسمى الوظيفي وحالة العضوية عند الإنشاء الأولي فقط (دون المساس بالحسابات الحالية إطلاقًا)
           const initialJobTitle = isVerifiedOwnerNow
             ? 'مالك المنصة الدائم — مدير عام'
+            : isAlreadyApprovedPrior
+            ? 'مدير مساحة العمل'
+            : isAlreadySuspendedPrior
+            ? 'طلب تسجيل مرفوض'
             : isNewSelfRegistration
             ? PENDING_REGISTRATION_JOB_TITLE_MARKER
             : 'مسؤول ميداني أول';
-          const initialOwnerMemberStatus: WorkspaceMember['status'] = isNewSelfRegistration
+          const initialOwnerMemberStatus: WorkspaceMember['status'] = isAlreadyApprovedPrior
+            ? 'active'
+            : isAlreadySuspendedPrior
+            ? 'suspended'
+            : isNewSelfRegistration
             ? 'invited'
             : 'active';
 
           const ownerProfileNeedsCleanup =
-            isVerifiedOwnerNow &&
+            (isVerifiedOwnerNow || isAlreadyApprovedPrior) &&
             userExistedPrior &&
             (userSnap.data().email === 'user@rasd.app' ||
               userSnap.data().email === 'owner@rasd.app' ||
               userSnap.data().jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER);
 
-          if (needsUserDoc || needsWsDoc || needsMemberDoc || ownerProfileNeedsCleanup) {
+          const approvedMemberNeedsCleanup =
+            (isVerifiedOwnerNow || isAlreadyApprovedPrior) &&
+            memberExistedPrior &&
+            (memberSnap?.data()?.status === 'invited' ||
+              memberSnap?.data()?.email === 'owner@rasd.app' ||
+              memberSnap?.data()?.email === 'user@rasd.app');
+
+          if (
+            needsUserDoc ||
+            needsWsDoc ||
+            needsMemberDoc ||
+            ownerProfileNeedsCleanup ||
+            approvedMemberNeedsCleanup
+          ) {
             const batch = writeBatch(db);
 
             if (needsWsDoc) {
@@ -865,6 +944,11 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   !userSnap.data().jobTitle ||
                   userSnap.data().jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER)
                   ? 'مالك المنصة الدائم — مدير عام'
+                  : isAlreadyApprovedPrior &&
+                    (!userExistedPrior ||
+                      !userSnap.data().jobTitle ||
+                      userSnap.data().jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER)
+                  ? 'مدير مساحة العمل'
                   : isNewSelfRegistration
                   ? PENDING_REGISTRATION_JOB_TITLE_MARKER
                   : userExistedPrior && userSnap.data().jobTitle
@@ -877,6 +961,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   ? userExistedPrior && userSnap.data().email
                     ? userSnap.data().email
                     : 'owner@rasd.app'
+                  : userExistedPrior &&
+                    userSnap.data().email &&
+                    userSnap.data().email !== 'user@rasd.app'
+                  ? userSnap.data().email
                   : email;
               batch.set(userDocRef, {
                 uid,
@@ -893,14 +981,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               });
             }
 
-            if (
-              needsMemberDoc ||
-              (isVerifiedOwnerNow &&
-                memberExistedPrior &&
-                (memberSnap?.data()?.status === 'invited' ||
-                  memberSnap?.data()?.email === 'owner@rasd.app' ||
-                  memberSnap?.data()?.email === 'user@rasd.app'))
-            ) {
+            if (needsMemberDoc || approvedMemberNeedsCleanup) {
               currentStepPath = `workspace_members/${memberId}`;
               const firestoreSafeMemberEmail =
                 isVerifiedOwnerNow
@@ -915,7 +996,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 displayName,
                 email: firestoreSafeMemberEmail,
                 role: 'owner',
-                status: isVerifiedOwnerNow ? 'active' : initialOwnerMemberStatus,
+                status:
+                  isVerifiedOwnerNow || isAlreadyApprovedPrior
+                    ? 'active'
+                    : initialOwnerMemberStatus,
                 canApproveFinancials: true,
                 canDeleteRecords: true,
                 memberUids: [uid],
@@ -955,25 +1039,21 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           // للعملاء الجدد أو المعلقين بانتظار الموافقة: ضمان حفظ وثيقة طلب الترخيص بحالة pending في /account_licenses/{activeWsId}
           let resolvedLicense: AccountLicense | null = null;
-          const hasPendingMarker = isPendingRegistrationProfileMarker(
-            userExistedPrior && !isNewSelfRegistration ? userSnap.data().jobTitle : initialJobTitle,
-            memberExistedPrior && !isNewSelfRegistration && memberSnap
-              ? memberSnap.data()?.status
-              : initialOwnerMemberStatus
-          );
+          const hasPendingMarker =
+            !isAlreadyApprovedPrior &&
+            isPendingRegistrationProfileMarker(
+              userExistedPrior && !isNewSelfRegistration ? userSnap.data().jobTitle : initialJobTitle,
+              memberExistedPrior && !isNewSelfRegistration && memberSnap
+                ? memberSnap.data()?.status
+                : initialOwnerMemberStatus
+            );
           const shouldEnsurePendingLicense =
             !isVerifiedOwnerNow &&
             !isPermanentPlatformOwnerEmail(email) &&
             !isInvitedTeamMember &&
+            !isAlreadyApprovedPrior &&
+            !isAlreadySuspendedPrior &&
             (isNewSelfRegistration || hasPendingMarker);
-
-          const licRef = doc(db, 'account_licenses', activeWsId);
-          let existingLicSnap = null;
-          try {
-            existingLicSnap = await getDoc(licRef);
-          } catch {
-            existingLicSnap = null;
-          }
 
           if (existingLicSnap && existingLicSnap.exists()) {
             const licData = existingLicSnap.data();
@@ -992,8 +1072,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               updatedAt: licData.updatedAt,
             };
 
-            // إذا كان الطلب لا يزال معلقًا وتم تمرير اسم مخصص عند التسجيل، نحدّث ملاحظات الطلب الوصفية ليظهر الاسم الصحيح للمالك
-            if (resolvedLicense.status === 'pending' && customDisplayName) {
+            // إذا كان الطلب لا يزال معلقًا في Firestore ولم يُحسم على الخادم وتم تمرير اسم مخصص عند التسجيل، نحدّث ملاحظات الطلب الوصفية
+            if (resolvedLicense.status === 'pending' && !isAlreadyApprovedPrior && customDisplayName) {
               const updatedPending = buildPendingRegistrationLicense({
                 workspaceId: activeWsId,
                 ownerId: uid,
@@ -1057,44 +1137,56 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 status: 'pending',
                 notes: pendingLicense.notes,
                 requestedAtIso: new Date().toISOString(),
+                upsertOnlyIfMissing: true,
               };
-              void fetch('/api/admin/notify-registration', {
+              const notifyRes = await fetch('/api/admin/notify-registration', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(regNotificationPayload),
-              }).catch(() => {});
+              }).catch(() => null);
 
-              void fetch('/api/push/send-alert', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  notificationTitle: 'طلب اشتراك جديد — منصة رَصْد',
-                  notificationBody: `طلب اشتراك جديد من (${displayName} - ${email}). يرجى الدخول إلى لوحة إدارة المنصة للمراجعة والاعتماد.`,
-                  tag: `rasd-reg-${uid}`,
-                  workspaceId: 'default',
-                  minutesRemaining: 0,
-                }),
-              }).catch(() => {});
+              if (notifyRes && notifyRes.ok) {
+                const notifyJson = await notifyRes.json().catch(() => null);
+                if (notifyJson?.alreadyDecided && notifyJson?.request) {
+                  earlyServerDecision = notifyJson.request;
+                }
+              }
+
+              if (!earlyServerDecision || earlyServerDecision.status === 'pending') {
+                void fetch('/api/push/send-alert', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    notificationTitle: 'طلب اشتراك جديد — منصة رَصْد',
+                    notificationBody: `طلب اشتراك جديد من (${displayName} - ${email}). يرجى الدخول إلى لوحة إدارة المنصة للمراجعة والاعتماد.`,
+                    tag: `rasd-reg-${uid}`,
+                    workspaceId: 'default',
+                    minutesRemaining: 0,
+                  }),
+                }).catch(() => {});
+              }
             } catch {
               // non-fatal
             }
 
-            try {
-              await setDoc(licRef, {
-                workspaceId: pendingLicense.workspaceId,
-                ownerId: pendingLicense.ownerId,
-                ownerEmail: pendingLicense.ownerEmail,
-                planId: pendingLicense.planId,
-                status: 'pending',
-                startsAt: pendingLicense.startsAt,
-                expiresAt: pendingLicense.expiresAt,
-                maxMembers: pendingLicense.maxMembers,
-                notes: pendingLicense.notes,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-            } catch (licWriteErr) {
-              console.warn('Firestore account_licenses write notice (handled via server store):', licWriteErr);
+            if (!earlyServerDecision || earlyServerDecision.status === 'pending') {
+              try {
+                await setDoc(licRef, {
+                  workspaceId: pendingLicense.workspaceId,
+                  ownerId: pendingLicense.ownerId,
+                  ownerEmail: pendingLicense.ownerEmail,
+                  planId: pendingLicense.planId,
+                  status: 'pending',
+                  startsAt: pendingLicense.startsAt,
+                  expiresAt: pendingLicense.expiresAt,
+                  maxMembers: pendingLicense.maxMembers,
+                  notes: pendingLicense.notes,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                });
+              } catch (licWriteErr) {
+                console.warn('Firestore account_licenses write notice (handled via server store):', licWriteErr);
+              }
             }
           }
 
@@ -1114,6 +1206,8 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const effectiveJobTitle =
               isVerifiedOwnerNow && d.jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER
                 ? 'مالك المنصة الدائم — مدير عام'
+                : isAlreadyApprovedPrior && d.jobTitle === PENDING_REGISTRATION_JOB_TITLE_MARKER
+                ? 'مدير مساحة العمل'
                 : d.jobTitle || '';
             latestProfile = {
               id: finalUserSnap.id,
@@ -1132,37 +1226,29 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const finalOwnerMemberData =
             finalMemberSnap && finalMemberSnap.exists() ? finalMemberSnap.data() : null;
 
-          // التحقق من حالة الطلب في مسار الخادم المباشر لضمان فتح الحساب فور اعتماد المالك
-          try {
-            const srvCheck = await fetch(
-              `/api/admin/pending-registrations?workspaceId=${encodeURIComponent(activeWsId)}`
-            );
-            if (srvCheck.ok) {
-              const srvData = await srvCheck.json();
-              const srvReq = srvData?.request as
-                | (RegistrationRequestMetadata & { maxMembers?: number })
-                | null;
-              if (srvReq && (srvReq.status === 'active' || srvReq.status === 'suspended')) {
-                const nowIso = new Date().toISOString();
-                const expIso = new Date(Date.now() + 30 * 86400_000).toISOString();
-                resolvedLicense = {
-                  id: activeWsId,
-                  workspaceId: activeWsId,
-                  ownerId: uid,
-                  ownerEmail: email,
-                  planId: srvReq.requestedPlanId || 'trial',
-                  status: srvReq.status,
-                  startsAt: resolvedLicense?.startsAt || nowIso,
-                  expiresAt: resolvedLicense?.expiresAt || expIso,
-                  maxMembers: srvReq.maxMembers || resolvedLicense?.maxMembers || 3,
-                  notes: srvReq.notes || resolvedLicense?.notes || '',
-                  createdAt: resolvedLicense?.createdAt || nowIso,
-                  updatedAt: nowIso,
-                };
-              }
-            }
-          } catch {
-            // non-fatal if offline
+          // اعتماد قرار الخادم المباشر إن وُجد لضمان فتح الحساب فور اعتماد المالك حتى بعد مسح الكوكيز أو الدخول عبر Google
+          if (
+            earlyServerDecision &&
+            (earlyServerDecision.status === 'active' || earlyServerDecision.status === 'suspended')
+          ) {
+            const nowIso = new Date().toISOString();
+            const expIso =
+              earlyServerDecision.expiresAtIso ||
+              new Date(Date.now() + 30 * 86400_000).toISOString();
+            resolvedLicense = {
+              id: activeWsId,
+              workspaceId: activeWsId,
+              ownerId: uid,
+              ownerEmail: email,
+              planId: earlyServerDecision.requestedPlanId || 'trial',
+              status: earlyServerDecision.status,
+              startsAt: earlyServerDecision.startsAtIso || resolvedLicense?.startsAt || nowIso,
+              expiresAt: earlyServerDecision.expiresAtIso || resolvedLicense?.expiresAt || expIso,
+              maxMembers: earlyServerDecision.maxMembers || resolvedLicense?.maxMembers || 3,
+              notes: earlyServerDecision.notes || resolvedLicense?.notes || '',
+              createdAt: resolvedLicense?.createdAt || nowIso,
+              updatedAt: nowIso,
+            };
           }
 
           // تقييم بوابة الموافقة والاشتراك للحساب (مع الحفاظ على الحسابات الحالية القائمة قبل نظام التراخيص دون ترحيل قسري)
@@ -1171,7 +1257,10 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             isNewSelfRegistration,
             existingUserProfile: latestProfile || (userExistedPrior ? (userSnap.data() as Partial<UserProfile>) : null),
             existingOwnerMember: finalOwnerMemberData
-              ? { role: finalOwnerMemberData.role, status: finalOwnerMemberData.status }
+              ? {
+                  role: finalOwnerMemberData.role,
+                  status: isAlreadyApprovedPrior ? 'active' : finalOwnerMemberData.status,
+                }
               : null,
             isInvitedTeamMember,
             invitedMemberStatus,
@@ -1213,8 +1302,9 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
               ownerId: uid,
               ownerName: displayName,
             },
-            memberStatus:
-              (finalOwnerMemberData?.status as string | undefined) || initialOwnerMemberStatus,
+            memberStatus: isAlreadyApprovedPrior
+              ? 'active'
+              : (finalOwnerMemberData?.status as string | undefined) || initialOwnerMemberStatus,
             fallbackUid: uid,
             fallbackEmail: email,
             fallbackName: displayName,
@@ -1256,6 +1346,18 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 upsertOnlyIfMissing: true,
               }),
             }).catch(() => {});
+          } else if (gateEval.gateStatus === 'approved' && resolvedLicense) {
+            try {
+              localStorage.setItem(
+                `rasd_reg_req_${uid}`,
+                JSON.stringify({
+                  ...regSummary,
+                  status: 'active',
+                })
+              );
+            } catch {
+              // ignore
+            }
           }
         } catch (error) {
           console.warn('Bootstrap Firestore notice at', currentStepPath, error);
@@ -1298,7 +1400,12 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let resolved = false;
 
-    if (auth.currentUser) {
+    if (isBiometricSoftLoggedOut()) {
+      resolved = true;
+      setFirebaseUser(null);
+      clearAllUserState();
+      setAuthReady(true);
+    } else if (auth.currentUser) {
       resolved = true;
       const initialUser = auth.currentUser;
       setFirebaseUser(initialUser);
@@ -1306,7 +1413,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
       applyOptimisticSession(initialUser);
       setAuthReady(true);
       void syncFirebaseUserAuthSession(initialUser).then((synced) => {
-        if (synced) {
+        if (synced && !isBiometricSoftLoggedOut()) {
           setFirebaseUser(synced);
           applyOptimisticSession(synced);
         }
@@ -1331,6 +1438,14 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
+      // إذا كان المستخدم قد سجل الخروج مع تفعيل البصمة (Soft Logout)، نبقى في شاشة الدخول حتى يفتح بالبصمة
+      if (!explicitAuthInProgressRef.current && isBiometricSoftLoggedOut()) {
+        setFirebaseUser(null);
+        clearAllUserState();
+        setAuthReady(true);
+        return;
+      }
+
       // إذا تبدل المستخدم النشط، نمسح الحالة القديمة فورًا لفك ارتباط كافة مستمعات المستخدم السابق قبل أي عملية غير متزامنة
       if (lastActiveUidRef.current && lastActiveUidRef.current !== rawUser.uid) {
         clearAllUserState();
@@ -1344,6 +1459,22 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (synced) effectiveUser = synced;
       } catch {
         // non-fatal
+      }
+
+      const bioCfg = getBiometricConfig();
+      if (bioCfg?.enabled) {
+        const defaultWsId = `ws_${effectiveUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+        saveBiometricOfflineSession({
+          uid: effectiveUser.uid,
+          email: resolveVerifiedOrTopLevelUserEmail(effectiveUser) || effectiveUser.email || bioCfg.userEmail,
+          displayName: effectiveUser.displayName || bioCfg.userDisplayName || 'مستخدم رَصْد',
+          activeWorkspaceId: defaultWsId,
+          emailVerified: true,
+          isGoogleProvider: Boolean(
+            effectiveUser.providerData?.some((p) => p.providerId === 'google.com')
+          ),
+          savedAt: new Date().toISOString(),
+        });
       }
 
       setFirebaseUser(effectiveUser);
@@ -1425,6 +1556,19 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
         (licSnap) => {
           if (licSnap.exists()) {
             const licData = licSnap.data();
+
+            // إذا كانت وثيقة Firestore لا تزال تحمل حالة pending قديمة بينما تم اعتماد الحساب فعليًا، لا نعيد قفل الحساب
+            if (licData.status === 'pending') {
+              try {
+                const cachedGate = localStorage.getItem(`rasd_gate_status_${uid}`);
+                if (cachedGate === 'approved') {
+                  return;
+                }
+              } catch {
+                // ignore
+              }
+            }
+
             const liveLicense: AccountLicense = {
               id: licSnap.id,
               workspaceId: licData.workspaceId || licSnap.id,
@@ -2786,6 +2930,17 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // مزامنة حالة القرار أولًا مع الخادم المحلي لضمان اعتماد المشترك وتحديث قائمة الطلبات فورًا
       try {
+        const startsAtIso =
+          transition.updatedLicense.startsAt &&
+          typeof (transition.updatedLicense.startsAt as { toDate?: () => Date }).toDate === 'function'
+            ? (transition.updatedLicense.startsAt as { toDate: () => Date }).toDate().toISOString()
+            : new Date().toISOString();
+        const expiresAtIso =
+          transition.updatedLicense.expiresAt &&
+          typeof (transition.updatedLicense.expiresAt as { toDate?: () => Date }).toDate === 'function'
+            ? (transition.updatedLicense.expiresAt as { toDate: () => Date }).toDate().toISOString()
+            : new Date(Date.now() + 30 * 86400_000).toISOString();
+
         await fetch('/api/admin/decide-registration', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2799,12 +2954,35 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
             decision: params.decision,
             approvedPlanId: transition.updatedLicense.planId,
             maxMembers: transition.updatedLicense.maxMembers,
+            startsAtIso,
+            expiresAtIso,
             decisionNotes: params.decisionNotes || transition.updatedLicense.notes,
             reviewedByUid: firebaseUser?.uid,
           }),
         });
       } catch {
         // non-fatal if offline
+      }
+
+      // ضمان وجود وثيقة المالك الإداري في /admins/{uid} قبل تحديث وثائق المشترك في Firestore
+      if (firebaseUser && authRes.actorRole === 'permanent_owner') {
+        try {
+          const adminDocRef = doc(db, 'admins', firebaseUser.uid);
+          const adminSnap = await getDoc(adminDocRef).catch(() => null);
+          if (!adminSnap || !adminSnap.exists()) {
+            const ownerCheck = verifyPlatformOwnerIdentity(firebaseUser);
+            if (ownerCheck.isVerifiedOwner) {
+              await setDoc(adminDocRef, {
+                uid: firebaseUser.uid,
+                email: ownerCheck.normalizedEmail,
+                role: ownerCheck.ownerRole || 'backup_owner',
+                createdAt: serverTimestamp(),
+              }).catch(() => {});
+            }
+          }
+        } catch {
+          // ignore
+        }
       }
 
       // حفظ وثيقة الترخيص وتحديث وثائق المشترك في Firestore متى ما كانت صلاحيات الجلسة متاحة
@@ -3327,6 +3505,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Auth Handlers
   const loginWithGoogle = useCallback(async () => {
     explicitAuthInProgressRef.current = true;
+    setBiometricSoftLoggedOut(false);
     try {
       const res = await signInWithPopup(auth, googleProvider);
       if (res.user) {
@@ -3356,6 +3535,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithEmail = useCallback(
     async (email: string, pass: string) => {
       explicitAuthInProgressRef.current = true;
+      setBiometricSoftLoggedOut(false);
       try {
         const res = await signInWithEmailAndPassword(auth, email.trim(), pass);
         if (res.user) {
@@ -3383,6 +3563,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const registerWithEmail = useCallback(
     async (name: string, email: string, pass: string) => {
       explicitAuthInProgressRef.current = true;
+      setBiometricSoftLoggedOut(false);
       try {
         const cleanName = name.trim();
         const res = await createUserWithEmailAndPassword(auth, email.trim(), pass);
@@ -3477,11 +3658,151 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [ensureUserAndWorkspace, showToast]);
 
-  const logout = useCallback(async () => {
-    clearAllUserState();
-    await firebaseSignOut(auth);
-    showToast('تم تسجيل الخروج بأمان ومسح الجلسة المحلية.', 'info');
-  }, [clearAllUserState, showToast]);
+  const resumeSessionWithBiometric = useCallback(
+    async (decryptedCredentials?: { email: string; password: string } | null) => {
+      explicitAuthInProgressRef.current = true;
+      setBiometricSoftLoggedOut(false);
+      markSessionBiometricUnlocked();
+
+      try {
+        // 1. إذا كانت جلسة Firebase محفوظة في المتصفح (بفضل الخروج الذكي للبصمة)، نستعيدها فورًا بدون إنترنت وبدون نافذة جوجل
+        if (auth.currentUser) {
+          const cachedUser = auth.currentUser;
+          lastActiveUidRef.current = cachedUser.uid;
+          setFirebaseUser(cachedUser);
+          setAuthSessionVersion((v) => v + 1);
+          alertSound.syncUserReminderPreference(cachedUser.uid);
+          applyOptimisticSession(cachedUser);
+          setAccountApprovalStatus((prev) =>
+            prev === 'suspended' ? 'suspended' : 'approved'
+          );
+          setAuthReady(true);
+          setActiveScreen('home');
+
+          if (typeof navigator === 'undefined' || navigator.onLine) {
+            void ensureUserAndWorkspace(cachedUser).catch(() => {});
+          }
+          showToast('تم التحقق من البصمة واستئناف الجلسة فورًا بنجاح.', 'success');
+          return;
+        }
+
+        // 2. إذا لم تكن جلسة Firebase موجودة، وكان هناك اتصال إنترنت وبيانات بريد مشفرة، نسجل الدخول تلقائيًا
+        if (
+          (typeof navigator === 'undefined' || navigator.onLine) &&
+          decryptedCredentials?.email &&
+          decryptedCredentials?.password
+        ) {
+          await loginWithEmail(decryptedCredentials.email, decryptedCredentials.password);
+          return;
+        }
+
+        // 3. في حال عدم وجود إنترنت (Offline) أو استئناف جلسة البصمة المحفوظة محليًا بدون الحاجة لإعادة فتح جوجل
+        const offlineSession = getBiometricOfflineSession();
+        const bioConfig = getBiometricConfig();
+        const targetUid = offlineSession?.uid || bioConfig?.userUid || '';
+        const targetEmail = offlineSession?.email || bioConfig?.userEmail || '';
+        const targetName =
+          offlineSession?.displayName ||
+          bioConfig?.userDisplayName ||
+          targetEmail.split('@')[0] ||
+          'مستخدم رَصْد';
+
+        if (targetUid || targetEmail) {
+          const cleanUid = (targetUid || targetEmail).replace(/[^a-zA-Z0-9_-]/g, '_');
+          const syntheticOfflineUser = {
+            uid: cleanUid,
+            email: targetEmail,
+            displayName: targetName,
+            emailVerified: true,
+            isAnonymous: false,
+            providerData: [
+              {
+                providerId:
+                  offlineSession?.isGoogleProvider || bioConfig?.authMethod === 'google'
+                    ? 'google.com'
+                    : 'password',
+                uid: targetEmail || cleanUid,
+                displayName: targetName,
+                email: targetEmail,
+                phoneNumber: null,
+                photoURL: null,
+              },
+            ],
+          } as unknown as FirebaseUser;
+
+          lastActiveUidRef.current = cleanUid;
+          setFirebaseUser(syntheticOfflineUser);
+          setAuthSessionVersion((v) => v + 1);
+          alertSound.syncUserReminderPreference(cleanUid);
+          applyOptimisticSession(syntheticOfflineUser, targetName);
+          setAccountApprovalStatus('approved');
+          setAuthReady(true);
+          setActiveScreen('home');
+          showToast('تم فتح حسابك بالبصمة بنجاح (وضع العمل الفوري).', 'success');
+          return;
+        }
+      } finally {
+        explicitAuthInProgressRef.current = false;
+      }
+    },
+    [applyOptimisticSession, ensureUserAndWorkspace, loginWithEmail, showToast]
+  );
+
+  const logout = useCallback(
+    async (options?: { forceFullSignOut?: boolean; disableBiometricOnLogout?: boolean } | unknown) => {
+      const opts =
+        options && typeof options === 'object' && !('nativeEvent' in options)
+          ? (options as { forceFullSignOut?: boolean; disableBiometricOnLogout?: boolean })
+          : undefined;
+
+      if (opts?.disableBiometricOnLogout) {
+        disableBiometric();
+      }
+      const bioConfig = getBiometricConfig();
+
+      if (bioConfig?.enabled && !opts?.forceFullSignOut && !opts?.disableBiometricOnLogout) {
+        // حفظ أحدث بيانات الجلسة للبصمة وعدم إتلاف جلسة Firebase المحلية ليعمل الدخول بالبصمة بدون إنترنت وبدون نافذة جوجل
+        if (firebaseUser) {
+          const defaultWsId =
+            userProfile?.activeWorkspaceId ||
+            `ws_${firebaseUser.uid.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+          saveBiometricOfflineSession({
+            uid: firebaseUser.uid,
+            email:
+              resolveVerifiedOrTopLevelUserEmail(firebaseUser) ||
+              userProfile?.email ||
+              firebaseUser.email ||
+              bioConfig.userEmail,
+            displayName:
+              userProfile?.displayName ||
+              firebaseUser.displayName ||
+              bioConfig.userDisplayName ||
+              'مستخدم رَصْد',
+            activeWorkspaceId: defaultWsId,
+            emailVerified: true,
+            isGoogleProvider: Boolean(
+              firebaseUser.providerData?.some((p) => p.providerId === 'google.com')
+            ),
+            savedAt: new Date().toISOString(),
+          });
+        }
+        setBiometricSoftLoggedOut(true);
+        clearAllUserState();
+        setFirebaseUser(null);
+        showToast(
+          'تم تسجيل الخروج بأمان — يمكنك الدخول مجددًا بلمسة البصمة (مع أو بدون إنترنت).',
+          'info'
+        );
+        return;
+      }
+
+      setBiometricSoftLoggedOut(false);
+      clearAllUserState();
+      await firebaseSignOut(auth);
+      showToast('تم تسجيل الخروج بأمان ومسح الجلسة المحلية.', 'info');
+    },
+    [clearAllUserState, firebaseUser, userProfile, showToast]
+  );
 
   // Profile & Workspace Mutations
   const updateUserProfileInfo = useCallback(
@@ -5957,6 +6278,7 @@ export const RasdProvider: React.FC<{ children: React.ReactNode }> = ({ children
     resetPassword,
     resendVerificationEmail,
     refreshAuthUser,
+    resumeSessionWithBiometric,
     logout,
     workspace,
     members,
